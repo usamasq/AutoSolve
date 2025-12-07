@@ -70,13 +70,14 @@ class SettingsPredictor:
         if data_dir:
             self.data_dir = Path(data_dir)
         else:
-            self.data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'eztrack'
+            self.data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'AutoSolve'
         
         self.model_path = self.data_dir / 'model.json'
         self.model: Dict = self._load_model()
     
     def _load_model(self) -> Dict:
         """Load trained model from disk."""
+        # First try user's model
         if self.model_path.exists():
             try:
                 with open(self.model_path) as f:
@@ -84,15 +85,28 @@ class SettingsPredictor:
             except Exception as e:
                 print(f"AutoSolve: Error loading model: {e}")
         
+        # Fall back to bundled pretrained model
+        pretrained_path = Path(__file__).parent / 'pretrained_model.json'
+        if pretrained_path.exists():
+            try:
+                with open(pretrained_path) as f:
+                    print("AutoSolve: Using pretrained model")
+                    return json.load(f)
+            except Exception as e:
+                print(f"AutoSolve: Error loading pretrained model: {e}")
+        
+        # Default empty model
         return {
             'version': 1,
             'footage_classes': {},
             'region_models': {},
+            'footage_type_adjustments': {},
             'global_stats': {
                 'total_sessions': 0,
                 'successful_sessions': 0,
             }
         }
+
     
     def _save_model(self):
         """Save model to disk."""
@@ -129,24 +143,117 @@ class SettingsPredictor:
         return f"{res_class}_{fps_class}"
     
     def predict_settings(self, clip: bpy.types.MovieClip, 
-                         robust_mode: bool = False) -> Dict:
+                         robust_mode: bool = False,
+                         footage_type: str = 'AUTO') -> Dict:
         """
         Predict optimal settings for the given clip.
         
         Uses historical data if available, otherwise falls back to heuristics.
+        Applies footage type adjustments for specialized scenarios.
+        
+        Args:
+            clip: The Movie Clip to analyze
+            robust_mode: Use more aggressive settings for difficult footage
+            footage_type: User-specified footage type (INDOOR, DRONE, etc.)
         """
         footage_class = self.classify_footage(clip)
         
         # Check if we have historical data for this footage class
-        if footage_class in self.model['footage_classes']:
+        if footage_class in self.model.get('footage_classes', {}):
             class_data = self.model['footage_classes'][footage_class]
             
-            if class_data.get('sample_count', 0) >= 3:
-                # We have enough data to make a prediction
-                return self._predict_from_history(class_data, robust_mode)
+            # Use pretrained data even with sample_count >= 1
+            if class_data.get('sample_count', 0) >= 1:
+                settings = self._predict_from_history(class_data, robust_mode)
+            else:
+                settings = self._predict_heuristic(clip, robust_mode)
+        else:
+            settings = self._predict_heuristic(clip, robust_mode)
         
-        # Fall back to heuristics
-        return self._predict_heuristic(clip, robust_mode)
+        # Apply footage type adjustments
+        if footage_type != 'AUTO':
+            settings = self._apply_footage_type_adjustment(settings, footage_type)
+        
+        # Estimate motion from clip properties
+        motion_factor = self._estimate_motion_factor(clip)
+        settings = self._adjust_for_motion(settings, motion_factor)
+        
+        return settings
+    
+    def _apply_footage_type_adjustment(self, settings: Dict, footage_type: str) -> Dict:
+        """Apply adjustments based on footage type (DRONE, INDOOR, etc.)."""
+        adjustments = self.model.get('footage_type_adjustments', {}).get(footage_type, {})
+        
+        if not adjustments:
+            return settings
+        
+        adjusted = settings.copy()
+        
+        # Apply multipliers
+        if 'pattern_size_mult' in adjustments:
+            adjusted['pattern_size'] = int(settings['pattern_size'] * adjustments['pattern_size_mult'])
+        
+        if 'search_size_mult' in adjustments:
+            adjusted['search_size'] = int(settings['search_size'] * adjustments['search_size_mult'])
+        
+        if 'threshold_mult' in adjustments:
+            adjusted['threshold'] = settings['threshold'] * adjustments['threshold_mult']
+        
+        if 'correlation_offset' in adjustments:
+            adjusted['correlation'] = max(0.4, min(0.9, 
+                settings['correlation'] + adjustments['correlation_offset']))
+        
+        if 'motion_model' in adjustments:
+            adjusted['motion_model'] = adjustments['motion_model']
+        
+        return adjusted
+    
+    def _estimate_motion_factor(self, clip: bpy.types.MovieClip) -> float:
+        """
+        Estimate motion amount based on clip properties.
+        
+        Returns a factor from 0.5 (very slow) to 2.0 (very fast motion).
+        """
+        fps = clip.fps if clip.fps > 0 else 24
+        duration = clip.frame_duration
+        
+        # Higher FPS typically means smoother/less motion per frame
+        fps_factor = 30 / fps  # Normalize to 30fps baseline
+        
+        # Very short clips often have more dramatic motion
+        if duration < 100:
+            duration_factor = 1.3
+        elif duration < 300:
+            duration_factor = 1.0
+        else:
+            duration_factor = 0.9
+        
+        # Combine factors
+        motion_factor = fps_factor * duration_factor
+        
+        # Clamp to reasonable range
+        return max(0.5, min(2.0, motion_factor))
+    
+    def _adjust_for_motion(self, settings: Dict, motion_factor: float) -> Dict:
+        """Adjust settings based on estimated motion amount."""
+        if motion_factor == 1.0:
+            return settings
+        
+        adjusted = settings.copy()
+        
+        # Higher motion = larger search area
+        adjusted['search_size'] = int(settings['search_size'] * motion_factor)
+        
+        # Higher motion = slightly more lenient correlation
+        if motion_factor > 1.2:
+            adjusted['correlation'] = max(0.45, settings['correlation'] - 0.05)
+        
+        # Ensure odd values for pattern/search size
+        if adjusted['search_size'] % 2 == 0:
+            adjusted['search_size'] += 1
+        
+        return adjusted
+
     
     def _predict_from_history(self, class_data: Dict, robust_mode: bool) -> Dict:
         """Predict settings from historical data."""

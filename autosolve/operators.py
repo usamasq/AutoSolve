@@ -138,8 +138,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     return self._cancel(context)
                 
                 _state.phase = 'DETECT'
-                _state.frame_current = _state.frame_start
-                context.scene.frame_set(_state.frame_start)
+                # Use optimal start frame (middle of clip for bidirectional tracking)
+                _state.optimal_start = tracker.get_optimal_start_frame()
+                _state.frame_current = _state.optimal_start
+                context.scene.frame_set(_state.optimal_start)
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
@@ -147,11 +149,16 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # PHASE: STRATEGIC DETECT (Distributed, not carpet-bombing)
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'DETECT':
-                settings.solve_status = f"Detecting features (strategic)..."
                 settings.solve_progress = 0.05
                 
-                # Use strategic detection: ~3 markers per region
-                num = tracker.detect_strategic_features(markers_per_region=3)
+                # First iteration: use EXPLORATORY detection with varied settings
+                # Later iterations: use strategic detection with learned settings
+                if _state.iteration == 0:
+                    settings.solve_status = "Detecting features (exploratory)..."
+                    num = tracker.detect_exploratory_features(markers_per_region=3)
+                else:
+                    settings.solve_status = "Detecting features (strategic)..."
+                    num = tracker.detect_strategic_features(markers_per_region=3)
                 
                 if num < 8:
                     self.report({'WARNING'}, f"Only {num} features detected")
@@ -199,9 +206,11 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
+                    # Forward tracking complete, now track BACKWARD to cover early frames
                     _state.phase = 'TRACK_BACKWARD'
-                    _state.frame_current = _state.frame_end
-                    context.scene.frame_set(_state.frame_end)
+                    # Start from where we began (optimal_start) and go backward to clip start
+                    _state.frame_current = getattr(_state, 'optimal_start', _state.frame_start)
+                    context.scene.frame_set(_state.frame_current)
                     tracker.select_all_tracks()
                     return {'RUNNING_MODAL'}
             
@@ -209,8 +218,9 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # PHASE: TRACK BACKWARD
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'TRACK_BACKWARD':
-                progress = (_state.frame_end - _state.frame_current) / clip.frame_duration
-                settings.solve_status = f"Backfilling... {int(progress*100)}%"
+                # Track backward from optimal_start to clip start (covers early frames)
+                progress = (getattr(_state, 'optimal_start', _state.frame_start) - _state.frame_current) / max(getattr(_state, 'optimal_start', _state.frame_start) - _state.frame_start, 1)
+                settings.solve_status = f"Backfilling early frames... {int(progress*100)}%"
                 settings.solve_progress = 0.45 + progress * 0.15
                 
                 if _state.frame_current > _state.frame_start:
@@ -530,7 +540,7 @@ class AUTOSOLVE_OT_export_training_data(Operator):
     filepath: bpy.props.StringProperty(
         name="File Path",
         description="Path to export training data",
-        default="eztrack_training.json",
+        default="autosolve_training.json",
         subtype='FILE_PATH',
     )
     
@@ -555,11 +565,23 @@ class AUTOSOLVE_OT_export_training_data(Operator):
             # Prepare export data with metadata
             export_data = {
                 'format_version': 1,
-                'export_type': 'eztrack_training_data',
+                'export_type': 'autosolve_training_data',
                 'session_count': model.model.get('session_count', 0),
                 'footage_classes': model.model.get('footage_classes', {}),
                 'region_models': model.model.get('region_models', {}),
+                'sessions': [],  # New field for detailed logs
             }
+            
+            # Collect session logs
+            data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'sessions'
+            if data_dir.exists():
+                for session_file in data_dir.glob('*.json'):
+                    try:
+                        with open(session_file) as f:
+                            session_data = json.load(f)
+                            export_data['sessions'].append(session_data)
+                    except Exception as e:
+                        print(f"AutoSolve: Failed to export session {session_file.name}: {e}")
             
             filepath = Path(self.filepath)
             if not filepath.suffix:
@@ -621,7 +643,7 @@ class AUTOSOLVE_OT_import_training_data(Operator):
                 import_data = json.load(f)
             
             # Validate format
-            if import_data.get('export_type') != 'eztrack_training_data':
+            if import_data.get('export_type') != 'autosolve_training_data':
                 self.report({'ERROR'}, "Invalid training data format")
                 return {'CANCELLED'}
             

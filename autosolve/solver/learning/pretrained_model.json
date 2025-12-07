@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "description": "Pretrained model from community data - shipped with addon",
+  "footage_classes": {
+    "HD_30fps": {
+      "sample_count": 3,
+      "success_count": 3,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 15,
+        "search_size": 71,
+        "correlation": 0.70,
+        "threshold": 0.30,
+        "motion_model": "LocRot"
+      },
+      "best_error": 0.46
+    },
+    "HD_24fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 17,
+        "search_size": 91,
+        "correlation": 0.68,
+        "threshold": 0.28,
+        "motion_model": "LocRot"
+      },
+      "best_error": 0.50
+    },
+    "HD_60fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 13,
+        "search_size": 61,
+        "correlation": 0.72,
+        "threshold": 0.32,
+        "motion_model": "LocRot"
+      },
+      "best_error": 0.40
+    },
+    "4K_24fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 31,
+        "search_size": 150,
+        "correlation": 0.45,
+        "threshold": 0.08,
+        "motion_model": "Affine"
+      },
+      "best_error": 0.93
+    },
+    "4K_30fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 27,
+        "search_size": 130,
+        "correlation": 0.50,
+        "threshold": 0.12,
+        "motion_model": "Affine"
+      },
+      "best_error": 0.70
+    },
+    "4K_60fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 23,
+        "search_size": 110,
+        "correlation": 0.55,
+        "threshold": 0.15,
+        "motion_model": "Affine"
+      },
+      "best_error": 0.55
+    },
+    "SD_24fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 13,
+        "search_size": 81,
+        "correlation": 0.70,
+        "threshold": 0.30,
+        "motion_model": "LocRot"
+      },
+      "best_error": 0.37
+    },
+    "SD_30fps": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "best_settings": {
+        "pattern_size": 11,
+        "search_size": 71,
+        "correlation": 0.72,
+        "threshold": 0.32,
+        "motion_model": "LocRot"
+      },
+      "best_error": 0.42
+    }
+  },
+  "footage_type_adjustments": {
+    "DRONE": {
+      "pattern_size_mult": 1.6,
+      "search_size_mult": 1.8,
+      "correlation_offset": -0.25,
+      "threshold_mult": 0.27,
+      "motion_model": "Affine"
+    },
+    "INDOOR": {
+      "pattern_size_mult": 1.4,
+      "search_size_mult": 1.5,
+      "correlation_offset": -0.20,
+      "threshold_mult": 0.27,
+      "motion_model": "Affine"
+    },
+    "OUTDOOR": {
+      "pattern_size_mult": 1.2,
+      "search_size_mult": 1.3,
+      "correlation_offset": -0.10,
+      "threshold_mult": 0.80,
+      "motion_model": "LocRot"
+    },
+    "HANDHELD": {
+      "pattern_size_mult": 1.3,
+      "search_size_mult": 1.6,
+      "correlation_offset": -0.15,
+      "threshold_mult": 0.60,
+      "motion_model": "Affine"
+    },
+    "GIMBAL": {
+      "pattern_size_mult": 1.0,
+      "search_size_mult": 0.9,
+      "correlation_offset": 0.05,
+      "threshold_mult": 1.0,
+      "motion_model": "LocRot"
+    },
+    "ACTION": {
+      "pattern_size_mult": 1.5,
+      "search_size_mult": 2.0,
+      "correlation_offset": -0.25,
+      "threshold_mult": 0.40,
+      "motion_model": "Affine"
+    },
+    "VFX": {
+      "pattern_size_mult": 1.1,
+      "search_size_mult": 1.1,
+      "correlation_offset": 0.0,
+      "threshold_mult": 0.90,
+      "motion_model": "LocRot"
+    }
+  },
+  "region_models": {
+    "top-left": {"success_rate": 0.967, "priority": "normal"},
+    "top-center": {"success_rate": 1.0, "priority": "prioritize"},
+    "top-right": {"success_rate": 0.989, "priority": "prioritize"},
+    "mid-left": {"success_rate": 0.989, "priority": "prioritize"},
+    "center": {"success_rate": 1.0, "priority": "prioritize"},
+    "mid-right": {"success_rate": 0.996, "priority": "prioritize"},
+    "bottom-left": {"success_rate": 1.0, "priority": "prioritize"},
+    "bottom-center": {"success_rate": 1.0, "priority": "prioritize"},
+    "bottom-right": {"success_rate": 0.986, "priority": "normal"}
+  },
+  "global_stats": {
+    "total_sessions": 8,
+    "successful_sessions": 8,
+    "avg_success_rate": 1.0,
+    "avg_best_error": 0.58
+  }
+}

@@ -1,14 +1,14 @@
-# SPDX-FileCopyrightText: 2024-2025 Your Name
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
 AutoSolve main package.
 
-This module coordinates registration of all submodules:
+Modules:
 - properties: Scene properties and settings
-- operators: Blender operators (Solve, Ground Wand, Scale)
-- ui: Panel definitions
-- preferences: Addon preferences
+- operators: Main tracking operator and learning tools
+- ui: N-Panel interface
+- solver: Smart tracking with adaptive learning
 """
 
 from . import properties

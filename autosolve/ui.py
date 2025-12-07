@@ -121,7 +121,9 @@ class AUTOSOLVE_PT_result_panel(Panel):
         
         # Action buttons
         col = layout.column(align=True)
-        col.operator("autosolve.setup_scene", text="Setup Tracking Scene", icon='SCENE_DATA')
+        row = col.row()
+        row.enabled = False  # Not fully implemented yet
+        row.operator("autosolve.setup_scene", text="Setup Tracking Scene", icon='SCENE_DATA')
 
 
 class AUTOSOLVE_PT_training_panel(Panel):

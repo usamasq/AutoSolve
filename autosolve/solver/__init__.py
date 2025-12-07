@@ -2,11 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
-Solver package - pycolmap SfM pipeline wrapper.
+Solver package - Automated Blender tracking system.
 
 Modules:
-- pipeline: Main reconstruction pipeline
-- frame_extractor: Extract frames from Movie Clip
-- result_parser: Convert pycolmap output to Blender objects
-- distortion: Lens distortion handling
+- smart_tracker: Intelligent feature detection and tracking
+- learning: Machine learning for adaptive tracking
 """

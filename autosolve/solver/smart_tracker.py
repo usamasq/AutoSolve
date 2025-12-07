@@ -588,9 +588,9 @@ class LocalLearningModel:
     def _get_data_dir(self) -> Path:
         """Get the data directory for storing learning data."""
         try:
-            data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'eztrack'
+            data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
         except:
-            data_dir = Path(bpy.app.tempdir) / 'eztrack'
+            data_dir = Path(bpy.app.tempdir) / 'autosolve'
         
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
@@ -793,6 +793,18 @@ class SmartTracker:
         self.strategic_iteration = 0
         self.MAX_STRATEGIC_ITERATIONS = 5
         
+        # Mid-session adaptation state
+        self.adaptation_history: List[Dict] = []
+        self.last_survival_rate: float = 1.0
+        self.adaptation_count: int = 0
+        self.MAX_ADAPTATIONS: int = 3
+        
+        # Motion probe cache (persisted for session recording)
+        self.cached_motion_probe: Optional[Dict] = None
+        
+        # Region confidence scores (probabilistic dead zones)
+        self.region_confidence: Dict[str, float] = {r: 0.5 for r in TrackAnalyzer.REGIONS}
+        
         # Load initial settings
         self._load_initial_settings()
     
@@ -916,6 +928,178 @@ class SmartTracker:
         print(f"AutoSolve: Analyzing footage - {self.footage_class}")
         # Footage analysis is already done in __init__ via _classify_footage
         # and _load_initial_settings. This method exists for explicit calls.
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MID-SESSION ADAPTATION (Real-time Settings Adjustment)
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def adapt_settings_mid_session(self, survival_rate: float) -> Dict:
+        """
+        Adapt settings based on current session track survival rate.
+        
+        This is the KEY IMPROVEMENT - instead of only learning for next session,
+        we adapt during the current tracking run.
+        
+        Args:
+            survival_rate: Current track survival rate (0.0 to 1.0)
+            
+        Returns:
+            Dict with adaptation details and new settings
+        """
+        if self.adaptation_count >= self.MAX_ADAPTATIONS:
+            print(f"AutoSolve: Max adaptations reached ({self.MAX_ADAPTATIONS})")
+            return {'adapted': False, 'reason': 'max_adaptations_reached'}
+        
+        old_settings = self.current_settings.copy()
+        adapted = False
+        changes = []
+        
+        # Determine adaptation based on survival rate
+        if survival_rate < 0.3:
+            # Critical - tracks dying fast, be much more aggressive
+            new_search = min(151, int(self.current_settings.get('search_size', 71) * 1.4))
+            new_corr = max(0.45, self.current_settings.get('correlation', 0.7) - 0.15)
+            new_pattern = min(31, int(self.current_settings.get('pattern_size', 15) * 1.3))
+            
+            if new_search != self.current_settings.get('search_size'):
+                self.current_settings['search_size'] = new_search
+                changes.append(f"search_size: {old_settings.get('search_size')} → {new_search}")
+            if new_corr != self.current_settings.get('correlation'):
+                self.current_settings['correlation'] = new_corr
+                changes.append(f"correlation: {old_settings.get('correlation'):.2f} → {new_corr:.2f}")
+            if new_pattern != self.current_settings.get('pattern_size'):
+                self.current_settings['pattern_size'] = new_pattern
+                changes.append(f"pattern_size: {old_settings.get('pattern_size')} → {new_pattern}")
+            
+            self.current_settings['motion_model'] = 'Affine'
+            adapted = True
+            
+        elif survival_rate < 0.5:
+            # Poor - moderate adjustment
+            new_search = min(121, int(self.current_settings.get('search_size', 71) * 1.2))
+            new_corr = max(0.55, self.current_settings.get('correlation', 0.7) - 0.08)
+            
+            if new_search != self.current_settings.get('search_size'):
+                self.current_settings['search_size'] = new_search
+                changes.append(f"search_size: {old_settings.get('search_size')} → {new_search}")
+            if new_corr != self.current_settings.get('correlation'):
+                self.current_settings['correlation'] = new_corr
+                changes.append(f"correlation: {old_settings.get('correlation'):.2f} → {new_corr:.2f}")
+            
+            adapted = True
+            
+        elif survival_rate > 0.85:
+            # Excellent - could be more selective
+            new_corr = min(0.85, self.current_settings.get('correlation', 0.7) + 0.05)
+            if new_corr != self.current_settings.get('correlation'):
+                self.current_settings['correlation'] = new_corr
+                changes.append(f"correlation: {old_settings.get('correlation'):.2f} → {new_corr:.2f} (tighter)")
+                adapted = True
+        
+        if adapted:
+            self.adaptation_count += 1
+            self.configure_settings()
+            
+            adaptation_record = {
+                'iteration': self.adaptation_count,
+                'survival_rate': survival_rate,
+                'old_settings': old_settings,
+                'new_settings': self.current_settings.copy(),
+                'changes': changes,
+            }
+            self.adaptation_history.append(adaptation_record)
+            
+            print(f"AutoSolve: MID-SESSION ADAPTATION #{self.adaptation_count}")
+            for change in changes:
+                print(f"  → {change}")
+            
+            return {'adapted': True, 'changes': changes, 'new_settings': self.current_settings.copy()}
+        
+        return {'adapted': False, 'reason': 'survival_rate_acceptable'}
+    
+    def update_region_confidence(self, region_stats: Dict):
+        """
+        Update region confidence scores based on tracking results.
+        
+        Uses exponential moving average for smooth updates:
+        new_confidence = 0.7 * old + 0.3 * current_success_rate
+        
+        Args:
+            region_stats: Dict of {region: {total_tracks, successful_tracks}}
+        """
+        LEARNING_RATE = 0.3
+        
+        for region, stats in region_stats.items():
+            total = stats.get('total_tracks', 0)
+            successful = stats.get('successful_tracks', 0)
+            
+            if total < 2:
+                continue  # Not enough data
+            
+            current_rate = successful / total
+            old_confidence = self.region_confidence.get(region, 0.5)
+            
+            # Exponential moving average
+            new_confidence = (1 - LEARNING_RATE) * old_confidence + LEARNING_RATE * current_rate
+            self.region_confidence[region] = new_confidence
+            
+            # Update known_dead_zones based on confidence
+            if new_confidence < 0.25:
+                self.known_dead_zones.add(region)
+            elif new_confidence > 0.4 and region in self.known_dead_zones:
+                self.known_dead_zones.discard(region)
+        
+        # Log significant changes
+        low_conf = [r for r, c in self.region_confidence.items() if c < 0.3]
+        high_conf = [r for r, c in self.region_confidence.items() if c > 0.7]
+        
+        if low_conf:
+            print(f"AutoSolve: Low confidence regions: {', '.join(low_conf)}")
+        if high_conf:
+            print(f"AutoSolve: High confidence regions: {', '.join(high_conf)}")
+    
+    def get_current_survival_rate(self, frame: Optional[int] = None) -> float:
+        """
+        Calculate current track survival rate.
+        
+        Args:
+            frame: Optional specific frame to check. If None, uses current frame.
+            
+        Returns:
+            Survival rate (0.0 to 1.0)
+        """
+        if frame is None:
+            frame = bpy.context.scene.frame_current
+        
+        total_tracks = len(self.tracking.tracks)
+        if total_tracks == 0:
+            return 0.0
+        
+        active_at_frame = 0
+        for track in self.tracking.tracks:
+            marker = track.markers.find_frame(frame)
+            if marker and not marker.mute:
+                active_at_frame += 1
+        
+        rate = active_at_frame / total_tracks
+        self.last_survival_rate = rate
+        return rate
+    
+    def get_adaptation_summary(self) -> Dict:
+        """
+        Get summary of all mid-session adaptations.
+        
+        Returns:
+            Dict with adaptation history and current state
+        """
+        return {
+            'adaptation_count': self.adaptation_count,
+            'max_adaptations': self.MAX_ADAPTATIONS,
+            'current_settings': self.current_settings.copy(),
+            'region_confidence': self.region_confidence.copy(),
+            'adaptation_history': self.adaptation_history,
+            'known_dead_zones': list(self.known_dead_zones),
+        }
     
     # ═══════════════════════════════════════════════════════════════════════════
     # VALIDATION METHODS
@@ -1202,7 +1386,7 @@ class SmartTracker:
             'solve_success': self.tracking.reconstruction.is_valid,
             'solve_error': self.get_solve_error(),
             'track_count': self.get_bundle_count(),
-            'region_performance': {},
+            'region_stats': {},
             'velocity_stats': {},
             'iteration': self.iteration,
         }
@@ -1236,7 +1420,7 @@ class SmartTracker:
                 if data['lifespans']:
                     data['avg_lifespan'] = sum(data['lifespans']) / len(data['lifespans'])
                 del data['lifespans']  # Don't store raw data
-            training_data['region_performance'][region] = data
+            training_data['region_stats'][region] = data
         
         # Velocity statistics
         velocities = []
@@ -1717,7 +1901,7 @@ class SmartTracker:
                 in_region.append(track)
             else:
                 outside.append(track)
-        
+
         # Keep up to 'count' tracks in the region
         kept = 0
         for track in in_region[:count]:
@@ -1737,6 +1921,393 @@ class SmartTracker:
                 pass
         
         return kept
+    
+    # Exploratory settings variations for learning what works
+    EXPLORATORY_SETTINGS = {
+        'top-left': {'pattern_size': 11, 'search_size': 61, 'correlation': 0.75},
+        'top-center': {'pattern_size': 15, 'search_size': 71, 'correlation': 0.70},
+        'top-right': {'pattern_size': 19, 'search_size': 91, 'correlation': 0.65},
+        'mid-left': {'pattern_size': 13, 'search_size': 81, 'correlation': 0.72},
+        'center': {'pattern_size': 17, 'search_size': 71, 'correlation': 0.68},
+        'mid-right': {'pattern_size': 21, 'search_size': 101, 'correlation': 0.60},
+        'bottom-left': {'pattern_size': 15, 'search_size': 91, 'correlation': 0.65},
+        'bottom-center': {'pattern_size': 19, 'search_size': 81, 'correlation': 0.70},
+        'bottom-right': {'pattern_size': 13, 'search_size': 61, 'correlation': 0.75},
+    }
+    
+    def detect_exploratory_features(self, markers_per_region: int = 3) -> int:
+        """
+        PHASED EXPLORATORY DETECTION
+        
+        Phase 1: PROBE - Place 1-2 test markers per region with aggressive settings
+                 Track for ~20 frames to measure motion characteristics
+        Phase 2: ANALYZE - Determine optimal settings based on probe results
+        Phase 3: QUALITY DETECT - Place fewer, higher-quality markers with learned settings
+        
+        This approach prioritizes quality over quantity.
+        
+        Args:
+            markers_per_region: Target markers per region (default 3, but we use fewer)
+            
+        Returns:
+            Total number of quality features detected
+        """
+        print(f"AutoSolve: ═══════════════════════════════════════════════")
+        print(f"AutoSolve: PHASED EXPLORATORY DETECTION")
+        print(f"AutoSolve: ═══════════════════════════════════════════════")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # PHASE 1: MOTION PROBE
+        # Place few markers with very aggressive settings to measure motion
+        # ═══════════════════════════════════════════════════════════════
+        print(f"AutoSolve: Phase 1 - MOTION PROBE")
+        
+        probe_results = self._run_motion_probe()
+        
+        if not probe_results['success']:
+            print(f"AutoSolve: Probe failed, using default aggressive settings")
+            return self._detect_quality_markers(
+                motion_class='HIGH',
+                texture_class='LOW',
+                markers_per_region=2
+            )
+        
+        motion_class = probe_results['motion_class']  # LOW, MEDIUM, HIGH
+        texture_class = probe_results['texture_class']  # LOW, MEDIUM, HIGH
+        best_regions = probe_results['best_regions']
+        
+        print(f"AutoSolve: Phase 1 complete - Motion: {motion_class}, Texture: {texture_class}")
+        print(f"AutoSolve: Best regions: {', '.join(best_regions)}")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # PHASE 2: QUALITY DETECTION
+        # Use probe results to place fewer, better markers
+        # ═══════════════════════════════════════════════════════════════
+        print(f"AutoSolve: Phase 2 - QUALITY DETECTION")
+        
+        # Determine markers per region based on motion (fewer for high motion)
+        if motion_class == 'HIGH':
+            target_per_region = 1  # Few but robust
+        elif motion_class == 'MEDIUM':
+            target_per_region = 2
+        else:
+            target_per_region = 2  # Low motion can handle more
+        
+        total = self._detect_quality_markers(
+            motion_class=motion_class,
+            texture_class=texture_class,
+            markers_per_region=target_per_region,
+            priority_regions=best_regions
+        )
+        
+        print(f"AutoSolve: Phase 2 complete - {total} quality markers placed")
+        
+        # Minimum viable check
+        if total < 8:
+            print(f"AutoSolve: Only {total} markers, adding reinforcements...")
+            extra = self._add_reinforcement_markers(total, motion_class)
+            total += extra
+        
+        return total
+    
+    def _run_motion_probe(self) -> dict:
+        """
+        Run a quick motion probe to analyze footage characteristics.
+        
+        Places 1 marker per region, tracks ~20 frames, measures:
+        - Average motion velocity
+        - Motion variance (jitter)
+        - Region success rates
+        
+        Returns:
+            Dict with motion_class, texture_class, best_regions
+        """
+        result = {
+            'success': False,
+            'motion_class': 'MEDIUM',
+            'texture_class': 'MEDIUM',
+            'best_regions': [],
+            'velocities': {},
+            'region_success': {},
+        }
+        
+        # Save current frame
+        original_frame = bpy.context.scene.frame_current
+        probe_start = self.clip.frame_start + (self.clip.frame_duration // 4)  # Start at 25%
+        
+        # Clear any existing tracks
+        self.clear_tracks()
+        
+        # Probe settings: very aggressive to catch motion
+        probe_settings = {
+            'pattern_size': 21,
+            'search_size': 121,  # Large search for testing
+            'correlation': 0.55,  # Low correlation to not lose tracks
+            'threshold': 0.15,
+        }
+        
+        # Place 1 probe marker per region
+        regions = CoverageAnalyzer.REGIONS.copy()
+        import random
+        random.shuffle(regions)
+        
+        probe_count = 0
+        for region in regions[:5]:  # Only probe 5 regions for speed
+            bpy.context.scene.frame_set(probe_start)
+            
+            # Apply probe settings
+            self.current_settings = probe_settings.copy()
+            self.configure_settings()
+            
+            # Try to detect 1 marker in this region
+            detected = self.detect_in_region(region, count=1)
+            if detected > 0:
+                probe_count += 1
+        
+        if probe_count < 3:
+            print(f"AutoSolve: Probe failed - only {probe_count} markers placed")
+            self.clear_tracks()
+            return result
+        
+        # Track forward for 20 frames
+        print(f"AutoSolve: Probe tracking {probe_count} markers for 20 frames...")
+        self.select_all_tracks()
+        
+        probe_frames = min(20, self.clip.frame_duration // 4)
+        bpy.context.scene.frame_set(probe_start)
+        
+        for i in range(probe_frames):
+            self.track_frame(backwards=False)
+            bpy.context.scene.frame_set(probe_start + i + 1)
+        
+        # Analyze probe results
+        velocities = []
+        jitters = []
+        region_success = {}
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 3:
+                continue
+            
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            
+            # Calculate velocity
+            total_displacement = 0
+            for i in range(1, len(markers_sorted)):
+                dx = markers_sorted[i].co.x - markers_sorted[i-1].co.x
+                dy = markers_sorted[i].co.y - markers_sorted[i-1].co.y
+                total_displacement += (dx**2 + dy**2) ** 0.5
+            
+            avg_velocity = total_displacement / len(markers_sorted)
+            velocities.append(avg_velocity)
+            
+            # Calculate jitter (variance in velocity)
+            if len(markers_sorted) > 3:
+                frame_velocities = []
+                for i in range(1, len(markers_sorted)):
+                    dx = markers_sorted[i].co.x - markers_sorted[i-1].co.x
+                    dy = markers_sorted[i].co.y - markers_sorted[i-1].co.y
+                    frame_velocities.append((dx**2 + dy**2) ** 0.5)
+                
+                if frame_velocities:
+                    mean_v = sum(frame_velocities) / len(frame_velocities)
+                    variance = sum((v - mean_v)**2 for v in frame_velocities) / len(frame_velocities)
+                    jitters.append(variance ** 0.5)
+            
+            # Track region success
+            avg_x = sum(m.co.x for m in markers_sorted) / len(markers_sorted)
+            avg_y = sum(m.co.y for m in markers_sorted) / len(markers_sorted)
+            region = self.analyzer.get_region(avg_x, avg_y)
+            
+            lifespan = len(markers_sorted)
+            if region not in region_success:
+                region_success[region] = {'total': 0, 'success': 0}
+            region_success[region]['total'] += 1
+            if lifespan >= probe_frames * 0.7:  # 70% survival
+                region_success[region]['success'] += 1
+        
+        # Classify motion
+        if velocities:
+            avg_motion = sum(velocities) / len(velocities)
+            if avg_motion > 0.03:
+                result['motion_class'] = 'HIGH'
+            elif avg_motion > 0.01:
+                result['motion_class'] = 'MEDIUM'
+            else:
+                result['motion_class'] = 'LOW'
+            
+            result['velocities'] = {
+                'avg': avg_motion,
+                'max': max(velocities) if velocities else 0,
+            }
+        
+        # Classify texture (based on how many features we could detect)
+        if probe_count >= 4:
+            result['texture_class'] = 'HIGH'
+        elif probe_count >= 2:
+            result['texture_class'] = 'MEDIUM'
+        else:
+            result['texture_class'] = 'LOW'
+        
+        # Find best regions
+        best_regions = []
+        for region, stats in region_success.items():
+            if stats['total'] > 0:
+                rate = stats['success'] / stats['total']
+                if rate >= 0.5:
+                    best_regions.append(region)
+        
+        result['best_regions'] = best_regions if best_regions else ['center']
+        result['region_success'] = region_success
+        result['success'] = True
+        
+        # Cache the probe results for session recording
+        self.cached_motion_probe = result.copy()
+        
+        # Clear probe tracks
+        self.clear_tracks()
+        
+        # Restore frame
+        bpy.context.scene.frame_set(original_frame)
+        
+        return result
+    
+    def _detect_quality_markers(self, motion_class: str, texture_class: str,
+                                markers_per_region: int, priority_regions: list = None) -> int:
+        """
+        Place quality markers based on motion/texture analysis.
+        
+        Uses appropriate settings based on motion class.
+        """
+        # Settings based on motion class
+        if motion_class == 'HIGH':
+            settings = {
+                'pattern_size': 25,  # Larger pattern for stability
+                'search_size': 141,  # Much larger search
+                'correlation': 0.55,  # More lenient matching
+                'threshold': 0.20,
+                'motion_model': 'Affine',
+            }
+        elif motion_class == 'MEDIUM':
+            settings = {
+                'pattern_size': 19,
+                'search_size': 101,
+                'correlation': 0.65,
+                'threshold': 0.25,
+                'motion_model': 'LocRot',
+            }
+        else:  # LOW
+            settings = {
+                'pattern_size': 15,
+                'search_size': 71,
+                'correlation': 0.72,
+                'threshold': 0.30,
+                'motion_model': 'Loc',
+            }
+        
+        # Adjust for low texture
+        if texture_class == 'LOW':
+            settings['threshold'] *= 0.6  # More sensitive detection
+            settings['correlation'] -= 0.1  # More lenient matching
+        
+        # Apply settings
+        self.current_settings = settings.copy()
+        self.configure_settings()
+        
+        print(f"AutoSolve: Quality settings - Pattern:{settings['pattern_size']}, "
+              f"Search:{settings['search_size']}, Corr:{settings['correlation']:.2f}")
+        
+        total = 0
+        regions = CoverageAnalyzer.REGIONS.copy()
+        
+        # Prioritize best regions
+        if priority_regions:
+            # Put priority regions first
+            for pr in reversed(priority_regions):
+                if pr in regions:
+                    regions.remove(pr)
+                    regions.insert(0, pr)
+        
+        for region in regions:
+            if region in self.known_dead_zones:
+                continue
+            
+            # Double markers in priority regions
+            count = markers_per_region
+            if priority_regions and region in priority_regions:
+                count = markers_per_region + 1
+            
+            detected = self.detect_in_region(region, count)
+            total += detected
+            
+            if detected > 0:
+                print(f"AutoSolve: {region}: {detected} quality markers")
+        
+        return total
+    
+    def _add_reinforcement_markers(self, current_count: int, motion_class: str) -> int:
+        """
+        Add reinforcement markers if we don't have enough.
+        Focus on center regions which are usually most reliable.
+        """
+        needed = max(0, 12 - current_count)  # Aim for 12 total
+        if needed == 0:
+            return 0
+        
+        print(f"AutoSolve: Adding {needed} reinforcement markers...")
+        
+        # Focus on reliable regions
+        reliable_regions = ['center', 'mid-left', 'mid-right', 'bottom-center']
+        
+        added = 0
+        for region in reliable_regions:
+            if added >= needed:
+                break
+            detected = self.detect_in_region(region, count=2)
+            added += detected
+        
+        return added
+    
+    def _apply_exploratory_track_settings(self, track, region: str):
+        """Apply region-specific exploratory settings to a track."""
+        settings = self.EXPLORATORY_SETTINGS.get(region, self.current_settings)
+        
+        if hasattr(track, 'pattern_size'):
+            track.pattern_size = settings.get('pattern_size', 15)
+        if hasattr(track, 'search_size'):
+            track.search_size = settings.get('search_size', 71)
+        if hasattr(track, 'correlation_min'):
+            track.correlation_min = settings.get('correlation', 0.7)
+        if hasattr(track, 'motion_model'):
+            track.motion_model = settings.get('motion_model', 'LocRot')
+    
+    def get_optimal_start_frame(self) -> int:
+        """
+        Get the optimal frame to start detection/tracking from.
+        
+        Starting from the middle allows bidirectional tracking,
+        ensuring early frames get properly covered instead of
+        only being covered during backfilling.
+        
+        Returns:
+            Frame number to start from (typically middle of clip)
+        """
+        frame_start = self.clip.frame_start
+        frame_end = frame_start + self.clip.frame_duration - 1
+        
+        # For very short clips (< 60 frames), start at beginning
+        if self.clip.frame_duration < 60:
+            return frame_start
+        
+        # For normal clips, start at the middle
+        # This ensures both directions get equal attention
+        middle_frame = frame_start + (self.clip.frame_duration // 2)
+        
+        print(f"AutoSolve: Optimal start frame: {middle_frame} "
+              f"(range: {frame_start}-{frame_end})")
+        
+        return middle_frame
     
     def fill_coverage_gaps(self) -> int:
         """
@@ -2218,6 +2789,10 @@ class SmartTracker:
         if self.last_analysis['dead_zones']:
             print(f"AutoSolve: Dead zones: {', '.join(self.last_analysis['dead_zones'])}")
         
+        # Update region confidence scores (probabilistic dead zones)
+        if self.last_analysis.get('region_stats'):
+            self.update_region_confidence(self.last_analysis['region_stats'])
+        
         return self.last_analysis
     
     def should_retry(self, analysis: Dict) -> bool:
@@ -2259,6 +2834,40 @@ class SmartTracker:
                 solve_error,
                 self.last_analysis
             )
+            
+        # ═══════════════════════════════════════════════════════════════
+        # RECORD SESSION DATA
+        # ═══════════════════════════════════════════════════════════════
+        if hasattr(self, 'recorder') and self.recorder:
+            try:
+                # 1. Start Session (if not already aligned)
+                if not self.recorder.current_session:
+                    self.recorder.start_session(self.clip, self.current_settings)
+                
+                # 2. Record Motion Probe Results (if available)
+                if hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
+                    self.recorder.record_motion_probe(self.cached_motion_probe)
+                    
+                # 3. Record Adaptation History
+                if hasattr(self, 'adaptation_history') and self.adaptation_history:
+                    # Summarize adaptation history
+                    summary = self.get_adaptation_summary()
+                    self.recorder.record_adaptation_history(summary)
+                
+                # 4. Record Tracks & Solve metrics
+                self.recorder.record_tracks(self.tracking)
+                self.recorder.finalize_session(
+                    success=success,
+                    solve_error=solve_error,
+                    bundle_count=self.get_bundle_count()
+                )
+                
+                # 5. Record Failure Diagnostics (stored in analyzer)
+                # We need to extract this from the last failure analysis ideally
+                # For now, we'll rely on the recorder picking up what it can or wait for v2
+                
+            except Exception as e:
+                print(f"AutoSolve: Error recording session: {e}")
     
     def filter_short_tracks(self, min_frames: int = 5):
         """Filter short tracks with safeguards."""
