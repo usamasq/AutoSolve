@@ -352,6 +352,223 @@ class TrackAnalyzer:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# COVERAGE ANALYZER (Industry-Standard Distribution Tracking)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class CoverageData:
+    """Coverage data for a region-time segment."""
+    region: str
+    segment: Tuple[int, int]
+    track_count: int = 0
+    successful_tracks: int = 0
+    avg_lifespan: float = 0.0
+    needs_more: bool = False
+
+
+class CoverageAnalyzer:
+    """
+    Tracks spatial and temporal distribution of markers.
+    
+    Industry standard: Good camera solves require:
+    - Tracks distributed across the frame (not clustered)
+    - Tracks spanning the full timeline (not just parts)
+    - Minimum parallax requirements met
+    """
+    
+    REGIONS = [
+        'top-left', 'top-center', 'top-right',
+        'mid-left', 'center', 'mid-right',
+        'bottom-left', 'bottom-center', 'bottom-right'
+    ]
+    
+    # Industry thresholds
+    MIN_TRACKS_PER_REGION = 3
+    MIN_REGIONS_WITH_TRACKS = 6  # At least 6/9 regions
+    MAX_TRACKS_PER_REGION_PERCENT = 0.30  # No region > 30%
+    MIN_TEMPORAL_COVERAGE = 0.80  # Tracks should span 80% of frames
+    
+    def __init__(self, clip_frame_start: int, clip_frame_end: int, segment_size: int = 50):
+        self.frame_start = clip_frame_start
+        self.frame_end = clip_frame_end
+        self.segment_size = segment_size
+        
+        # Coverage grid: region -> segment -> CoverageData
+        self.coverage: Dict[str, Dict[Tuple[int, int], CoverageData]] = {}
+        self._init_coverage_grid()
+    
+    def _init_coverage_grid(self):
+        """Initialize empty coverage grid."""
+        for region in self.REGIONS:
+            self.coverage[region] = {}
+            for frame in range(self.frame_start, self.frame_end + 1, self.segment_size):
+                segment = self._get_segment(frame)
+                self.coverage[region][segment] = CoverageData(
+                    region=region,
+                    segment=segment
+                )
+    
+    def _get_segment(self, frame: int) -> Tuple[int, int]:
+        """Get segment tuple for a frame."""
+        seg_start = ((frame - self.frame_start) // self.segment_size) * self.segment_size + self.frame_start
+        seg_end = min(seg_start + self.segment_size, self.frame_end)
+        return (seg_start, seg_end)
+    
+    def get_region(self, x: float, y: float) -> str:
+        """Get region name from normalized coordinates (0-1)."""
+        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
+        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
+        
+        region_map = [
+            ['top-left', 'top-center', 'top-right'],
+            ['mid-left', 'center', 'mid-right'],
+            ['bottom-left', 'bottom-center', 'bottom-right']
+        ]
+        return region_map[row][col]
+    
+    def get_region_bounds(self, region: str) -> Tuple[float, float, float, float]:
+        """Get (x_min, y_min, x_max, y_max) for a region in normalized coords."""
+        region_bounds = {
+            'top-left': (0.0, 0.66, 0.33, 1.0),
+            'top-center': (0.33, 0.66, 0.66, 1.0),
+            'top-right': (0.66, 0.66, 1.0, 1.0),
+            'mid-left': (0.0, 0.33, 0.33, 0.66),
+            'center': (0.33, 0.33, 0.66, 0.66),
+            'mid-right': (0.66, 0.33, 1.0, 0.66),
+            'bottom-left': (0.0, 0.0, 0.33, 0.33),
+            'bottom-center': (0.33, 0.0, 0.66, 0.33),
+            'bottom-right': (0.66, 0.0, 1.0, 0.33),
+        }
+        return region_bounds.get(region, (0.0, 0.0, 1.0, 1.0))
+    
+    def analyze_tracking(self, tracking, min_lifespan: int = 5):
+        """
+        Analyze current tracking data for coverage.
+        
+        Updates the coverage grid with actual track distribution.
+        """
+        # Reset counts
+        self._init_coverage_grid()
+        
+        region_lifespans: Dict[str, Dict[Tuple, List[int]]] = {
+            r: {s: [] for s in self.coverage[r].keys()} for r in self.REGIONS
+        }
+        
+        for track in tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            
+            # Get region from average position
+            avg_x = sum(m.co.x for m in markers) / len(markers)
+            avg_y = sum(m.co.y for m in markers) / len(markers)
+            region = self.get_region(avg_x, avg_y)
+            
+            # Update coverage for each segment this track spans
+            for marker in markers:
+                segment = self._get_segment(marker.frame)
+                if segment in self.coverage[region]:
+                    self.coverage[region][segment].track_count += 1
+                    if lifespan >= min_lifespan:
+                        self.coverage[region][segment].successful_tracks += 1
+                    if segment in region_lifespans[region]:
+                        region_lifespans[region][segment].append(lifespan)
+        
+        # Calculate averages and mark gaps
+        for region in self.REGIONS:
+            for segment, data in self.coverage[region].items():
+                lifespans = region_lifespans[region].get(segment, [])
+                if lifespans:
+                    data.avg_lifespan = sum(lifespans) / len(lifespans)
+                data.needs_more = data.successful_tracks < self.MIN_TRACKS_PER_REGION
+    
+    def get_coverage_summary(self) -> Dict:
+        """
+        Get comprehensive coverage analysis.
+        
+        Returns industry-standard metrics for solve quality prediction.
+        """
+        total_tracks = 0
+        regions_with_tracks = 0
+        region_counts = {}
+        temporal_coverage = set()
+        gaps = []
+        
+        for region in self.REGIONS:
+            region_total = 0
+            for segment, data in self.coverage[region].items():
+                region_total += data.successful_tracks
+                if data.successful_tracks > 0:
+                    temporal_coverage.add(segment)
+                if data.needs_more:
+                    gaps.append((region, segment))
+            
+            region_counts[region] = region_total
+            total_tracks += region_total
+            if region_total >= self.MIN_TRACKS_PER_REGION:
+                regions_with_tracks += 1
+        
+        # Calculate balance score
+        max_region = max(region_counts.values()) if region_counts else 0
+        balance_score = 1.0 - (max_region / max(total_tracks, 1))
+        
+        # Calculate temporal coverage
+        total_segments = len(list(self.coverage[self.REGIONS[0]].keys()))
+        temporal_percent = len(temporal_coverage) / max(total_segments, 1)
+        
+        return {
+            'total_tracks': total_tracks,
+            'regions_with_tracks': regions_with_tracks,
+            'region_counts': region_counts,
+            'balance_score': balance_score,  # 1.0 = perfectly balanced
+            'temporal_coverage': temporal_percent,
+            'gaps': gaps,  # List of (region, segment) needing more tracks
+            'is_balanced': (
+                regions_with_tracks >= self.MIN_REGIONS_WITH_TRACKS and
+                balance_score >= (1.0 - self.MAX_TRACKS_PER_REGION_PERCENT) and
+                temporal_percent >= self.MIN_TEMPORAL_COVERAGE
+            ),
+        }
+    
+    def get_weak_zones(self) -> List[Tuple[str, Tuple[int, int]]]:
+        """
+        Get regions and time segments that need more tracks.
+        
+        Returns list of (region, segment) tuples sorted by priority.
+        """
+        weak = []
+        for region in self.REGIONS:
+            for segment, data in self.coverage[region].items():
+                if data.needs_more:
+                    weak.append((region, segment, data.successful_tracks))
+        
+        # Sort by track count (lowest first = highest priority)
+        weak.sort(key=lambda x: x[2])
+        return [(r, s) for r, s, _ in weak]
+    
+    def get_clustered_regions(self) -> List[str]:
+        """
+        Get regions with too many tracks (clustering).
+        
+        These should be deprioritized for new marker placement.
+        """
+        summary = self.get_coverage_summary()
+        total = summary['total_tracks']
+        if total == 0:
+            return []
+        
+        clustered = []
+        for region, count in summary['region_counts'].items():
+            if count / total > self.MAX_TRACKS_PER_REGION_PERCENT:
+                clustered.append(region)
+        
+        return clustered
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # LOCAL LEARNING MODEL
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -565,6 +782,16 @@ class SmartTracker:
         self.refinement_iteration = 0
         self.best_solve_error = 999.0
         self.best_bundle_count = 0
+        
+        # Coverage tracking for balanced distribution
+        self.coverage_analyzer = CoverageAnalyzer(
+            clip.frame_start,
+            clip.frame_start + clip.frame_duration - 1
+        )
+        
+        # Strategic tracking state
+        self.strategic_iteration = 0
+        self.MAX_STRATEGIC_ITERATIONS = 5
         
         # Load initial settings
         self._load_initial_settings()
@@ -967,6 +1194,408 @@ class SmartTracker:
               f"{training_data['solve_error']:.2f}px error")
         
         return training_data
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # USER-GUIDED PRIORITY TRACKING
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def get_user_priority_regions(self) -> Dict[str, List[str]]:
+        """
+        Extract priority regions from user-placed markers.
+        
+        User markers are detected by:
+        - Having only 1-2 markers (just placed, not fully tracked)
+        - OR already being fully tracked (user's existing work)
+        
+        Returns:
+            Dict with 'high' and 'existing' priority region lists
+        """
+        priority = {
+            'high': set(),      # Untracked user markers = high priority
+            'existing': set(),  # Already tracked = preserve and enhance
+        }
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if not markers:
+                continue
+            
+            # Get region from first marker position
+            region = self.coverage_analyzer.get_region(
+                markers[0].co.x, markers[0].co.y
+            )
+            
+            if len(markers) <= 2:
+                # Just placed, not tracked = high priority
+                priority['high'].add(region)
+            else:
+                # Already tracked = existing work to preserve
+                priority['existing'].add(region)
+        
+        return {k: list(v) for k, v in priority.items()}
+    
+    def preserve_existing_tracks(self) -> int:
+        """
+        Preserve user's existing tracked markers.
+        
+        Marks well-tracked existing markers as "protected" so they
+        won't be deleted during filtering.
+        
+        Returns:
+            Number of tracks preserved
+        """
+        preserved = 0
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 5:
+                continue
+            
+            # Check if this is a good track (long lifespan)
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            
+            # Good lifespan = preserve
+            if lifespan >= 20:
+                # Mark as locked (won't be deleted)
+                if hasattr(track, 'lock'):
+                    track.lock = True
+                preserved += 1
+        
+        if preserved > 0:
+            print(f"AutoSolve: Preserved {preserved} existing well-tracked markers")
+        
+        return preserved
+    
+    def enhance_priority_regions(self) -> int:
+        """
+        Add more markers to user-defined priority regions.
+        
+        Called when user has placed markers indicating important areas.
+        
+        Returns:
+            Number of additional markers added
+        """
+        priority = self.get_user_priority_regions()
+        added = 0
+        
+        # High priority regions get extra markers
+        for region in priority['high']:
+            count = self.detect_in_region(region, count=4)
+            added += count
+            print(f"AutoSolve: Priority region {region}: +{count} markers")
+        
+        # Existing tracked regions get maintenance (fill gaps)
+        for region in priority['existing']:
+            # Check if this region needs more
+            self.coverage_analyzer.analyze_tracking(self.tracking)
+            for seg, data in self.coverage_analyzer.coverage.get(region, {}).items():
+                if data.successful_tracks < 3:
+                    count = self.detect_in_region(region, count=2)
+                    added += count
+                    break
+        
+        return added
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STRATEGIC MARKER PLACEMENT (Industry-Standard Approach)
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def detect_strategic_features(self, markers_per_region: int = 3) -> int:
+        """
+        Detect features with balanced distribution across screen regions.
+        
+        Industry standard: Instead of carpet-bombing with 200+ markers,
+        strategically place 2-4 markers per region for even coverage.
+        
+        Respects user-placed markers as priority hints.
+        
+        Args:
+            markers_per_region: Target markers per screen region (default 3)
+            
+        Returns:
+            Total number of features detected
+        """
+        total_detected = 0
+        regions = CoverageAnalyzer.REGIONS.copy()
+        
+        # Get user priority regions
+        priority = self.get_user_priority_regions()
+        priority_regions = set(priority['high']) | set(priority['existing'])
+        
+        # Preserve existing good tracks
+        self.preserve_existing_tracks()
+        
+        # Shuffle regions to avoid bias (randomize placement order)
+        import random
+        random.shuffle(regions)
+        
+        # Exclude known temporal dead zones for current frame
+        current_frame = bpy.context.scene.frame_current
+        active_dead_zones = set()
+        segment = self._get_frame_segment(current_frame)
+        if segment in self.temporal_dead_zones:
+            for region, count in self.temporal_dead_zones[segment].items():
+                if count >= 3:
+                    active_dead_zones.add(region)
+        
+        for region in regions:
+            if region in active_dead_zones:
+                print(f"AutoSolve: Skipping {region} (temporal dead zone)")
+                continue
+            
+            # Double markers in user-priority regions
+            target_count = markers_per_region
+            if region in priority_regions:
+                target_count = markers_per_region * 2
+                print(f"AutoSolve: Priority region {region}: targeting {target_count} markers")
+            
+            detected = self.detect_in_region(region, target_count)
+            total_detected += detected
+        
+        print(f"AutoSolve: Strategic detection - {total_detected} markers "
+              f"({len(priority_regions)} priority regions)")
+        return total_detected
+    
+    def detect_in_region(self, region: str, count: int = 3) -> int:
+        """
+        Detect features within a specific screen region.
+        
+        Uses Blender's detect_features with constrained margin to target
+        a specific area of the frame.
+        
+        Args:
+            region: Region name (e.g., 'top-left', 'center')
+            count: Target number of markers
+            
+        Returns:
+            Number of features detected
+        """
+        bounds = self.coverage_analyzer.get_region_bounds(region)
+        x_min, y_min, x_max, y_max = bounds
+        
+        # Convert normalized to pixel coordinates
+        width = self.clip.size[0]
+        height = self.clip.size[1]
+        
+        # Calculate pixel margins to constrain detection to this region
+        margin_left = int(x_min * width)
+        margin_right = int((1.0 - x_max) * width)
+        margin_bottom = int(y_min * height)
+        margin_top = int((1.0 - y_max) * height)
+        
+        # Use smallest margin (Blender uses uniform margin)
+        # So we'll detect in the region then filter to our bounds
+        initial_count = len(self.tracking.tracks)
+        
+        # Detect with low threshold to get candidates
+        threshold = self.current_settings.get('threshold', 0.3) * 0.7  # Lower for more candidates
+        
+        self._run_ops(
+            bpy.ops.clip.detect_features,
+            threshold=threshold,
+            min_distance=100,  # Larger distance to avoid clustering
+            margin=max(10, min(margin_left, margin_right, margin_bottom, margin_top) // 2),
+            placement='FRAME'
+        )
+        
+        # Filter: keep only tracks in target region, limit count
+        new_tracks = list(self.tracking.tracks)[initial_count:]
+        kept = 0
+        
+        for track in new_tracks:
+            marker = track.markers.find_frame(bpy.context.scene.frame_current)
+            if not marker:
+                track.select = True  # Mark for deletion
+                continue
+            
+            # Check if in target region
+            track_region = self.coverage_analyzer.get_region(marker.co.x, marker.co.y)
+            if track_region == region and kept < count:
+                track.select = False
+                self._apply_track_settings(track)
+                kept += 1
+            else:
+                track.select = True  # Mark for deletion
+        
+        # Delete tracks outside region or over count
+        try:
+            self._run_ops(bpy.ops.clip.delete_track)
+        except:
+            pass
+        
+        return kept
+    
+    def fill_coverage_gaps(self) -> int:
+        """
+        Fill gaps in coverage by adding markers to weak zones.
+        
+        Called after initial tracking pass to ensure balanced distribution.
+        
+        Returns:
+            Number of new markers added
+        """
+        # Analyze current coverage
+        self.coverage_analyzer.analyze_tracking(self.tracking)
+        summary = self.coverage_analyzer.get_coverage_summary()
+        
+        if summary['is_balanced']:
+            print(f"AutoSolve: Coverage is balanced ({summary['regions_with_tracks']}/9 regions)")
+            return 0
+        
+        # Get weak zones (regions needing more tracks)
+        weak_zones = self.coverage_analyzer.get_weak_zones()
+        if not weak_zones:
+            print("AutoSolve: No weak zones identified")
+            return 0
+        
+        total_added = 0
+        processed_regions = set()
+        
+        # Process weak zones, limiting by segment to target specific time ranges
+        for region, segment in weak_zones[:5]:  # Limit to top 5 priorities
+            if region in processed_regions:
+                continue
+            
+            # Go to the segment's start frame
+            target_frame = segment[0]
+            bpy.context.scene.frame_set(target_frame)
+            
+            # Detect in this region
+            added = self.detect_in_region(region, count=2)
+            total_added += added
+            processed_regions.add(region)
+            
+            print(f"AutoSolve: Added {added} markers to {region} at frame {target_frame}")
+        
+        return total_added
+    
+    def get_coverage_analysis(self) -> Dict:
+        """
+        Analyze current coverage and return summary.
+        
+        Returns:
+            Dict with coverage metrics
+        """
+        self.coverage_analyzer.analyze_tracking(self.tracking)
+        return self.coverage_analyzer.get_coverage_summary()
+    
+    def is_coverage_balanced(self) -> bool:
+        """Check if current tracking has balanced coverage."""
+        summary = self.get_coverage_analysis()
+        return summary['is_balanced']
+    
+    def strategic_track_iteration(self) -> Dict:
+        """
+        Perform one iteration of strategic tracking.
+        
+        1. Analyze current coverage
+        2. Identify weak zones
+        3. Add markers to weak zones
+        4. Track those new markers
+        
+        Returns:
+            Dict with iteration results
+        """
+        self.strategic_iteration += 1
+        print(f"AutoSolve: Strategic iteration {self.strategic_iteration}")
+        
+        # Analyze coverage
+        summary = self.get_coverage_analysis()
+        
+        result = {
+            'iteration': self.strategic_iteration,
+            'coverage_before': summary.copy(),
+            'markers_added': 0,
+            'coverage_after': None,
+        }
+        
+        if summary['is_balanced']:
+            print("AutoSolve: Coverage is balanced, no more iterations needed")
+            return result
+        
+        # Fill gaps
+        result['markers_added'] = self.fill_coverage_gaps()
+        
+        # Re-analyze
+        result['coverage_after'] = self.get_coverage_analysis()
+        
+        return result
+    
+    def should_continue_strategic(self) -> bool:
+        """
+        Determine if more strategic iterations are needed.
+        
+        Returns:
+            True if more iterations needed
+        """
+        if self.strategic_iteration >= self.MAX_STRATEGIC_ITERATIONS:
+            print(f"AutoSolve: Max strategic iterations reached ({self.MAX_STRATEGIC_ITERATIONS})")
+            return False
+        
+        # Check coverage
+        if self.is_coverage_balanced():
+            print("AutoSolve: Coverage balanced, stopping strategic iterations")
+            return False
+        
+        return True
+    
+    def remove_clustered_tracks(self) -> int:
+        """
+        Remove tracks from over-represented regions to improve balance.
+        
+        Called before final solve to ensure distribution requirements.
+        
+        Returns:
+            Number of tracks removed
+        """
+        clustered = self.coverage_analyzer.get_clustered_regions()
+        if not clustered:
+            return 0
+        
+        summary = self.coverage_analyzer.get_coverage_summary()
+        total = summary['total_tracks']
+        target_max = int(total * CoverageAnalyzer.MAX_TRACKS_PER_REGION_PERCENT)
+        
+        removed = 0
+        for region in clustered:
+            region_count = summary['region_counts'].get(region, 0)
+            excess = region_count - target_max
+            
+            if excess <= 0:
+                continue
+            
+            # Find tracks in this region and remove excess
+            tracks_in_region = []
+            for track in self.tracking.tracks:
+                markers = [m for m in track.markers if not m.mute]
+                if len(markers) < 2:
+                    continue
+                
+                avg_x = sum(m.co.x for m in markers) / len(markers)
+                avg_y = sum(m.co.y for m in markers) / len(markers)
+                if self.coverage_analyzer.get_region(avg_x, avg_y) == region:
+                    # Prioritize removing shorter tracks
+                    lifespan = len(markers)
+                    tracks_in_region.append((track.name, lifespan))
+            
+            # Sort by lifespan (shortest first)
+            tracks_in_region.sort(key=lambda x: x[1])
+            
+            # Remove excess
+            to_remove = set(name for name, _ in tracks_in_region[:excess])
+            for track in self.tracking.tracks:
+                track.select = track.name in to_remove
+            
+            if to_remove:
+                try:
+                    self._run_ops(bpy.ops.clip.delete_track)
+                    removed += len(to_remove)
+                    print(f"AutoSolve: Removed {len(to_remove)} excess tracks from {region}")
+                except:
+                    pass
+        
+        return removed
 
     # ═══════════════════════════════════════════════════════════════════════════
     # TEMPORAL DEAD ZONES AND ITERATIVE REFINEMENT

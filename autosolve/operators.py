@@ -136,14 +136,14 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
-            # PHASE: DETECT FEATURES
+            # PHASE: STRATEGIC DETECT (Distributed, not carpet-bombing)
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'DETECT':
-                settings.solve_status = "Detecting features..."
+                settings.solve_status = f"Detecting features (strategic)..."
                 settings.solve_progress = 0.05
                 
-                threshold = tracker.current_settings.get('threshold', 0.3)
-                num = tracker.detect_features(threshold)
+                # Use strategic detection: ~3 markers per region
+                num = tracker.detect_strategic_features(markers_per_region=3)
                 
                 if num < 8:
                     self.report({'WARNING'}, f"Only {num} features detected")
@@ -153,7 +153,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         return self._cancel(context)
                     return {'RUNNING_MODAL'}
                 
-                print(f"AutoSolve: Detected {num} features")
+                print(f"AutoSolve: Strategic detection - {num} balanced markers")
                 tracker.select_all_tracks()
                 _state.phase = 'TRACK_FORWARD'
                 _state.segment_start = _state.frame_current
@@ -224,14 +224,76 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 
                 _state.last_analysis = tracker.analyze_and_learn()
                 
-                # Check if we should retry
+                # Check if we should retry (very low success rate)
                 if tracker.should_retry(_state.last_analysis):
                     _state.phase = 'RETRY_DECISION'
+                else:
+                    # Move to coverage analysis for balanced distribution
+                    _state.phase = 'ANALYZE_COVERAGE'
+                
+                context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+            
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: ANALYZE COVERAGE (Balance Check)
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'ANALYZE_COVERAGE':
+                settings.solve_status = "Checking coverage balance..."
+                settings.solve_progress = 0.65
+                
+                summary = tracker.get_coverage_analysis()
+                print(f"AutoSolve: Coverage - {summary['regions_with_tracks']}/9 regions, "
+                      f"balance: {summary['balance_score']:.2f}, temporal: {summary['temporal_coverage']:.0%}")
+                
+                if not summary['is_balanced'] and tracker.should_continue_strategic():
+                    _state.phase = 'FILL_GAPS'
                 else:
                     _state.phase = 'FILTER_SHORT'
                 
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
+            
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: FILL COVERAGE GAPS (Strategic Iteration)
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'FILL_GAPS':
+                settings.solve_status = f"Filling coverage gaps (iter {tracker.strategic_iteration + 1})..."
+                settings.solve_progress = 0.67
+                
+                # Fill gaps and track new markers
+                result = tracker.strategic_track_iteration()
+                
+                if result['markers_added'] > 0:
+                    # Track the new markers
+                    tracker.select_all_tracks()
+                    _state.phase = 'TRACK_NEW'
+                    _state.frame_current = _state.frame_start
+                    context.scene.frame_set(_state.frame_start)
+                else:
+                    # No more gaps to fill, proceed
+                    _state.phase = 'FILTER_SHORT'
+                
+                context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+            
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: TRACK NEW (Track newly added markers)
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'TRACK_NEW':
+                progress = (_state.frame_current - _state.frame_start) / clip.frame_duration
+                settings.solve_status = f"Tracking new markers... {int(progress*100)}%"
+                settings.solve_progress = 0.68 + progress * 0.02
+                
+                if _state.frame_current < _state.frame_end:
+                    tracker.track_frame(backwards=False)
+                    _state.frame_current += 1
+                    context.scene.frame_set(_state.frame_current)
+                    context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+                else:
+                    # Check coverage again
+                    _state.phase = 'ANALYZE_COVERAGE'
+                    return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
             # PHASE: RETRY DECISION
