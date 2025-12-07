@@ -121,6 +121,14 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 
                 tracker.analyze_footage()
                 tracker.configure_settings()
+                
+                # Learn from any user-placed templates BEFORE clearing
+                if len(tracker.tracking.tracks) > 0:
+                    user_learned = tracker.learn_from_user_templates()
+                    if user_learned.get('total_templates', 0) > 0:
+                        _state.user_learned = user_learned  # Store for later use
+                        print(f"AutoSolve: Learned from {user_learned['total_templates']} user templates")
+                
                 tracker.clear_tracks()
                 
                 # Pre-tracking validation
@@ -390,9 +398,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 settings.solve_status = "Final solve..."
                 settings.solve_progress = 0.92
                 
+                # Sanitize tracks to prevent Ceres solver errors
+                removed = tracker.sanitize_tracks_before_solve()
+                
                 num = len(tracker.tracking.tracks)
                 if num < 8:
-                    self.report({'ERROR'}, f"Only {num} tracks")
+                    self.report({'ERROR'}, f"Only {num} tracks (removed {removed} bad)")
                     return self._cancel(context)
                 
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
@@ -444,6 +455,11 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 # Extract training data and save session
                 training_data = tracker.extract_training_data()
                 tracker.save_session_results(success=True, solve_error=error)
+                
+                # Save user template learning (with success metrics)
+                if hasattr(_state, 'user_learned') and _state.user_learned:
+                    final_learned = tracker.learn_from_user_templates()
+                    tracker.save_user_learning(final_learned)
                 
                 settings.solve_status = "Complete!"
                 settings.solve_progress = 1.0

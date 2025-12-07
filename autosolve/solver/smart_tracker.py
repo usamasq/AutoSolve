@@ -1115,6 +1115,74 @@ class SmartTracker:
         
         return is_valid, issues
     
+    def sanitize_tracks_before_solve(self) -> int:
+        """
+        Actively clean up problematic tracks before camera solve.
+        
+        This method REMOVES tracks that would cause Ceres solver errors:
+        - Tracks with NaN/Inf values
+        - Tracks with out-of-bounds markers
+        - Tracks with too few markers
+        - Tracks with impossible velocity spikes
+        
+        Returns:
+            Number of tracks removed
+        """
+        import math
+        
+        tracks_to_remove = []
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            
+            # Remove tracks with too few markers
+            if len(markers) < 3:
+                tracks_to_remove.append(track.name)
+                continue
+            
+            # Check for bad data
+            is_bad = False
+            prev_pos = None
+            
+            for marker in markers:
+                x, y = marker.co.x, marker.co.y
+                
+                # Check NaN/Inf
+                if math.isnan(x) or math.isnan(y) or math.isinf(x) or math.isinf(y):
+                    is_bad = True
+                    break
+                
+                # Check out of bounds (with margin)
+                if x < -0.1 or x > 1.1 or y < -0.1 or y > 1.1:
+                    is_bad = True
+                    break
+                
+                # Check velocity spike
+                if prev_pos is not None:
+                    dx = abs(x - prev_pos[0])
+                    dy = abs(y - prev_pos[1])
+                    if dx > 0.2 or dy > 0.2:  # 20% of frame in one step
+                        is_bad = True
+                        break
+                
+                prev_pos = (x, y)
+            
+            if is_bad:
+                tracks_to_remove.append(track.name)
+        
+        # Remove bad tracks
+        if tracks_to_remove:
+            for track in self.tracking.tracks:
+                track.select = track.name in tracks_to_remove
+            
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+                print(f"AutoSolve: Sanitized {len(tracks_to_remove)} bad tracks before solve")
+            except:
+                pass
+        
+        return len(tracks_to_remove)
+    
     def extract_training_data(self) -> Dict:
         """
         Extract patterns and data for training/learning.
@@ -1233,6 +1301,234 @@ class SmartTracker:
                 priority['existing'].add(region)
         
         return {k: list(v) for k, v in priority.items()}
+    
+    def extract_user_templates(self) -> List[Dict]:
+        """
+        Extract complete settings from user-placed markers.
+        
+        Extracts:
+        - Pattern size, search size
+        - Correlation threshold
+        - Motion model
+        - Region and frame info
+        - For tracked markers: velocity, success metrics
+        
+        Returns:
+            List of template dicts, one per user marker
+        """
+        templates = []
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if not markers:
+                continue
+            
+            # Extract track settings with robust error handling
+            pattern_size = (15, 15)  # Default
+            search_size = (71, 71)   # Default
+            correlation = 0.7
+            motion_model = 'LOCATION'
+            
+            try:
+                # Try to get pattern size from track
+                if hasattr(track, 'pattern_bound_box'):
+                    bb = track.pattern_bound_box
+                    if bb and len(bb) >= 4:
+                        w = abs(float(bb[0]) - float(bb[2]))
+                        h = abs(float(bb[1]) - float(bb[3]))
+                        if w > 0 and h > 0:
+                            pattern_size = (int(w * self.clip.size[0]), int(h * self.clip.size[1]))
+                
+                # Try to get search size
+                if hasattr(track, 'search_max') and hasattr(track, 'search_min'):
+                    sm = track.search_max
+                    sn = track.search_min
+                    if sm and sn:
+                        w = abs(float(sm[0]) - float(sn[0]))
+                        h = abs(float(sm[1]) - float(sn[1]))
+                        if w > 0 and h > 0:
+                            search_size = (int(w * self.clip.size[0]), int(h * self.clip.size[1]))
+                
+                # Get correlation
+                if hasattr(track, 'correlation_min'):
+                    correlation = float(track.correlation_min)
+                
+                # Get motion model
+                if hasattr(track, 'motion_model'):
+                    motion_model = str(track.motion_model)
+                    
+            except (TypeError, ValueError, AttributeError) as e:
+                # Keep defaults on any error
+                pass
+            
+            template = {
+                'name': track.name,
+                'pattern_size': pattern_size,
+                'search_size': search_size,
+                'correlation': correlation,
+                'motion_model': motion_model,
+                'use_brute': getattr(track, 'use_brute', False),
+                'use_normalization': getattr(track, 'use_normalization', False),
+                'region': self.coverage_analyzer.get_region(markers[0].co.x, markers[0].co.y),
+                'is_tracked': len(markers) > 2,
+            }
+            
+            # For tracked markers, add metrics
+            if len(markers) >= 2:
+                markers_sorted = sorted(markers, key=lambda m: m.frame)
+                template['frame_start'] = markers_sorted[0].frame
+                template['frame_end'] = markers_sorted[-1].frame
+                template['lifespan'] = template['frame_end'] - template['frame_start']
+                
+                # Velocity (average motion per frame)
+                total_motion = 0
+                for i in range(1, len(markers_sorted)):
+                    dx = markers_sorted[i].co.x - markers_sorted[i-1].co.x
+                    dy = markers_sorted[i].co.y - markers_sorted[i-1].co.y
+                    total_motion += (dx**2 + dy**2) ** 0.5
+                template['avg_velocity'] = total_motion / max(len(markers_sorted) - 1, 1)
+                
+                # Success metrics (if have bundle)
+                if track.has_bundle:
+                    template['has_bundle'] = True
+                    template['solve_error'] = track.average_error
+                    template['success'] = track.average_error < 2.0
+                else:
+                    template['has_bundle'] = False
+                    template['success'] = False
+            else:
+                template['lifespan'] = 0
+                template['success'] = None  # Not tracked yet
+            
+            templates.append(template)
+        
+        return templates
+    
+    def learn_from_user_templates(self) -> Dict:
+        """
+        Analyze user templates and learn optimal settings.
+        
+        Computes:
+        - Best settings by region
+        - Success rates by setting combination
+        - Recommended settings for each region
+        
+        Returns:
+            Dict with learned settings
+        """
+        templates = self.extract_user_templates()
+        if not templates:
+            return {}
+        
+        # Group by region
+        by_region: Dict[str, List[Dict]] = {}
+        for t in templates:
+            region = t['region']
+            if region not in by_region:
+                by_region[region] = []
+            by_region[region].append(t)
+        
+        # Analyze each region
+        learned = {
+            'regions': {},
+            'overall': {},
+            'success_rate': 0,
+            'total_templates': len(templates),
+        }
+        
+        successful = [t for t in templates if t.get('success') is True]
+        learned['success_rate'] = len(successful) / max(len([t for t in templates if t.get('success') is not None]), 1)
+        
+        # Learn from successful tracks
+        if successful:
+            learned['overall'] = {
+                'avg_pattern_size': sum(t['pattern_size'][0] for t in successful) / len(successful),
+                'avg_search_size': sum(t['search_size'][0] for t in successful) / len(successful),
+                'avg_correlation': sum(t['correlation'] for t in successful) / len(successful),
+                'avg_velocity': sum(t.get('avg_velocity', 0) for t in successful) / len(successful),
+            }
+        
+        # Learn per region
+        for region, region_templates in by_region.items():
+            region_successful = [t for t in region_templates if t.get('success') is True]
+            learned['regions'][region] = {
+                'template_count': len(region_templates),
+                'success_count': len(region_successful),
+                'success_rate': len(region_successful) / max(len([t for t in region_templates if t.get('success') is not None]), 1),
+            }
+            
+            if region_successful:
+                learned['regions'][region]['recommended'] = {
+                    'pattern_size': int(sum(t['pattern_size'][0] for t in region_successful) / len(region_successful)),
+                    'search_size': int(sum(t['search_size'][0] for t in region_successful) / len(region_successful)),
+                    'correlation': sum(t['correlation'] for t in region_successful) / len(region_successful),
+                }
+        
+        print(f"AutoSolve: Learned from {len(templates)} user templates "
+              f"({learned['success_rate']:.0%} success rate)")
+        
+        return learned
+    
+    def apply_user_template_settings(self, track, region: str, learned: Dict):
+        """
+        Apply learned settings to a new track based on region.
+        
+        Args:
+            track: Blender track object
+            region: Region name
+            learned: Learned settings dict from learn_from_user_templates
+        """
+        settings = None
+        
+        # Try region-specific settings first
+        if region in learned.get('regions', {}):
+            settings = learned['regions'][region].get('recommended')
+        
+        # Fall back to overall settings
+        if not settings and learned.get('overall'):
+            settings = {
+                'pattern_size': int(learned['overall'].get('avg_pattern_size', 15)),
+                'search_size': int(learned['overall'].get('avg_search_size', 71)),
+                'correlation': learned['overall'].get('avg_correlation', 0.7),
+            }
+        
+        if settings:
+            # Apply to track
+            self._apply_track_settings(track)  # Base settings
+            
+            # Override with learned settings
+            if hasattr(track, 'correlation_min'):
+                track.correlation_min = settings.get('correlation', 0.7)
+            
+            # Pattern and search sizes applied at global level
+            # Store for next detection
+            self.current_settings['pattern_size'] = settings.get('pattern_size', 15)
+            self.current_settings['search_size'] = settings.get('search_size', 71)
+    
+    def save_user_learning(self, learned: Dict):
+        """
+        Save learned user template data to local model.
+        
+        Args:
+            learned: Learned settings from learn_from_user_templates
+        """
+        if not learned:
+            return
+        
+        # Merge with existing local learning
+        existing = self.local_model.get_data(self.footage_class) or {}
+        
+        # Update with user template learning
+        existing['user_templates'] = {
+            'last_updated': bpy.context.scene.frame_current,
+            'success_rate': learned.get('success_rate', 0),
+            'regions': learned.get('regions', {}),
+            'overall': learned.get('overall', {}),
+        }
+        
+        self.local_model.update(self.footage_class, existing)
+        print(f"AutoSolve: Saved user template learning for {self.footage_class}")
+
     
     def preserve_existing_tracks(self) -> int:
         """
@@ -1353,6 +1649,14 @@ class SmartTracker:
             detected = self.detect_in_region(region, target_count)
             total_detected += detected
         
+        # If strategic detection failed, fallback to standard detection
+        if total_detected < 8:
+            print(f"AutoSolve: Strategic detection got only {total_detected}, using standard detection")
+            threshold = self.current_settings.get('threshold', 0.3)
+            standard_count = self.detect_features(threshold)
+            print(f"AutoSolve: Standard detection: {standard_count} markers")
+            return standard_count
+        
         print(f"AutoSolve: Strategic detection - {total_detected} markers "
               f"({len(priority_regions)} priority regions)")
         return total_detected
@@ -1361,68 +1665,76 @@ class SmartTracker:
         """
         Detect features within a specific screen region.
         
-        Uses Blender's detect_features with constrained margin to target
-        a specific area of the frame.
+        Approach: Detect globally with low threshold, then filter to keep
+        only features in the target region (up to count).
         
         Args:
             region: Region name (e.g., 'top-left', 'center')
             count: Target number of markers
             
         Returns:
-            Number of features detected
+            Number of features detected in this region
         """
         bounds = self.coverage_analyzer.get_region_bounds(region)
         x_min, y_min, x_max, y_max = bounds
         
-        # Convert normalized to pixel coordinates
-        width = self.clip.size[0]
-        height = self.clip.size[1]
-        
-        # Calculate pixel margins to constrain detection to this region
-        margin_left = int(x_min * width)
-        margin_right = int((1.0 - x_max) * width)
-        margin_bottom = int(y_min * height)
-        margin_top = int((1.0 - y_max) * height)
-        
-        # Use smallest margin (Blender uses uniform margin)
-        # So we'll detect in the region then filter to our bounds
         initial_count = len(self.tracking.tracks)
         
-        # Detect with low threshold to get candidates
-        threshold = self.current_settings.get('threshold', 0.3) * 0.7  # Lower for more candidates
+        # Detect globally with low threshold to get many candidates
+        threshold = self.current_settings.get('threshold', 0.3) * 0.5
         
-        self._run_ops(
-            bpy.ops.clip.detect_features,
-            threshold=threshold,
-            min_distance=100,  # Larger distance to avoid clustering
-            margin=max(10, min(margin_left, margin_right, margin_bottom, margin_top) // 2),
-            placement='FRAME'
-        )
+        try:
+            self._run_ops(
+                bpy.ops.clip.detect_features,
+                threshold=threshold,
+                min_distance=50,
+                margin=20,
+                placement='FRAME'
+            )
+        except Exception as e:
+            print(f"AutoSolve: detect_features failed: {e}")
+            return 0
         
-        # Filter: keep only tracks in target region, limit count
+        # Filter: keep only tracks in target region, limit to count
         new_tracks = list(self.tracking.tracks)[initial_count:]
-        kept = 0
+        
+        if not new_tracks:
+            return 0
+        
+        # Categorize tracks by region
+        in_region = []
+        outside = []
         
         for track in new_tracks:
             marker = track.markers.find_frame(bpy.context.scene.frame_current)
             if not marker:
-                track.select = True  # Mark for deletion
+                outside.append(track)
                 continue
             
-            # Check if in target region
-            track_region = self.coverage_analyzer.get_region(marker.co.x, marker.co.y)
-            if track_region == region and kept < count:
-                track.select = False
-                self._apply_track_settings(track)
-                kept += 1
+            # Check if in target region bounds
+            x, y = marker.co.x, marker.co.y
+            if x_min <= x <= x_max and y_min <= y <= y_max:
+                in_region.append(track)
             else:
-                track.select = True  # Mark for deletion
+                outside.append(track)
         
-        # Delete tracks outside region or over count
-        try:
-            self._run_ops(bpy.ops.clip.delete_track)
-        except:
-            pass
+        # Keep up to 'count' tracks in the region
+        kept = 0
+        for track in in_region[:count]:
+            self._apply_track_settings(track)
+            track.select = False
+            kept += 1
+        
+        # Mark excess and outside tracks for deletion
+        for track in in_region[count:] + outside:
+            track.select = True
+        
+        # Delete marked tracks
+        if in_region[count:] or outside:
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except:
+                pass
         
         return kept
     
