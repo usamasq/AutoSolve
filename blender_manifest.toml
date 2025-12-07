@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+
+id = "autosolve"
+name = "AutoSolve"
+version = "0.1.0"
+tagline = "One-click camera tracking powered by Structure-from-Motion"
+maintainer = "Your Name <email@example.com>"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+blender_version_max = "6.0.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2024-2025 Your Name"]
+
+# Wheels will be added in Week 6 when bundling
+# [wheels]
+# "./wheels/pycolmap-3.13.0-cp311-cp311-win_amd64.whl" = "windows-x64"
+# "./wheels/pycolmap-3.13.0-cp311-cp311-manylinux_2_28_x86_64.whl" = "linux-x64"
+# "./wheels/pycolmap-3.13.0-cp311-cp311-macosx_14_0_arm64.whl" = "macos-arm64"
+
+[permissions]
+files = "Read video frames and write temporary reconstruction data"
