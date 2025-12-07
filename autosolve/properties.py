@@ -89,6 +89,13 @@ class AutoSolveSettings(PropertyGroup):
         default='AUTO',
     )
     
+    batch_tracking: BoolProperty(
+        name="Batch Tracking (Faster)",
+        description="Track all frames at once instead of frame-by-frame. "
+                    "Faster but no progress feedback during tracking",
+        default=False,
+    )
+    
     # ═══════════════════════════════════════════════════════════
     # SOLVER STATE (runtime, not saved)
     # ═══════════════════════════════════════════════════════════

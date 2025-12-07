@@ -142,33 +142,23 @@ class AUTOSOLVE_PT_training_panel(Panel):
         
         # Statistics
         box = layout.box()
-        box.label(text="Local Learning Model", icon='EXPERIMENTAL')
+        box.label(text="Learning Model", icon='EXPERIMENTAL')
         
         try:
-            from .solver.smart_tracker import LocalLearningModel
-            model = LocalLearningModel()
-            
-            session_count = model.model.get('session_count', 0)
-            classes = len(model.model.get('footage_classes', {}))
+            from .solver.learning.settings_predictor import SettingsPredictor
+            predictor = SettingsPredictor()
+            stats = predictor.get_stats()
             
             col = box.column(align=True)
-            col.label(text=f"Sessions tracked: {session_count}")
-            col.label(text=f"Footage classes: {classes}")
+            col.label(text=f"Sessions tracked: {stats.get('total_sessions', 0)}")
+            col.label(text=f"Footage classes: {stats.get('footage_classes_known', 0)}")
+            col.label(text=f"Success rate: {stats.get('success_rate', 0):.0%}")
             
-            # Show best settings if available
-            if classes > 0:
-                # Find best performing class
-                best_class = None
-                best_error = 999.0
-                for cls_name, cls_data in model.model.get('footage_classes', {}).items():
-                    err = cls_data.get('best_error', 999.0)
-                    if err < best_error:
-                        best_error = err
-                        best_class = cls_name
-                
-                if best_class and best_error < 999:
-                    col.label(text=f"Best: {best_class} ({best_error:.2f}px)")
-        except:
+            # Show region info
+            regions = stats.get('regions_analyzed', 0)
+            if regions > 0:
+                col.label(text=f"Regions analyzed: {regions}")
+        except Exception as e:
             box.label(text="No training data yet")
         
         layout.separator()

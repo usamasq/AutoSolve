@@ -20,6 +20,7 @@ class FailurePattern(Enum):
     EDGE_DISTORTION = "edge_distortion"
     SCENE_CUT = "scene_cut"
     RAPID_MOTION = "rapid_motion"
+    NON_RIGID_MOTION = "non_rigid_motion"  # Waves, water, foliage
     FEATURE_DRIFT = "feature_drift"
     INSUFFICIENT_FEATURES = "insufficient_features"
     UNKNOWN = "unknown"
@@ -63,6 +64,7 @@ class FailureDiagnostics:
         patterns = [
             self._check_motion_blur(analysis),
             self._check_rapid_motion(analysis),
+            self._check_non_rigid_motion(analysis),
             self._check_low_contrast(analysis, settings),
             self._check_edge_distortion(analysis),
             self._check_scene_cut(analysis),
@@ -140,6 +142,49 @@ class FailureDiagnostics:
                     'search_size_mult': 2.0,   # Double search area
                     'correlation_offset': -0.15,
                     'motion_model': 'Affine',
+                }
+            )
+        return None
+    
+    def _check_non_rigid_motion(self, analysis: Dict) -> Optional[DiagnosisResult]:
+        """
+        Check for non-rigid motion: tracks on waves, water, foliage.
+        
+        Non-rigid objects create high-jitter tracks that don't match
+        the camera motion pattern. This is common in ocean/beach footage.
+        """
+        tracks = analysis.get('tracks', [])
+        if not tracks:
+            return None
+        
+        # High jitter tracks (erratic motion typical of waves/foliage)
+        jittery_tracks = [
+            t for t in tracks 
+            if t.get('jitter_score', 0) > self.HIGH_JITTER_THRESHOLD
+        ]
+        
+        ratio = len(jittery_tracks) / len(tracks) if tracks else 0
+        
+        # Also check for short-lived tracks (features on waves disappear quickly)
+        short_lived = [
+            t for t in tracks 
+            if t.get('lifespan', 100) < self.SHORT_LIFESPAN_THRESHOLD
+        ]
+        short_ratio = len(short_lived) / len(tracks) if tracks else 0
+        
+        # Non-rigid pattern: many jittery OR many short-lived tracks
+        if ratio > 0.35 or (ratio > 0.2 and short_ratio > 0.5):
+            return DiagnosisResult(
+                pattern=FailurePattern.NON_RIGID_MOTION,
+                confidence=min(0.88, ratio + 0.3),
+                description=f"Non-rigid motion detected ({ratio:.0%} jittery tracks). "
+                           f"Footage may contain water, waves, or foliage.",
+                fix_adjustments={
+                    'jitter_filter': True,           # Enable non-rigid filter
+                    'jitter_threshold': 0.5,         # Stricter jitter threshold
+                    'coherence_threshold': 0.5,      # Stricter coherence check
+                    'pattern_size_mult': 1.3,        # Larger patterns more stable
+                    'correlation': 0.70,             # Higher correlation to reject bad matches
                 }
             )
         return None
@@ -270,6 +315,10 @@ class FailureDiagnostics:
         if 'correlation_offset' in adj:
             fixed['correlation'] = max(0.4, min(0.9, 
                 settings['correlation'] + adj['correlation_offset']))
+        
+        # Direct correlation override (used by non-rigid motion fix)
+        if 'correlation' in adj and 'correlation_offset' not in adj:
+            fixed['correlation'] = max(0.4, min(0.9, adj['correlation']))
         
         if 'motion_model' in adj:
             fixed['motion_model'] = adj['motion_model']

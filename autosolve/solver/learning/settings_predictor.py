@@ -70,42 +70,54 @@ class SettingsPredictor:
         if data_dir:
             self.data_dir = Path(data_dir)
         else:
-            self.data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'AutoSolve'
+            self.data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
         
         self.model_path = self.data_dir / 'model.json'
         self.model: Dict = self._load_model()
     
     def _load_model(self) -> Dict:
         """Load trained model from disk."""
+        model = None
+        
         # First try user's model
         if self.model_path.exists():
             try:
                 with open(self.model_path) as f:
-                    return json.load(f)
+                    model = json.load(f)
             except Exception as e:
                 print(f"AutoSolve: Error loading model: {e}")
         
         # Fall back to bundled pretrained model
-        pretrained_path = Path(__file__).parent / 'pretrained_model.json'
-        if pretrained_path.exists():
-            try:
-                with open(pretrained_path) as f:
-                    print("AutoSolve: Using pretrained model")
-                    return json.load(f)
-            except Exception as e:
-                print(f"AutoSolve: Error loading pretrained model: {e}")
+        if model is None:
+            pretrained_path = Path(__file__).parent / 'pretrained_model.json'
+            if pretrained_path.exists():
+                try:
+                    with open(pretrained_path) as f:
+                        print("AutoSolve: Using pretrained model")
+                        model = json.load(f)
+                except Exception as e:
+                    print(f"AutoSolve: Error loading pretrained model: {e}")
         
         # Default empty model
-        return {
-            'version': 1,
-            'footage_classes': {},
-            'region_models': {},
-            'footage_type_adjustments': {},
-            'global_stats': {
+        if model is None:
+            model = {
+                'version': 1,
+                'footage_classes': {},
+                'region_models': {},
+            }
+        
+        # Migrate older models - ensure required keys exist
+        if 'global_stats' not in model:
+            model['global_stats'] = {
                 'total_sessions': 0,
                 'successful_sessions': 0,
             }
-        }
+        if 'failure_patterns' not in model:
+            model['failure_patterns'] = {}
+        if 'footage_type_adjustments' not in model:
+            model['footage_type_adjustments'] = {}
+        
+        return model
 
     
     def _save_model(self):
@@ -256,18 +268,60 @@ class SettingsPredictor:
 
     
     def _predict_from_history(self, class_data: Dict, robust_mode: bool) -> Dict:
-        """Predict settings from historical data."""
-        avg_success_rate = class_data.get('avg_success_rate', 0.5)
-        best_settings = class_data.get('best_settings', {})
+        """
+        Predict settings from historical data using success-weighted averaging.
         
-        # Start with best historical settings
-        settings = self.DEFAULT_SETTINGS.copy()
-        settings.update(best_settings)
+        Sessions with lower solve error get more weight in determining optimal settings.
+        This is more robust than just using the single best session.
+        """
+        settings_history = class_data.get('settings_history', [])
+        
+        if not settings_history:
+            # No history, use defaults
+            settings = self.DEFAULT_SETTINGS.copy()
+        else:
+            # Success-weighted averaging: lower error = higher weight
+            weighted_settings = {}
+            total_weight = 0
+            
+            for entry in settings_history:
+                error = entry.get('solve_error', 2.0)
+                success_rate = entry.get('success_rate', 0.5)
+                
+                # Weight by inverse error AND success rate
+                weight = (1.0 / max(error, 0.1)) * success_rate
+                total_weight += weight
+                
+                entry_settings = entry.get('settings', {})
+                for key in ['pattern_size', 'search_size', 'correlation', 'threshold']:
+                    if key in entry_settings:
+                        if key not in weighted_settings:
+                            weighted_settings[key] = 0
+                        weighted_settings[key] += entry_settings[key] * weight
+            
+            # Normalize by total weight
+            if total_weight > 0:
+                for key in weighted_settings:
+                    weighted_settings[key] /= total_weight
+            
+            # Build final settings
+            settings = self.DEFAULT_SETTINGS.copy()
+            for key, value in weighted_settings.items():
+                if key in ['pattern_size', 'search_size']:
+                    # Round to odd integer
+                    settings[key] = int(value) | 1  # Ensure odd
+                else:
+                    settings[key] = round(value, 2)
+            
+            # Keep motion_model from best session
+            best_entry = min(settings_history, key=lambda x: x.get('solve_error', 999))
+            if 'motion_model' in best_entry.get('settings', {}):
+                settings['motion_model'] = best_entry['settings']['motion_model']
         
         # Adjust based on robust mode
         if robust_mode:
-            settings['pattern_size'] = int(settings.get('pattern_size', 15) * 1.4)
-            settings['search_size'] = int(settings.get('search_size', 71) * 1.4)
+            settings['pattern_size'] = int(settings.get('pattern_size', 15) * 1.4) | 1
+            settings['search_size'] = int(settings.get('search_size', 71) * 1.4) | 1
             settings['correlation'] = max(0.5, settings.get('correlation', 0.7) - 0.15)
             settings['motion_model'] = 'Affine'
         
@@ -367,7 +421,12 @@ class SettingsPredictor:
             class_data['success_count'] / class_data['sample_count']
         )
         
-        # Update global stats
+        # Update global stats (ensure exists for older model formats)
+        if 'global_stats' not in self.model:
+            self.model['global_stats'] = {
+                'total_sessions': 0,
+                'successful_sessions': 0,
+            }
         self.model['global_stats']['total_sessions'] += 1
         if session_data.get('success'):
             self.model['global_stats']['successful_sessions'] += 1
@@ -382,8 +441,14 @@ class SettingsPredictor:
                 }
             
             rm = self.model['region_models'][region]
-            rm['total_tracks'] += stats.get('total_tracks', 0)
-            rm['successful_tracks'] += stats.get('successful_tracks', 0)
+            
+            # Handle both dict format and legacy integer format
+            if isinstance(stats, dict):
+                rm['total_tracks'] += stats.get('total_tracks', 0)
+                rm['successful_tracks'] += stats.get('successful_tracks', 0)
+            elif isinstance(stats, (int, float)):
+                # Legacy format: just a count
+                rm['total_tracks'] += int(stats)
         
         # Save updated model
         self._save_model()
@@ -439,3 +504,138 @@ class SettingsPredictor:
             'footage_classes_known': len(self.model.get('footage_classes', {})),
             'regions_analyzed': len(self.model.get('region_models', {})),
         }
+    
+    def record_failure(self, footage_class: str, failure_pattern: str, settings: Dict):
+        """
+        Learn from failure: record what settings DON'T work for this footage type + failure.
+        
+        This helps avoid repeating mistakes on similar footage.
+        
+        Args:
+            footage_class: From classify_footage() e.g. "HD_30fps"
+            failure_pattern: From FailureDiagnostics e.g. "rapid_motion"
+            settings: The settings that led to failure
+        """
+        if 'failure_patterns' not in self.model:
+            self.model['failure_patterns'] = {}
+        
+        key = f"{footage_class}_{failure_pattern}"
+        
+        if key not in self.model['failure_patterns']:
+            self.model['failure_patterns'][key] = {
+                'count': 0,
+                'avoid_settings': []
+            }
+        
+        self.model['failure_patterns'][key]['count'] += 1
+        
+        # Store simplified settings to avoid
+        avoid_entry = {
+            'search_size': settings.get('search_size', 71),
+            'pattern_size': settings.get('pattern_size', 15),
+            'correlation': settings.get('correlation', 0.7),
+        }
+        self.model['failure_patterns'][key]['avoid_settings'].append(avoid_entry)
+        
+        # Keep only last 10 failure records per pattern
+        self.model['failure_patterns'][key]['avoid_settings'] = \
+            self.model['failure_patterns'][key]['avoid_settings'][-10:]
+        
+        self._save_model()
+        print(f"AutoSolve: Recorded failure - {failure_pattern} for {footage_class}")
+    
+    def should_avoid_settings(self, footage_class: str, settings: Dict) -> bool:
+        """
+        Check if settings should be avoided based on past failures.
+        
+        Returns True if these settings are too similar to settings that
+        have failed multiple times for similar footage.
+        """
+        if 'failure_patterns' not in self.model:
+            return False
+        
+        # Check all failure patterns for this footage class
+        for key, data in self.model['failure_patterns'].items():
+            if not key.startswith(footage_class):
+                continue
+            
+            if data['count'] < 2:
+                continue  # Need at least 2 failures to warn
+            
+            # Check if current settings are similar to failed settings
+            for failed in data['avoid_settings']:
+                if self._settings_similar(settings, failed):
+                    return True
+        
+        return False
+    
+    def _settings_similar(self, settings1: Dict, settings2: Dict, tolerance: float = 0.15) -> bool:
+        """Check if two settings configurations are similar."""
+        for key in ['search_size', 'pattern_size', 'correlation']:
+            v1 = settings1.get(key, 0)
+            v2 = settings2.get(key, 0)
+            
+            if v1 == 0 or v2 == 0:
+                continue
+            
+            # Check if values are within tolerance
+            diff = abs(v1 - v2) / max(v1, v2)
+            if diff > tolerance:
+                return False
+        
+        return True
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # LocalLearningModel Compatibility Methods (for backwards compatibility)
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def get_settings_for_class(self, footage_class: str) -> Optional[Dict]:
+        """Get learned settings for a footage class (LocalLearningModel compat)."""
+        class_data = self.model.get('footage_classes', {}).get(footage_class, {})
+        if class_data.get('settings_history'):
+            # Use weighted prediction logic
+            return self._predict_from_history(class_data, False)
+        return None
+    
+    def get_dead_zones_for_class(self, footage_class: str) -> set:
+        """Get dead zones for a footage class (LocalLearningModel compat)."""
+        dead_zones = set()
+        
+        # Check region models for low success rates
+        for region, data in self.model.get('region_models', {}).items():
+            total = data.get('total_tracks', 0)
+            successful = data.get('successful_tracks', 0)
+            
+            if total >= 10:  # Need enough samples
+                rate = successful / total
+                if rate < 0.25:
+                    dead_zones.add(region)
+        
+        return dead_zones
+    
+    def get_data(self, footage_class: str) -> Optional[Dict]:
+        """Get raw data for a footage class (LocalLearningModel compat)."""
+        return self.model.get('footage_classes', {}).get(footage_class)
+    
+    def update(self, footage_class: str, data: Dict):
+        """Update data for a footage class (LocalLearningModel compat)."""
+        if 'footage_classes' not in self.model:
+            self.model['footage_classes'] = {}
+        self.model['footage_classes'][footage_class] = data
+        self._save_model()
+    
+    def update_from_session(self, footage_class: str, success: bool, settings: Dict, 
+                            error: float = 999.0, region_stats: Dict = None):
+        """Update from session data (LocalLearningModel compat)."""
+        session_data = {
+            'footage_class': footage_class,
+            'success': success,
+            'settings': settings,
+            'solve_error': error,
+            'region_stats': region_stats or {},
+        }
+        self.update_model(session_data)
+    
+    def save(self):
+        """Save model (LocalLearningModel compat)."""
+        self._save_model()

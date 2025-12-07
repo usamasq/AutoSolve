@@ -568,170 +568,6 @@ class CoverageAnalyzer:
         return clustered
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# LOCAL LEARNING MODEL
-# ═══════════════════════════════════════════════════════════════════════════
-
-class LocalLearningModel:
-    """
-    Stores and retrieves local learning data.
-    
-    The model starts with pre-trained defaults and adapts
-    based on user's footage over time.
-    """
-    
-    def __init__(self):
-        self.data_dir = self._get_data_dir()
-        self.model_path = self.data_dir / 'model.json'
-        self.model = self._load_or_create()
-    
-    def _get_data_dir(self) -> Path:
-        """Get the data directory for storing learning data."""
-        try:
-            data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
-        except:
-            data_dir = Path(bpy.app.tempdir) / 'autosolve'
-        
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir
-    
-    def _load_or_create(self) -> Dict:
-        """Load existing model or create new one with defaults."""
-        if self.model_path.exists():
-            try:
-                with open(self.model_path) as f:
-                    model = json.load(f)
-                print(f"AutoSolve: Loaded local model ({model.get('session_count', 0)} sessions)")
-                return model
-            except Exception as e:
-                print(f"AutoSolve: Error loading model: {e}")
-        
-        # Create new model with pre-trained defaults
-        return {
-            'version': 2,
-            'session_count': 0,
-            'footage_classes': {},
-            'region_models': {},
-            # Pre-trained preferences
-            'pretrained_used': True,
-        }
-    
-    def save(self):
-        """Save model to disk."""
-        with open(self.model_path, 'w') as f:
-            json.dump(self.model, f, indent=2)
-    
-    def get_settings_for_class(self, footage_class: str) -> Optional[Dict]:
-        """Get learned settings for a footage class."""
-        class_data = self.model['footage_classes'].get(footage_class)
-        
-        if class_data and class_data.get('sample_count', 0) >= 2:
-            return class_data.get('best_settings')
-        
-        return None
-    
-    def get_dead_zones_for_class(self, footage_class: str) -> Set[str]:
-        """Get learned dead zones for a specific footage class."""
-        class_data = self.model['footage_classes'].get(footage_class, {})
-        region_data = class_data.get('region_stats', {})
-        
-        dead = set()
-        for region, stats in region_data.items():
-            total = stats.get('total', 0)
-            successful = stats.get('successful', 0)
-            if total >= 5:  # Need enough samples
-                rate = successful / total
-                if rate < 0.25:
-                    dead.add(region)
-        
-        return dead
-    
-    def update_from_session(self, footage_class: str, settings: Dict, 
-                            success: bool, solve_error: float, 
-                            analysis: Dict):
-        """
-        Update model with session results.
-        
-        This is where the LOCAL LEARNING happens:
-        1. Track count per footage class increases
-        2. Best settings are saved if this solve is better
-        3. Region success rates are updated per footage class
-        4. Dead zones are computed from actual region data
-        
-        After 2+ sessions, the learned settings override defaults.
-        """
-        self.model['session_count'] += 1
-        
-        # Initialize footage class data if new
-        if footage_class not in self.model['footage_classes']:
-            self.model['footage_classes'][footage_class] = {
-                'sample_count': 0,
-                'success_count': 0,
-                'best_settings': None,
-                'best_error': 999.0,
-                'region_stats': {},  # Per-class region tracking
-            }
-        
-        fc = self.model['footage_classes'][footage_class]
-        fc['sample_count'] += 1
-        
-        if success:
-            fc['success_count'] += 1
-            
-            # If this is the best result so far, save settings
-            if solve_error < fc.get('best_error', 999.0):
-                fc['best_error'] = solve_error
-                fc['best_settings'] = settings.copy()
-                print(f"AutoSolve: New best settings for {footage_class}! (error: {solve_error:.2f}px)")
-        
-        # Update region data FOR THIS FOOTAGE CLASS
-        if 'region_stats' not in fc:
-            fc['region_stats'] = {}
-        
-        for region, stats in analysis.get('region_stats', {}).items():
-            if region not in fc['region_stats']:
-                fc['region_stats'][region] = {'total': 0, 'successful': 0}
-            
-            fc['region_stats'][region]['total'] += stats.get('total_tracks', 0)
-            fc['region_stats'][region]['successful'] += stats.get('successful_tracks', 0)
-        
-        # Also update global region models for cross-footage-class learning
-        for region, stats in analysis.get('region_stats', {}).items():
-            if region not in self.model['region_models']:
-                self.model['region_models'][region] = {
-                    'total': 0,
-                    'successful': 0,
-                }
-            
-            rm = self.model['region_models'][region]
-            rm['total'] += stats.get('total_tracks', 0)
-            rm['successful'] += stats.get('successful_tracks', 0)
-        
-        self.save()
-        
-        # Debug output showing what was learned
-        print(f"AutoSolve: Model updated - {fc['sample_count']} sessions for {footage_class}")
-        
-        # Show learned dead zones if any
-        dead_zones = self.get_dead_zones_for_class(footage_class)
-        if dead_zones:
-            print(f"AutoSolve: Learned dead zones for {footage_class}: {', '.join(dead_zones)}")
-    
-    def get_dead_zones(self) -> Set[str]:
-        """Get regions with historically low success rates (global)."""
-        dead = set()
-        
-        for region, data in self.model.get('region_models', {}).items():
-            total = data.get('total', 0)
-            successful = data.get('successful', 0)
-            
-            if total >= 10:  # Need enough samples
-                rate = successful / total
-                if rate < 0.25:
-                    dead.add(region)
-        
-        return dead
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SMART TRACKER (Main Class)
@@ -761,7 +597,10 @@ class SmartTracker:
         
         # Learning components
         self.analyzer = TrackAnalyzer()
-        self.local_model = LocalLearningModel()
+        
+        # Unified SettingsPredictor for all learning
+        from .learning.settings_predictor import SettingsPredictor
+        self.predictor = SettingsPredictor()
         
         # Current session state
         self.resolution_class = self._classify_footage()
@@ -878,13 +717,13 @@ class SmartTracker:
             print(f"AutoSolve: Applied {self.footage_type} adjustments")
         
         # Step 3: Check for learned settings (overrides if available)
-        local_settings = self.local_model.get_settings_for_class(self.footage_class)
+        local_settings = self.predictor.get_settings_for_class(self.footage_class)
         if local_settings:
             self.current_settings = local_settings.copy()
             print(f"AutoSolve: Using LEARNED settings for {self.footage_class}")
         
         # Step 4: Get LEARNED dead zones (overrides predictions if we have data)
-        learned_dead_zones = self.local_model.get_dead_zones_for_class(self.footage_class)
+        learned_dead_zones = self.predictor.get_dead_zones_for_class(self.footage_class)
         if learned_dead_zones:
             # Use learned data, ignore predictions
             self.known_dead_zones = learned_dead_zones
@@ -1700,7 +1539,7 @@ class SmartTracker:
             return
         
         # Merge with existing local learning
-        existing = self.local_model.get_data(self.footage_class) or {}
+        existing = self.predictor.get_data(self.footage_class) or {}
         
         # Update with user template learning
         existing['user_templates'] = {
@@ -1710,7 +1549,7 @@ class SmartTracker:
             'overall': learned.get('overall', {}),
         }
         
-        self.local_model.update(self.footage_class, existing)
+        self.predictor.update(self.footage_class, existing)
         print(f"AutoSolve: Saved user template learning for {self.footage_class}")
 
     
@@ -1845,12 +1684,57 @@ class SmartTracker:
               f"({len(priority_regions)} priority regions)")
         return total_detected
     
+    def _is_non_rigid_region(self, region: str) -> bool:
+        """
+        Check if a region is likely to contain non-rigid objects (waves, water, foliage).
+        
+        This is a PRE-DETECTION check to avoid placing markers on problematic regions.
+        ONLY skips regions with actual probe evidence, not just based on footage type.
+        
+        Args:
+            region: Region name like 'bottom-center'
+            
+        Returns:
+            True if region should be skipped for non-rigid concerns
+        """
+        # Must have probe data to make this determination (no assumptions)
+        if not hasattr(self, 'cached_motion_probe') or not self.cached_motion_probe:
+            return False
+        
+        probe = self.cached_motion_probe
+        region_success = probe.get('region_success', {})
+        velocities = probe.get('velocities', {})
+        
+        # Check if this region had very low success in the probe
+        if region in region_success and region_success[region] < 0.2:
+            # Probe showed this region is problematic
+            print(f"AutoSolve: Skipping {region} - probe showed {region_success[region]:.0%} success")
+            return True
+        
+        # Check if this region had extremely high velocity (likely non-rigid)
+        if region in velocities:
+            region_velocity = velocities[region]
+            avg_velocity = probe.get('avg_velocity', 0.01)
+            if avg_velocity > 0 and region_velocity > avg_velocity * 3:
+                # Region moves 3x faster than average - likely water/waves
+                print(f"AutoSolve: Skipping {region} - velocity {region_velocity:.3f} >> avg {avg_velocity:.3f}")
+                return True
+        
+        # Also skip if in known dead zones from learning
+        if region in self.known_dead_zones:
+            return True
+        
+        return False
+    
     def detect_in_region(self, region: str, count: int = 3) -> int:
         """
         Detect features within a specific screen region.
         
         Approach: Detect globally with low threshold, then filter to keep
         only features in the target region (up to count).
+        
+        NOTE: Now includes non-rigid region check for DRONE footage to
+        avoid placing markers on likely water/wave regions.
         
         Args:
             region: Region name (e.g., 'top-left', 'center')
@@ -1859,6 +1743,11 @@ class SmartTracker:
         Returns:
             Number of features detected in this region
         """
+        # Phase 6: Skip non-rigid regions (waves, water) during detection
+        if self._is_non_rigid_region(region):
+            print(f"AutoSolve: Skipping {region} - likely non-rigid (water/waves)")
+            return 0
+        
         bounds = self.coverage_analyzer.get_region_bounds(region)
         x_min, y_min, x_max, y_max = bounds
         
@@ -1889,8 +1778,16 @@ class SmartTracker:
         in_region = []
         outside = []
         
+        current_frame = bpy.context.scene.frame_current
+        
         for track in new_tracks:
-            marker = track.markers.find_frame(bpy.context.scene.frame_current)
+            # Try to find marker at current frame
+            marker = track.markers.find_frame(current_frame)
+            
+            # If no marker at exact frame, try to get any marker from this track
+            if not marker and len(track.markers) > 0:
+                marker = track.markers[0]
+            
             if not marker:
                 outside.append(track)
                 continue
@@ -1934,6 +1831,160 @@ class SmartTracker:
         'bottom-center': {'pattern_size': 19, 'search_size': 81, 'correlation': 0.70},
         'bottom-right': {'pattern_size': 13, 'search_size': 61, 'correlation': 0.75},
     }
+    
+    def _get_learned_region_settings(self) -> Dict[str, Dict]:
+        """
+        Get per-region settings from learning + exploratory baseline.
+        
+        Combines EXPLORATORY_SETTINGS baseline with learned adjustments
+        based on historical region success rates.
+        """
+        region_settings = {}
+        
+        # Get region advice from predictor if available
+        region_advice = {}
+        if hasattr(self, 'predictor') and self.predictor:
+            region_advice = self.predictor.get_region_advice()
+        
+        for region, base_settings in self.EXPLORATORY_SETTINGS.items():
+            region_settings[region] = base_settings.copy()
+            
+            # Apply learned adjustments based on region success
+            advice = region_advice.get(region, 'normal')
+            
+            if advice == 'avoid':
+                # Bad region historically: increase search, lower correlation
+                region_settings[region]['search_size'] = int(base_settings['search_size'] * 1.5)
+                region_settings[region]['correlation'] = max(0.5, base_settings['correlation'] - 0.1)
+                region_settings[region]['avoid'] = True
+            elif advice == 'prioritize':
+                # Good region: can be more selective
+                region_settings[region]['correlation'] = min(0.8, base_settings['correlation'] + 0.05)
+                region_settings[region]['prioritize'] = True
+            # 'normal' or 'unknown' - use base settings
+        
+        return region_settings
+    
+    def detect_features_smart(self, markers_per_region: int = 3, use_cached_probe: bool = True) -> int:
+        """
+        UNIFIED SMART DETECTION
+        
+        Single entry point that combines the best of exploratory and strategic detection.
+        Always uses motion-aware settings and leverages any learned region data.
+        
+        This replaces the separate detect_exploratory_features / detect_strategic_features
+        with one smart approach that:
+        1. Uses cached probe results if available
+        2. Applies learned region settings when data exists
+        3. Falls back to motion-class-based settings otherwise
+        
+        Args:
+            markers_per_region: Target markers per region
+            use_cached_probe: Whether to use cached probe results
+            
+        Returns:
+            Total number of features detected
+        """
+        print(f"AutoSolve: ═══════════════════════════════════════════════")
+        print(f"AutoSolve: SMART FEATURE DETECTION")
+        print(f"AutoSolve: ═══════════════════════════════════════════════")
+        
+        # Step 1: Get motion classification (use cache or run probe)
+        if use_cached_probe and hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
+            probe_results = self.cached_motion_probe
+            print(f"AutoSolve: Using cached probe (motion: {probe_results.get('motion_class')})")
+        else:
+            probe_results = self._run_motion_probe()
+            self.cached_motion_probe = probe_results
+        
+        # Ensure we're at the optimal detection frame (middle of clip for bidirectional tracking)
+        detection_frame = self.get_optimal_start_frame()
+        bpy.context.scene.frame_set(detection_frame)
+        
+        motion_class = probe_results.get('motion_class', 'MEDIUM')
+        texture_class = probe_results.get('texture_class', 'MEDIUM')
+        best_regions = probe_results.get('best_regions', [])
+        
+        # Step 2: Check for learned region data
+        learned_regions = self._get_learned_region_settings()
+        has_learned_data = any(
+            'prioritize' in v or 'avoid' in v 
+            for v in learned_regions.values()
+        )
+        
+        if has_learned_data:
+            print(f"AutoSolve: Using learned region settings")
+            # Detect using per-region learned settings
+            total = self._detect_with_region_settings(learned_regions, markers_per_region, motion_class)
+        else:
+            # Fall back to motion-class-based detection
+            target = markers_per_region if motion_class != 'HIGH' else max(1, markers_per_region - 1)
+            total = self._detect_quality_markers(
+                motion_class=motion_class,
+                texture_class=texture_class,
+                markers_per_region=target,
+                priority_regions=best_regions
+            )
+        
+        print(f"AutoSolve: Smart detection complete - {total} markers placed")
+        
+        # Minimum viable check
+        if total < 8:
+            print(f"AutoSolve: Only {total} markers, adding reinforcements...")
+            extra = self._add_reinforcement_markers(total, motion_class)
+            total += extra
+        
+        return total
+    
+    def _detect_with_region_settings(self, region_settings: Dict[str, Dict], 
+                                     markers_per_region: int, motion_class: str) -> int:
+        """
+        Detect features using per-region learned settings.
+        
+        Uses EXPLORATORY_SETTINGS adjusted by learning data.
+        """
+        total = 0
+        regions = list(region_settings.keys())
+        
+        # Sort: prioritized regions first, avoided last
+        regions.sort(key=lambda r: (
+            0 if region_settings[r].get('prioritize') else
+            2 if region_settings[r].get('avoid') else 1
+        ))
+        
+        for region in regions:
+            if region in self.known_dead_zones:
+                continue
+            
+            settings = region_settings[region]
+            
+            # Skip avoided regions in high motion (too risky)
+            if settings.get('avoid') and motion_class == 'HIGH':
+                continue
+            
+            # Prioritized regions get extra markers
+            count = markers_per_region + 1 if settings.get('prioritize') else markers_per_region
+            
+            # Apply region-specific settings
+            old_settings = self.current_settings.copy()
+            self.current_settings.update({
+                'pattern_size': settings.get('pattern_size', 15),
+                'search_size': settings.get('search_size', 71),
+                'correlation': settings.get('correlation', 0.70),
+            })
+            self.configure_settings()
+            
+            detected = self.detect_in_region(region, count)
+            total += detected
+            
+            # Restore base settings
+            self.current_settings = old_settings
+            self.configure_settings()
+            
+            if detected > 0:
+                print(f"AutoSolve: {region}: {detected} markers (learned settings)")
+        
+        return total
     
     def detect_exploratory_features(self, markers_per_region: int = 3) -> int:
         """
@@ -2010,9 +2061,54 @@ class SmartTracker:
         
         return total
     
+    def _estimate_motion_quick(self) -> str:
+        """
+        Quick motion estimate from clip metadata (no tracking needed).
+        
+        This avoids the expensive full motion probe for obvious cases.
+        
+        Returns:
+            'LOW', 'MEDIUM', or 'HIGH' motion class estimate
+        """
+        fps = self.clip.fps if self.clip.fps > 0 else 24
+        duration = self.clip.frame_duration
+        
+        # Higher FPS = less motion per frame (smoother footage)
+        if fps >= 50:
+            fps_class = 'LOW'
+        elif fps >= 28:
+            fps_class = 'MEDIUM'
+        else:
+            fps_class = 'HIGH'  # 24fps often has more apparent motion
+        
+        # Short clips often have dramatic motion
+        if duration < 100:
+            duration_class = 'HIGH'
+        elif duration < 300:
+            duration_class = 'MEDIUM'
+        else:
+            duration_class = 'LOW'
+        
+        # Footage type hints
+        if self.footage_type in ['DRONE', 'ACTION', 'HANDHELD']:
+            type_class = 'HIGH'
+        elif self.footage_type in ['INDOOR', 'TRIPOD']:
+            type_class = 'LOW'
+        else:
+            type_class = 'MEDIUM'
+        
+        # Combine: take highest motion estimate
+        classes = {'LOW': 0, 'MEDIUM': 1, 'HIGH': 2}
+        max_class = max([fps_class, duration_class, type_class], key=lambda x: classes[x])
+        
+        return max_class
+    
     def _run_motion_probe(self) -> dict:
         """
         Run a quick motion probe to analyze footage characteristics.
+        
+        OPTIMIZATION: Now checks quick estimate first and skips full probe
+        when not needed (for LOW/MEDIUM motion without robust mode).
         
         Places 1 marker per region, tracks ~20 frames, measures:
         - Average motion velocity
@@ -2022,21 +2118,40 @@ class SmartTracker:
         Returns:
             Dict with motion_class, texture_class, best_regions
         """
+        # Quick estimation first (no tracking needed)
+        quick_class = self._estimate_motion_quick()
+        
+        # For low/medium motion and no robust mode, skip expensive full probe
+        if quick_class != 'HIGH' and not self.robust_mode:
+            print(f"AutoSolve: Quick motion estimate: {quick_class} (skipping full probe)")
+            return {
+                'success': True,
+                'motion_class': quick_class,
+                'texture_class': 'MEDIUM',
+                'best_regions': ['center', 'mid-left', 'mid-right', 'bottom-center'],
+                'velocities': {},
+                'region_success': {},
+                'probe_type': 'quick_estimate'
+            }
+        
+        print(f"AutoSolve: Running full motion probe (quick estimate: {quick_class})")
+        
         result = {
             'success': False,
-            'motion_class': 'MEDIUM',
+            'motion_class': quick_class,  # Use quick estimate as baseline
             'texture_class': 'MEDIUM',
             'best_regions': [],
             'velocities': {},
             'region_success': {},
+            'probe_type': 'full_probe'
         }
         
         # Save current frame
         original_frame = bpy.context.scene.frame_current
         probe_start = self.clip.frame_start + (self.clip.frame_duration // 4)  # Start at 25%
         
-        # Clear any existing tracks
-        self.clear_tracks()
+        # NOTE: Don't clear tracks here - let existing tracks be analyzed if any
+        # This prevents wasting user-placed markers
         
         # Probe settings: very aggressive to catch motion
         probe_settings = {
@@ -2776,6 +2891,73 @@ class SmartTracker:
         self.select_all_tracks()
         self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
     
+    def track_sequence(self, start_frame: int, end_frame: int, backwards: bool = False) -> int:
+        """
+        Track a sequence of frames in one batch (more efficient than frame-by-frame).
+        
+        Args:
+            start_frame: Starting frame number
+            end_frame: Ending frame number
+            backwards: Track in reverse direction
+            
+        Returns:
+            Number of frames tracked
+        """
+        if backwards:
+            frame_range = range(start_frame, end_frame, -1)
+        else:
+            frame_range = range(start_frame, end_frame)
+        
+        frames_tracked = 0
+        self.select_all_tracks()
+        
+        for frame in frame_range:
+            bpy.context.scene.frame_set(frame)
+            self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
+            frames_tracked += 1
+        
+        return frames_tracked
+    
+    def cleanup_tracks(self, min_frames: int = 5, spike_multiplier: float = 8.0,
+                       jitter_threshold: float = 0.6, coherence_threshold: float = 0.4) -> int:
+        """
+        Unified track cleanup - all filters in one pass.
+        
+        Combines:
+        1. Short track filtering
+        2. Velocity spike removal
+        3. Non-rigid motion filtering (waves, water, foliage)
+        
+        Args:
+            min_frames: Minimum frames for a track to survive
+            spike_multiplier: Velocity spike threshold multiplier
+            jitter_threshold: Jitter score for non-rigid detection
+            coherence_threshold: Motion coherence for non-rigid detection
+            
+        Returns:
+            Total number of tracks removed
+        """
+        initial = len(self.tracking.tracks)
+        
+        # 1. Short tracks (using Blender's built-in)
+        self.filter_short_tracks(min_frames=min_frames)
+        after_short = len(self.tracking.tracks)
+        
+        # 2. Velocity spikes
+        self.filter_spikes(limit_multiplier=spike_multiplier)
+        after_spikes = len(self.tracking.tracks)
+        
+        # 3. Non-rigid motion (waves, water, foliage)
+        self.filter_non_rigid_motion(jitter_threshold, coherence_threshold)
+        final = len(self.tracking.tracks)
+        
+        removed = initial - final
+        print(f"AutoSolve: Cleanup removed {removed} tracks "
+              f"(short:{initial-after_short}, spikes:{after_short-after_spikes}, "
+              f"non-rigid:{after_spikes-final}) → {final} remaining")
+        
+        return removed
+    
     def analyze_and_learn(self) -> Dict:
         """Analyze tracks and learn from results."""
         min_life = 5 if self.robust_mode else 8
@@ -2827,7 +3009,7 @@ class SmartTracker:
     def save_session_results(self, success: bool, solve_error: float):
         """Save session results for future learning."""
         if self.last_analysis:
-            self.local_model.update_from_session(
+            self.predictor.update_from_session(
                 self.footage_class,
                 self.current_settings,
                 success,
@@ -2939,6 +3121,142 @@ class SmartTracker:
             except:
                 pass
             self.select_all_tracks()
+    
+    def filter_non_rigid_motion(self, jitter_threshold: float = 0.6, coherence_threshold: float = 0.4):
+        """
+        Filter tracks on non-rigid moving objects like waves, water, foliage.
+        
+        This filter detects tracks that:
+        1. Have high jitter (erratic motion, not smooth camera movement)
+        2. Move differently from the global camera motion pattern
+        
+        Non-rigid objects like waves create tracks that oscillate randomly,
+        while camera motion produces coherent, parallel track movements.
+        
+        Args:
+            jitter_threshold: Normalized jitter score above which tracks are suspect (default 0.6)
+            coherence_threshold: Motion coherence below which tracks are filtered (default 0.4)
+        """
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return
+        
+        # Step 1: Compute per-track motion vectors and jitter scores
+        track_data = {}
+        motion_vectors = []  # For computing median camera motion
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 5:  # Need enough markers to analyze motion
+                continue
+            
+            markers.sort(key=lambda x: x.frame)
+            
+            # Compute frame-to-frame velocities
+            velocities = []
+            for i in range(1, len(markers)):
+                dx = markers[i].co.x - markers[i-1].co.x
+                dy = markers[i].co.y - markers[i-1].co.y
+                velocities.append((dx, dy))
+            
+            if not velocities:
+                continue
+            
+            # Average motion vector (overall direction)
+            avg_dx = sum(v[0] for v in velocities) / len(velocities)
+            avg_dy = sum(v[1] for v in velocities) / len(velocities)
+            motion_vec = (avg_dx, avg_dy)
+            motion_vectors.append(motion_vec)
+            
+            # Jitter: how much does velocity change frame to frame?
+            # High jitter = erratic motion (waves, leaves moving)
+            jitter = 0.0
+            if len(velocities) >= 2:
+                vel_changes = []
+                for i in range(1, len(velocities)):
+                    change_x = abs(velocities[i][0] - velocities[i-1][0])
+                    change_y = abs(velocities[i][1] - velocities[i-1][1])
+                    vel_changes.append((change_x**2 + change_y**2)**0.5)
+                
+                if vel_changes:
+                    avg_mag = (avg_dx**2 + avg_dy**2)**0.5
+                    if avg_mag > 0.0001:
+                        jitter = (sum(vel_changes) / len(vel_changes)) / avg_mag
+                    else:
+                        jitter = sum(vel_changes) / len(vel_changes) * 100  # Scale for near-static
+            
+            track_data[track.name] = {
+                'motion_vec': motion_vec,
+                'jitter': jitter,
+                'coherence': 0.0,  # Will be computed below
+            }
+        
+        if len(motion_vectors) < 5:
+            print("AutoSolve: Not enough tracks for non-rigid filter")
+            return
+        
+        # Step 2: Compute median camera motion direction
+        # Sort by angle to find the dominant motion direction
+        import math
+        angles = [math.atan2(v[1], v[0]) for v in motion_vectors]
+        angles.sort()
+        median_angle = angles[len(angles) // 2]
+        
+        # Compute median magnitude
+        magnitudes = [(v[0]**2 + v[1]**2)**0.5 for v in motion_vectors]
+        magnitudes.sort()
+        median_mag = magnitudes[len(magnitudes) // 2]
+        
+        # Median motion vector (represents camera motion)
+        camera_motion = (math.cos(median_angle) * median_mag, math.sin(median_angle) * median_mag)
+        camera_mag = (camera_motion[0]**2 + camera_motion[1]**2)**0.5
+        
+        # Step 3: Compute coherence for each track (how well it matches camera motion)
+        for name, data in track_data.items():
+            mv = data['motion_vec']
+            mv_mag = (mv[0]**2 + mv[1]**2)**0.5
+            
+            if camera_mag < 0.0001 or mv_mag < 0.0001:
+                # Very low motion - assume coherent
+                data['coherence'] = 1.0
+            else:
+                # Dot product normalized = cosine similarity
+                dot = mv[0] * camera_motion[0] + mv[1] * camera_motion[1]
+                coherence = dot / (mv_mag * camera_mag)
+                # Clamp to [0, 1] (negative = opposite direction, still incoherent)
+                data['coherence'] = max(0.0, coherence)
+        
+        # Step 4: Identify non-rigid tracks (high jitter OR low coherence)
+        non_rigid = []
+        for name, data in track_data.items():
+            is_jittery = data['jitter'] > jitter_threshold
+            is_incoherent = data['coherence'] < coherence_threshold
+            
+            if is_jittery or is_incoherent:
+                non_rigid.append((name, data['jitter'], data['coherence']))
+        
+        # Safety: don't delete too many
+        max_can_delete = current - self.ABSOLUTE_MIN_TRACKS
+        if len(non_rigid) > max_can_delete:
+            # Prioritize removing the most jittery/incoherent
+            non_rigid.sort(key=lambda x: (x[1] - x[2]), reverse=True)
+            non_rigid = non_rigid[:max_can_delete]
+        
+        to_delete = set(n for n, _, _ in non_rigid)
+        
+        for track in self.tracking.tracks:
+            track.select = track.name in to_delete
+        
+        if to_delete:
+            print(f"AutoSolve: Removing {len(to_delete)} non-rigid tracks (waves/water/foliage)")
+            for name, jitter, coherence in non_rigid[:5]:  # Log first 5
+                print(f"  → {name}: jitter={jitter:.2f}, coherence={coherence:.2f}")
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except:
+                pass
+            self.select_all_tracks()
+
     
     def filter_high_error(self, max_error: float = 3.0):
         """Filter high error tracks."""

@@ -51,10 +51,12 @@ autosolve/
 ```python
 class SmartTracker:
     def __init__(self, clip, robust_mode=False, footage_type='AUTO')
-    def detect_exploratory_features()  # Phased quality detection
-    def _run_motion_probe()            # 20-frame motion analysis
-    def _detect_quality_markers()      # Motion-aware placement
+    def detect_features_smart()        # Unified smart detection
+    def _run_motion_probe()            # Motion analysis (can skip for low motion)
+    def _estimate_motion_quick()       # Instant motion classification
     def track_frame()                  # Track one frame
+    def track_sequence()               # Batch tracking (optional)
+    def cleanup_tracks()               # Unified filtering (spikes, non-rigid)
     def solve_camera()                 # Bundle adjustment
 ```
 
@@ -149,10 +151,12 @@ Clip → Predict Settings → Track → IF FAILS: Diagnose → Fix → Retry
 
 ```
 LOAD_LEARNING → CONFIGURE → DETECT → TRACK_FORWARD →
-TRACK_BACKWARD → ANALYZE → FILL_GAPS → FILTER_SHORT →
-FILTER_SPIKES → SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL →
+TRACK_BACKWARD → ANALYZE → ANALYZE_COVERAGE → FILL_GAPS →
+CLEANUP → SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL →
 REFINE → COMPLETE
 ```
+
+**Note:** CLEANUP phase consolidates FILTER_SHORT, FILTER_SPIKES, and FILTER_NON_RIGID into a single pass.
 
 **Learning Operators:**
 
@@ -283,7 +287,7 @@ Location: Movie Clip Editor → Sidebar (N) → AutoSolve tab
 ├──────────────────────────────────────────┤
 │ • Extract training data                  │
 │ • SessionRecorder.save()                │
-│ • LocalModel.update()                   │
+│ • SettingsPredictor.update_model()      │
 └──────┬───────────────────────────────────┘
        │
        ▼
@@ -467,11 +471,12 @@ if should_retry(analysis):
 
 ### Custom Learning Strategies
 
-Extend `LocalLearningModel` in `solver/learning/local_model.py`:
+Extend `SettingsPredictor` in `solver/learning/settings_predictor.py`:
 
-- Add new aggregation methods
-- Implement cross-session analysis
+- Add new prediction algorithms
+- Implement failure pattern learning
 - Export/import community models
+- Add new compatibility methods for external integrations
 
 ---
 

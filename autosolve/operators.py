@@ -146,19 +146,17 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
-            # PHASE: STRATEGIC DETECT (Distributed, not carpet-bombing)
+            # PHASE: SMART DETECT (Unified detection with learning)
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'DETECT':
                 settings.solve_progress = 0.05
+                settings.solve_status = "Detecting features..."
                 
-                # First iteration: use EXPLORATORY detection with varied settings
-                # Later iterations: use strategic detection with learned settings
-                if _state.iteration == 0:
-                    settings.solve_status = "Detecting features (exploratory)..."
-                    num = tracker.detect_exploratory_features(markers_per_region=3)
-                else:
-                    settings.solve_status = "Detecting features (strategic)..."
-                    num = tracker.detect_strategic_features(markers_per_region=3)
+                # Unified smart detection (uses cached probe, learned settings)
+                num = tracker.detect_features_smart(
+                    markers_per_region=3,
+                    use_cached_probe=(_state.iteration > 0)  # Cache on retry
+                )
                 
                 if num < 8:
                     self.report({'WARNING'}, f"Only {num} features detected")
@@ -168,7 +166,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         return self._cancel(context)
                     return {'RUNNING_MODAL'}
                 
-                print(f"AutoSolve: Strategic detection - {num} balanced markers")
+                print(f"AutoSolve: Smart detection - {num} balanced markers")
                 tracker.select_all_tracks()
                 _state.phase = 'TRACK_FORWARD'
                 _state.segment_start = _state.frame_current
@@ -179,6 +177,28 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # PHASE: TRACK FORWARD
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'TRACK_FORWARD':
+                # Check if user wants batch tracking (faster, no progress feedback)
+                if settings.batch_tracking and _state.frame_current == _state.segment_start:
+                    # Batch mode: track all frames at once
+                    settings.solve_status = "Batch tracking forward..."
+                    settings.solve_progress = 0.25
+                    
+                    frames = tracker.track_sequence(
+                        _state.frame_current, 
+                        _state.frame_end, 
+                        backwards=False
+                    )
+                    print(f"AutoSolve: Batch tracked {frames} frames forward")
+                    
+                    _state.frame_current = _state.frame_end
+                    _state.phase = 'TRACK_BACKWARD'
+                    _state.frame_current = getattr(_state, 'optimal_start', _state.frame_start)
+                    context.scene.frame_set(_state.frame_current)
+                    tracker.select_all_tracks()
+                    context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+                
+                # Frame-by-frame mode: progress feedback (default)
                 progress = (_state.frame_current - _state.frame_start) / clip.frame_duration
                 settings.solve_status = f"Tracking... {int(progress*100)}%"
                 settings.solve_progress = 0.05 + progress * 0.40
@@ -218,8 +238,26 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # PHASE: TRACK BACKWARD
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'TRACK_BACKWARD':
-                # Track backward from optimal_start to clip start (covers early frames)
-                progress = (getattr(_state, 'optimal_start', _state.frame_start) - _state.frame_current) / max(getattr(_state, 'optimal_start', _state.frame_start) - _state.frame_start, 1)
+                optimal_start = getattr(_state, 'optimal_start', _state.frame_start)
+                
+                # Check if user wants batch tracking (faster, no progress feedback)
+                if settings.batch_tracking and _state.frame_current == optimal_start:
+                    settings.solve_status = "Batch tracking backward..."
+                    settings.solve_progress = 0.55
+                    
+                    frames = tracker.track_sequence(
+                        _state.frame_current,
+                        _state.frame_start,
+                        backwards=True
+                    )
+                    print(f"AutoSolve: Batch tracked {frames} frames backward")
+                    
+                    _state.phase = 'ANALYZE'
+                    context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+                
+                # Frame-by-frame mode: progress feedback (default)
+                progress = (optimal_start - _state.frame_current) / max(optimal_start - _state.frame_start, 1)
                 settings.solve_status = f"Backfilling early frames... {int(progress*100)}%"
                 settings.solve_progress = 0.45 + progress * 0.15
                 
@@ -322,6 +360,44 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     settings.solve_progress = 0.10
                     
                     _state.iteration += 1
+                    
+                    # Try diagnostic-driven fix first
+                    applied_diagnostic_fix = False
+                    diagnosis = None
+                    if _state.last_analysis:
+                        from .solver.learning.failure_diagnostics import FailureDiagnostics
+                        diagnostics = FailureDiagnostics()
+                        diagnosis = diagnostics.diagnose(_state.last_analysis, tracker.current_settings)
+                        
+                        if diagnosis.confidence > 0.5:
+                            # Record failure for learning (avoid these settings next time)
+                            if hasattr(tracker, 'predictor') and tracker.predictor:
+                                footage_class = tracker.predictor.classify_footage(clip)
+                                tracker.predictor.record_failure(
+                                    footage_class, 
+                                    diagnosis.pattern.value, 
+                                    tracker.current_settings
+                                )
+                            
+                            tracker.current_settings = diagnostics.apply_fix(
+                                tracker.current_settings, diagnosis
+                            )
+                            print(f"AutoSolve: Applied {diagnosis.pattern.value} fix: {diagnosis.description}")
+                            applied_diagnostic_fix = True
+                    
+                    # If no confident diagnosis, apply aggressive generic fix
+                    if not applied_diagnostic_fix:
+                        # Increase search significantly (better than 10% threshold tweak)
+                        old_search = tracker.current_settings.get('search_size', 71)
+                        tracker.current_settings['search_size'] = int(old_search * 1.5)
+                        tracker.current_settings['correlation'] = max(
+                            0.5, tracker.current_settings.get('correlation', 0.7) - 0.1
+                        )
+                        tracker.current_settings['motion_model'] = 'Affine'
+                        print(f"AutoSolve: Aggressive retry - search_size: {old_search} → {tracker.current_settings['search_size']}")
+                    
+                    # Clear probe cache so detection re-analyzes
+                    tracker.cached_motion_probe = None
                     tracker.prepare_retry()
                     
                     _state.phase = 'DETECT'
@@ -329,43 +405,38 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     context.scene.frame_set(_state.frame_start)
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
+
                 else:
                     # Max retries reached, proceed with what we have
                     _state.phase = 'FILTER_SHORT'
                     return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
-            # PHASE: FILTER SHORT TRACKS
+            # PHASE: CLEANUP (unified filtering in one pass)
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'FILTER_SHORT':
-                settings.solve_status = "Filtering short tracks..."
-                settings.solve_progress = 0.68
+                # Note: keeping 'FILTER_SHORT' as phase name for backwards compat
+                # but this now does ALL cleanup in one pass
+                settings.solve_status = "Cleaning tracks..."
+                settings.solve_progress = 0.70
                 
-                tracker.filter_short_tracks(min_frames=self.MIN_LIFESPAN)
+                # Unified cleanup: short tracks + spikes + non-rigid
+                tracker.cleanup_tracks(
+                    min_frames=self.MIN_LIFESPAN,
+                    spike_multiplier=8.0,
+                    jitter_threshold=0.6,
+                    coherence_threshold=0.4
+                )
                 
                 num = len(tracker.tracking.tracks)
                 if num < 8:
                     self.report({'ERROR'}, f"Only {num} tracks - footage may be too difficult")
                     return self._cancel(context)
                 
-                _state.phase = 'FILTER_SPIKES'
-                context.area.tag_redraw()
-                return {'RUNNING_MODAL'}
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: FILTER SPIKES
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'FILTER_SPIKES':
-                settings.solve_status = "Filtering outliers..."
-                settings.solve_progress = 0.72
-                
-                tracker.filter_spikes(limit_multiplier=8.0)
-                
                 # Pre-solve validation
                 is_valid, issues = tracker.validate_pre_solve()
                 if not is_valid:
                     self.report({'WARNING'}, f"Pre-solve issues: {'; '.join(issues[:2])}")
-                    # Continue anyway but log warning
                 
                 _state.phase = 'SOLVE_DRAFT'
                 context.area.tag_redraw()
@@ -558,18 +629,19 @@ class AUTOSOLVE_OT_export_training_data(Operator):
         from pathlib import Path
         
         try:
-            from .solver.smart_tracker import LocalLearningModel
+            from .solver.learning.settings_predictor import SettingsPredictor
             
-            model = LocalLearningModel()
+            predictor = SettingsPredictor()
             
             # Prepare export data with metadata
             export_data = {
-                'format_version': 1,
+                'format_version': 2,
                 'export_type': 'autosolve_training_data',
-                'session_count': model.model.get('session_count', 0),
-                'footage_classes': model.model.get('footage_classes', {}),
-                'region_models': model.model.get('region_models', {}),
-                'sessions': [],  # New field for detailed logs
+                'global_stats': predictor.model.get('global_stats', {}),
+                'footage_classes': predictor.model.get('footage_classes', {}),
+                'region_models': predictor.model.get('region_models', {}),
+                'failure_patterns': predictor.model.get('failure_patterns', {}),
+                'sessions': [],  # Detailed session logs
             }
             
             # Collect session logs
@@ -590,7 +662,8 @@ class AUTOSOLVE_OT_export_training_data(Operator):
             with open(filepath, 'w') as f:
                 json.dump(export_data, f, indent=2)
             
-            self.report({'INFO'}, f"Exported {export_data['session_count']} sessions to {filepath.name}")
+            total_sessions = export_data['global_stats'].get('total_sessions', len(export_data['sessions']))
+            self.report({'INFO'}, f"Exported {total_sessions} sessions to {filepath.name}")
             return {'FINISHED'}
             
         except Exception as e:
@@ -631,7 +704,7 @@ class AUTOSOLVE_OT_import_training_data(Operator):
         from pathlib import Path
         
         try:
-            from .solver.smart_tracker import LocalLearningModel
+            from .solver.learning.settings_predictor import SettingsPredictor
             
             filepath = Path(self.filepath)
             
@@ -647,36 +720,52 @@ class AUTOSOLVE_OT_import_training_data(Operator):
                 self.report({'ERROR'}, "Invalid training data format")
                 return {'CANCELLED'}
             
-            model = LocalLearningModel()
+            predictor = SettingsPredictor()
             
             if self.merge:
-                # Merge data
+                # Merge footage classes
                 for cls, data in import_data.get('footage_classes', {}).items():
-                    if cls not in model.model['footage_classes']:
-                        model.model['footage_classes'][cls] = data
+                    if cls not in predictor.model['footage_classes']:
+                        predictor.model['footage_classes'][cls] = data
                     else:
-                        # Keep the one with more samples
-                        existing = model.model['footage_classes'][cls]
+                        existing = predictor.model['footage_classes'][cls]
                         if data.get('sample_count', 0) > existing.get('sample_count', 0):
-                            model.model['footage_classes'][cls] = data
+                            predictor.model['footage_classes'][cls] = data
                 
+                # Merge region models
                 for region, data in import_data.get('region_models', {}).items():
-                    if region not in model.model['region_models']:
-                        model.model['region_models'][region] = data
+                    if region not in predictor.model['region_models']:
+                        predictor.model['region_models'][region] = data
                     else:
-                        model.model['region_models'][region]['total'] += data.get('total', 0)
-                        model.model['region_models'][region]['successful'] += data.get('successful', 0)
+                        predictor.model['region_models'][region]['total_tracks'] = \
+                            predictor.model['region_models'][region].get('total_tracks', 0) + data.get('total_tracks', data.get('total', 0))
+                        predictor.model['region_models'][region]['successful_tracks'] = \
+                            predictor.model['region_models'][region].get('successful_tracks', 0) + data.get('successful_tracks', data.get('successful', 0))
                 
-                model.model['session_count'] += import_data.get('session_count', 0)
+                # Merge failure patterns (v2)
+                for key, data in import_data.get('failure_patterns', {}).items():
+                    if key not in predictor.model.get('failure_patterns', {}):
+                        if 'failure_patterns' not in predictor.model:
+                            predictor.model['failure_patterns'] = {}
+                        predictor.model['failure_patterns'][key] = data
+                
+                # Update global stats
+                stats = import_data.get('global_stats', {})
+                predictor.model['global_stats']['total_sessions'] += stats.get('total_sessions', import_data.get('session_count', 0))
+                predictor.model['global_stats']['successful_sessions'] += stats.get('successful_sessions', 0)
             else:
-                # Replace
-                model.model['footage_classes'] = import_data.get('footage_classes', {})
-                model.model['region_models'] = import_data.get('region_models', {})
-                model.model['session_count'] = import_data.get('session_count', 0)
+                # Replace entire model
+                predictor.model['footage_classes'] = import_data.get('footage_classes', {})
+                predictor.model['region_models'] = import_data.get('region_models', {})
+                predictor.model['failure_patterns'] = import_data.get('failure_patterns', {})
+                predictor.model['global_stats'] = import_data.get('global_stats', {
+                    'total_sessions': import_data.get('session_count', 0),
+                    'successful_sessions': 0
+                })
             
-            model.save()
+            predictor._save_model()
             
-            imported_count = import_data.get('session_count', 0)
+            imported_count = import_data.get('global_stats', {}).get('total_sessions', import_data.get('session_count', 0))
             action = "Merged" if self.merge else "Imported"
             self.report({'INFO'}, f"{action} {imported_count} sessions from {filepath.name}")
             return {'FINISHED'}
@@ -698,19 +787,23 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
     
     def execute(self, context):
         try:
-            from .solver.smart_tracker import LocalLearningModel
+            from .solver.learning.settings_predictor import SettingsPredictor
             
-            model = LocalLearningModel()
+            predictor = SettingsPredictor()
             
             # Reset to empty
-            model.model = {
-                'version': 2,
-                'session_count': 0,
+            predictor.model = {
+                'version': 1,
                 'footage_classes': {},
                 'region_models': {},
-                'pretrained_used': True,
+                'failure_patterns': {},
+                'footage_type_adjustments': {},
+                'global_stats': {
+                    'total_sessions': 0,
+                    'successful_sessions': 0,
+                }
             }
-            model.save()
+            predictor._save_model()
             
             self.report({'INFO'}, "Training data reset to defaults")
             return {'FINISHED'}
@@ -729,24 +822,18 @@ class AUTOSOLVE_OT_view_training_stats(Operator):
     
     def execute(self, context):
         try:
-            from .solver.smart_tracker import LocalLearningModel
+            from .solver.learning.settings_predictor import SettingsPredictor
             
-            model = LocalLearningModel()
+            predictor = SettingsPredictor()
+            stats = predictor.get_stats()
             
-            session_count = model.model.get('session_count', 0)
-            classes = len(model.model.get('footage_classes', {}))
-            
-            # Calculate success stats
-            total_success = 0
-            total_samples = 0
-            for cls_data in model.model.get('footage_classes', {}).values():
-                total_success += cls_data.get('success_count', 0)
-                total_samples += cls_data.get('sample_count', 0)
-            
-            success_rate = total_success / max(total_samples, 1)
+            sessions = stats.get('total_sessions', 0)
+            classes = stats.get('footage_classes_known', 0)
+            success_rate = stats.get('success_rate', 0)
+            regions = stats.get('regions_analyzed', 0)
             
             self.report({'INFO'}, 
-                f"Sessions: {session_count} | Classes: {classes} | Success: {success_rate:.0%}")
+                f"Sessions: {sessions} | Classes: {classes} | Success: {success_rate:.0%} | Regions: {regions}")
             return {'FINISHED'}
             
         except Exception as e:
