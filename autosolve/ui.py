@@ -163,6 +163,17 @@ class AUTOSOLVE_PT_training_panel(Panel):
         
         layout.separator()
         
+        # Record edits toggle (prominent placement)
+        settings = context.scene.autosolve
+        box = layout.box()
+        row = box.row()
+        row.prop(settings, "record_edits", icon='REC')
+        row = box.row()
+        row.scale_y = 0.7
+        row.label(text="Helps make tracking smarter for everyone", icon='INFO')
+        
+        layout.separator()
+        
         # Actions
         col = layout.column(align=True)
         col.operator("autosolve.export_training_data", text="Export Data", icon='EXPORT')

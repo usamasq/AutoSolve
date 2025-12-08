@@ -59,20 +59,21 @@ AutoSolve is a Blender extension that automates camera tracking using **adaptive
 
 I'm a solo developer making professional camera tracking accessible to everyone.
 
+**Join the community:** [Discord](https://discord.gg/kkAmxKsS)
+
 ### 1. Test and Report Issues
 
 - **Found a bug?** Open an [issue on GitHub](https://github.com/yourusername/AutoSolve/issues)
-- **Feature request?** Start a [discussion](https://github.com/yourusername/AutoSolve/discussions)
+- **Feature request?** Share on [Discord](https://discord.gg/kkAmxKsS)
 
 ### 2. Contribute Training Data
 
-AutoSolve improves through community data. Your anonymized tracking sessions help train better defaults for everyone.
+AutoSolve gets smarter through community data. Your anonymized tracking sessions help improve defaults for everyone.
 
-**How to export your data:**
+**How to share your data:**
 
 1. In Blender: `Movie Clip Editor → AutoSolve → Training Data → Export`
-2. This creates a `.json` file with your session metrics
-3. **Email to:** `usamasq@gmail.com`
+2. Share on [Discord](https://discord.gg/kkAmxKsS) or email: `usamasq@gmail.com`
 
 **What's collected:**
 
@@ -175,9 +176,14 @@ Notes: Required 2 retries, edges struggled
 
 ### Submit Data
 
-1. Export via `Training Data → Export`
-2. Email to: **usamasq@gmail.com**
-3. Include footage description
+### Submit Data
+
+Please refer to **[CONTRIBUTING_DATA.md](CONTRIBUTING_DATA.md)** for:
+
+- ✅ Data privacy details
+- ✅ Export instructions
+- ✅ Data quality guidelines
+- ✅ ML training instructions
 
 ---
 

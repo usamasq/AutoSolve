@@ -23,8 +23,8 @@ autosolve/
 └── solver/
     ├── smart_tracker.py      # Adaptive tracking engine
     ├── blender_tracker.py    # Low-level Blender API wrapper
+    ├── settings_manager.py   # Centralized settings management
     └── learning/
-        ├── __init__.py
         ├── session_recorder.py    # Session telemetry collection
         ├── settings_predictor.py  # Optimal settings prediction
         ├── failure_diagnostics.py # Failure analysis & fixes
@@ -42,6 +42,7 @@ autosolve/
 **Key Features:**
 
 - **Phased Detection** - Motion probe → Quality placement → Reinforcement
+- **Probe Caching** - Probe results are cached to disk to speed up re-analysis
 - **Motion Analysis** - Classifies footage as LOW/MEDIUM/HIGH motion
 - **Quality over Quantity** - 1-2 markers per region, not carpet-bombing
 - **Adaptive Learning** - Settings adjust based on measured motion characteristics
@@ -108,14 +109,16 @@ def solve_camera(tripod_mode)
 
 | File                     | Purpose                               |
 | ------------------------ | ------------------------------------- |
-| `session_recorder.py`    | Collects session telemetry            |
+| `session_recorder.py`    | Collects session & frame telemetry    |
 | `settings_predictor.py`  | Predicts optimal settings             |
 | `failure_diagnostics.py` | Diagnoses failures & recommends fixes |
 | `pretrained_model.json`  | Bundled defaults from community data  |
+| `user_edit_recorder.py`  | Captures expert editing patterns      |
 
 #### Session Recorder
 
 - Records tracking attempts (settings, success metrics, errors)
+- Captures **frame samples**, **trajectory data**, and **camera intrinsics**
 - Stores sessions as JSON in `%APPDATA%/AutoSolve/sessions/`
 - Anonymizes data (no file paths or identifying info)
 

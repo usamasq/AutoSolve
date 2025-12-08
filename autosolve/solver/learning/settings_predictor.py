@@ -444,8 +444,20 @@ class SettingsPredictor:
             
             # Handle both dict format and legacy integer format
             if isinstance(stats, dict):
-                rm['total_tracks'] += stats.get('total_tracks', 0)
-                rm['successful_tracks'] += stats.get('successful_tracks', 0)
+                new_tracks = stats.get('total_tracks', 0)
+                new_successful = stats.get('successful_tracks', 0)
+                new_lifespan = stats.get('avg_lifespan', 0.0)
+                
+                # Update running average for lifespan
+                old_count = rm['total_tracks']
+                rm['total_tracks'] += new_tracks
+                rm['successful_tracks'] += new_successful
+                
+                # Compute weighted average of lifespans
+                if rm['total_tracks'] > 0 and new_tracks > 0:
+                    old_weight = old_count / rm['total_tracks']
+                    new_weight = new_tracks / rm['total_tracks']
+                    rm['avg_lifespan'] = (rm['avg_lifespan'] * old_weight) + (new_lifespan * new_weight)
             elif isinstance(stats, (int, float)):
                 # Legacy format: just a count
                 rm['total_tracks'] += int(stats)

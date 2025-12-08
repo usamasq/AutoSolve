@@ -111,6 +111,10 @@ class SessionData:
     # Mid-session adaptation history
     adaptation_history: List[Dict] = field(default_factory=list)
     region_confidence: Dict = field(default_factory=dict)
+    
+    # ML Enhancement: Per-frame samples for temporal analysis
+    # Format: [{"frame": int, "active_tracks": int, "tracks_lost": int, "avg_velocity": float}, ...]
+    frame_samples: List[Dict] = field(default_factory=list)
 
 
 class SessionRecorder:
@@ -339,6 +343,59 @@ class SessionRecorder:
         self.current_session.adaptation_history = adaptation_summary.get('adaptation_history', [])
         self.current_session.region_confidence = adaptation_summary.get('region_confidence', {})
     
+    def record_frame_sample(self, frame: int, tracking, prev_active_count: int = 0):
+        """
+        Record per-frame statistics for ML temporal analysis.
+        
+        Call this periodically during tracking (e.g., every 10 frames) to capture
+        temporal dynamics for RNN/LSTM training.
+        
+        Args:
+            frame: Current frame number
+            tracking: Blender tracking object
+            prev_active_count: Active track count from previous sample (to compute tracks_lost)
+        """
+        if not self.current_session:
+            return 0
+        
+        # Count active tracks at this frame
+        active_count = 0
+        velocities = []
+        
+        for track in tracking.tracks:
+            marker = track.markers.find_frame(frame)
+            if marker and not marker.mute:
+                active_count += 1
+                
+                # Compute velocity from previous marker
+                prev_marker = track.markers.find_frame(frame - 1)
+                if prev_marker and not prev_marker.mute:
+                    dx = marker.co.x - prev_marker.co.x
+                    dy = marker.co.y - prev_marker.co.y
+                    v = (dx**2 + dy**2) ** 0.5
+                    velocities.append(v)
+        
+        # Compute average velocity
+        avg_velocity = sum(velocities) / len(velocities) if velocities else 0.0
+        
+        # Compute tracks lost since last sample
+        tracks_lost = max(0, prev_active_count - active_count) if prev_active_count > 0 else 0
+        
+        sample = {
+            'frame': frame,
+            'active_tracks': active_count,
+            'tracks_lost': tracks_lost,
+            'avg_velocity': round(avg_velocity, 6),
+        }
+        
+        self.current_session.frame_samples.append(sample)
+        return active_count  # Return for next call's prev_active_count
+    
+    # Alias for backward compatibility
+    def finalize_session(self, success: bool, solve_error: float, bundle_count: int):
+        """Alias for end_session for backward compatibility."""
+        self.end_session(success, solve_error, bundle_count)
+    
     def end_session(self, success: bool, solve_error: float, bundle_count: int):
         """Finalize and save the session."""
         if not self.current_session or not self.start_time:
@@ -352,6 +409,36 @@ class SessionRecorder:
         
         # Save to disk
         self._save_session()
+    
+    def _save_edit_session(self, edit_session):
+        """
+        Save user edit session data to JSON file.
+        
+        Args:
+            edit_session: EditSession dataclass from UserEditRecorder
+        """
+        from dataclasses import asdict
+        
+        try:
+            # Create edits subdirectory
+            edits_dir = self.data_dir.parent / 'edits'
+            edits_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate filename
+            timestamp = edit_session.timestamp.replace(':', '-').replace('.', '-')
+            filename = f"edits_{timestamp[:19]}.json"
+            filepath = edits_dir / filename
+            
+            # Convert to dict and sanitize
+            edit_dict = asdict(edit_session)
+            edit_dict = self._sanitize_for_json(edit_dict)
+            
+            with open(filepath, 'w') as f:
+                json.dump(edit_dict, f, indent=2)
+            
+            print(f"AutoSolve: Saved edit session to {filepath}")
+        except (OSError, IOError, TypeError) as e:
+            print(f"AutoSolve: Error saving edit session: {e}")
     
     def _save_session(self):
         """Save session data to JSON file."""

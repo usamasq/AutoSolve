@@ -207,6 +207,26 @@ Each tracking session generates a JSON file with this structure:
 | `best_regions`         | [str]  | Regions with >50% survival during probe          |
 | `adaptation_history`   | [obj]  | List of mid-session settings adaptations         |
 | `region_confidence`    | Dict   | Probabilistic confidence scores per region (0-1) |
+| `frame_samples`        | [obj]  | Per-frame statistics for temporal ML (v3+)       |
+
+### Frame Samples (v3 Schema)
+
+Per-frame telemetry for RNN/LSTM training:
+
+```json
+"frame_samples": [
+  {"frame": 1, "active_tracks": 27, "tracks_lost": 0, "avg_velocity": 0.012},
+  {"frame": 10, "active_tracks": 25, "tracks_lost": 2, "avg_velocity": 0.015},
+  {"frame": 20, "active_tracks": 23, "tracks_lost": 0, "avg_velocity": 0.018}
+]
+```
+
+| Field           | Type  | Description                           |
+| --------------- | ----- | ------------------------------------- |
+| `frame`         | int   | Frame number                          |
+| `active_tracks` | int   | Number of active tracks at this frame |
+| `tracks_lost`   | int   | Tracks lost since previous sample     |
+| `avg_velocity`  | float | Average velocity across active tracks |
 
 ### Adaptation Record Structure
 
@@ -429,6 +449,8 @@ All session data is **anonymized**:
 - ✅ Only numerical metrics
 
 ### Sharing Your Data
+
+**[Read the Full Contribution Guide](CONTRIBUTING_DATA.md)**
 
 To help improve AutoSolve for everyone:
 

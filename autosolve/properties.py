@@ -97,6 +97,18 @@ class AutoSolveSettings(PropertyGroup):
     )
     
     # ═══════════════════════════════════════════════════════════
+    # TRAINING DATA OPTIONS
+    # ═══════════════════════════════════════════════════════════
+    
+    record_edits: BoolProperty(
+        name="Record My Edits",
+        description="Help improve AutoSolve! When enabled, your track edits "
+                    "(deletions, refinements) are anonymously recorded between solves. "
+                    "Shared data makes tracking smarter for everyone",
+        default=False,
+    )
+    
+    # ═══════════════════════════════════════════════════════════
     # SOLVER STATE (runtime, not saved)
     # ═══════════════════════════════════════════════════════════
     
