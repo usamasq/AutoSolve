@@ -226,15 +226,16 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     
                     _state.frame_current = _state.frame_end
                     _state.phase = 'TRACK_BACKWARD'
-                    # Start AT optimal_start (where forward tracking began and has marker data)
+                    # Start 3 FRAMES AFTER optimal_start (into forward-tracked territory) to ensure overlap
+                    # This re-tracks existing markers to establish trajectory before hitting new frames
                     optimal_start = getattr(_state, 'optimal_start', _state.frame_start)
-                    _state.frame_current = optimal_start
+                    _state.frame_current = min(optimal_start + 3, _state.frame_end)
                     context.scene.frame_set(_state.frame_current)
                     tracker.select_all_tracks()
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 
-                # Frame-by-frame mode: progress feedback (default)
+                # Frame-by-frame mode with ADAPTIVE monitoring
                 progress = (_state.frame_current - _state.frame_start) / clip.frame_duration
                 settings.solve_status = f"Tracking... {int(progress*100)}%"
                 settings.solve_progress = 0.05 + progress * 0.40
@@ -244,41 +245,27 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     _state.frame_current += 1
                     context.scene.frame_set(_state.frame_current)
                     
-                    # Live validation every 10 frames
-                    if _state.frame_current % 10 == 0:
-                        tracker.validate_track_quality(_state.frame_current)
-                    
-                    # Check segment for replenishment
-                    frames_in_seg = _state.frame_current - _state.segment_start
-                    if frames_in_seg >= self.SEGMENT_SIZE:
-                        active = tracker.count_active_tracks(_state.frame_current)
-                        if active < self.MIN_TRACKS:
-                            # Detect more features
-                            threshold = tracker.current_settings.get('threshold', 0.3)
-                            tracker.detect_features(threshold * 1.2)  # Slightly more lenient
-                            tracker.select_all_tracks()
-                        _state.segment_start = _state.frame_current
+                    # ADAPTIVE monitoring every MONITOR_INTERVAL frames
+                    if _state.frame_current % tracker.MONITOR_INTERVAL == 0:
+                        tracker.monitor_and_replenish(_state.frame_current, backwards=False)
                     
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
-                    # Forward tracking complete, now track BACKWARD to cover early frames
+                    # Forward tracking complete, now track BACKWARD from END to cover all markers
                     _state.phase = 'TRACK_BACKWARD'
-                    # Start AT optimal_start (where forward tracking began and has marker data)
-                    optimal_start = getattr(_state, 'optimal_start', _state.frame_start)
-                    _state.frame_current = optimal_start
+                    # Start from frame_end (not optimal_start) to ensure markers added
+                    # during forward pass are fully covered backward
+                    _state.frame_current = _state.frame_end
                     context.scene.frame_set(_state.frame_current)
                     tracker.select_all_tracks()
                     return {'RUNNING_MODAL'}
-            
             # ═══════════════════════════════════════════════════════════════
-            # PHASE: TRACK BACKWARD
+            # PHASE: TRACK BACKWARD (Adaptive)
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'TRACK_BACKWARD':
-                optimal_start = getattr(_state, 'optimal_start', _state.frame_start)
-                
                 # Check if user wants batch tracking (faster, no progress feedback)
-                if settings.batch_tracking and _state.frame_current == optimal_start:
+                if settings.batch_tracking and _state.frame_current == _state.frame_end:
                     settings.solve_status = "Batch tracking backward..."
                     settings.solve_progress = 0.55
                     
@@ -289,112 +276,38 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     )
                     print(f"AutoSolve: Batch tracked {frames} frames backward")
                     
-                    # After bidirectional tracking, replenish middle section
-                    _state.phase = 'MID_REPLENISH'
+                    # Cleanup and go directly to ANALYZE
+                    tracker.cleanup_tracks()
+                    _state.phase = 'ANALYZE'
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 
-                # Frame-by-frame mode: progress feedback (default)
-                progress = (optimal_start - _state.frame_current) / max(optimal_start - _state.frame_start, 1)
-                settings.solve_status = f"Backfilling early frames... {int(progress*100)}%"
+                # Frame-by-frame mode with ADAPTIVE monitoring
+                progress = (_state.frame_end - _state.frame_current) / clip.frame_duration
+                settings.solve_status = f"Tracking backward... {int(progress*100)}%"
                 settings.solve_progress = 0.45 + progress * 0.15
                 
                 if _state.frame_current > _state.frame_start:
                     tracker.track_frame(backwards=True)
                     _state.frame_current -= 1
                     context.scene.frame_set(_state.frame_current)
-                    context.area.tag_redraw()
-                    return {'RUNNING_MODAL'}
-                else:
-                    # After bidirectional tracking, replenish middle section
-                    _state.phase = 'MID_REPLENISH'
-                    return {'RUNNING_MODAL'}
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: MID REPLENISH (Fix middle section coverage)
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'MID_REPLENISH':
-                settings.solve_status = "Replenishing middle section..."
-                settings.solve_progress = 0.60
-                
-                # The middle section (where tracking started) often has fewer
-                # surviving tracks because markers die in both directions.
-                # This phase adds new markers at the middle and tracks them.
-                
-                optimal_start = getattr(_state, 'optimal_start', 
-                                       _state.frame_start + clip.frame_duration // 2)
-                context.scene.frame_set(optimal_start)
-                
-                # Count active tracks at the middle frame
-                active_at_middle = tracker.count_active_tracks(optimal_start)
-                print(f"AutoSolve: Middle section has {active_at_middle} active tracks")
-                
-                # If middle section is sparse, add more markers
-                if active_at_middle < self.MIN_TRACKS:
-                    needed = self.MIN_TRACKS - active_at_middle + 5  # Add extra buffer
                     
-                    # Detect new features at this frame
-                    threshold = tracker.current_settings.get('threshold', 0.3) * 0.5
-                    new_markers = tracker.detect_features(threshold)
+                    # ADAPTIVE monitoring every MONITOR_INTERVAL frames
+                    if _state.frame_current % tracker.MONITOR_INTERVAL == 0:
+                        tracker.monitor_and_replenish(_state.frame_current, backwards=True)
                     
-                    if new_markers > 0:
-                        print(f"AutoSolve: Added {new_markers} markers at middle section")
-                        tracker.select_all_tracks()
-                        
-                        # Track new markers forward first
-                        _state.phase = 'MID_TRACK_FORWARD'
-                        _state.mid_track_frame = optimal_start
-                        _state.frame_current = optimal_start  # Start from middle, not from frame_start
-                        context.scene.frame_set(optimal_start)
-                        return {'RUNNING_MODAL'}
-                
-                # Middle is fine, proceed to analysis
-                _state.phase = 'ANALYZE'
-                return {'RUNNING_MODAL'}
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: MID TRACK FORWARD (Track new middle markers forward)
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'MID_TRACK_FORWARD':
-                mid_start = getattr(_state, 'mid_track_frame', _state.frame_start)
-                progress = (_state.frame_current - mid_start) / max(_state.frame_end - mid_start, 1)
-                settings.solve_status = f"Tracking middle markers forward... {int(progress*100)}%"
-                settings.solve_progress = 0.60 + progress * 0.02
-                
-                if _state.frame_current < _state.frame_end:
-                    tracker.track_frame(backwards=False)
-                    _state.frame_current += 1
-                    context.scene.frame_set(_state.frame_current)
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
-                    # Now track backward from middle to start
-                    _state.phase = 'MID_TRACK_BACKWARD'
-                    # Start AT mid_track_frame (where forward tracking began and has marker data)
-                    mid_frame = getattr(_state, 'mid_track_frame', _state.frame_start)
-                    _state.frame_current = mid_frame
-                    context.scene.frame_set(_state.frame_current)
-                    tracker.select_all_tracks()
-                    return {'RUNNING_MODAL'}
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: MID TRACK BACKWARD (Track new middle markers backward)
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'MID_TRACK_BACKWARD':
-                mid_start = getattr(_state, 'mid_track_frame', _state.frame_start)
-                progress = (mid_start - _state.frame_current) / max(mid_start - _state.frame_start, 1)
-                settings.solve_status = f"Tracking middle markers backward... {int(progress*100)}%"
-                settings.solve_progress = 0.62 + progress * 0.02
-                
-                if _state.frame_current > _state.frame_start:
-                    tracker.track_frame(backwards=True)
-                    _state.frame_current -= 1
-                    context.scene.frame_set(_state.frame_current)
-                    context.area.tag_redraw()
-                    return {'RUNNING_MODAL'}
-                else:
+                    # Bidirectional tracking complete!
+                    # Cleanup and go directly to ANALYZE (skip MID_REPLENISH and other phases)
+                    tracker.cleanup_tracks()
                     _state.phase = 'ANALYZE'
                     return {'RUNNING_MODAL'}
+            
+            # NOTE: MID_REPLENISH, MID_TRACK_FORWARD, MID_TRACK_BACKWARD phases removed.
+            # Replaced by adaptive monitor_and_replenish() during TRACK_FORWARD/BACKWARD.
+            
             
             # ═══════════════════════════════════════════════════════════════
             # PHASE: ANALYZE (Learning)
@@ -409,72 +322,15 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if tracker.should_retry(_state.last_analysis):
                     _state.phase = 'RETRY_DECISION'
                 else:
-                    # Move to coverage analysis for balanced distribution
-                    _state.phase = 'ANALYZE_COVERAGE'
-                
-                context.area.tag_redraw()
-                return {'RUNNING_MODAL'}
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: ANALYZE COVERAGE (Balance Check)
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'ANALYZE_COVERAGE':
-                settings.solve_status = "Checking coverage balance..."
-                settings.solve_progress = 0.65
-                
-                summary = tracker.get_coverage_analysis()
-                print(f"AutoSolve: Coverage - {summary['regions_with_tracks']}/9 regions, "
-                      f"balance: {summary['balance_score']:.2f}, temporal: {summary['temporal_coverage']:.0%}")
-                
-                if not summary['is_balanced'] and tracker.should_continue_strategic():
-                    _state.phase = 'FILL_GAPS'
-                else:
+                    # Go directly to cleanup (adaptive monitoring handles gaps)
                     _state.phase = 'FILTER_SHORT'
                 
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: FILL COVERAGE GAPS (Strategic Iteration)
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'FILL_GAPS':
-                settings.solve_status = f"Filling coverage gaps (iter {tracker.strategic_iteration + 1})..."
-                settings.solve_progress = 0.67
-                
-                # Fill gaps and track new markers
-                result = tracker.strategic_track_iteration()
-                
-                if result['markers_added'] > 0:
-                    # Track the new markers
-                    tracker.select_all_tracks()
-                    _state.phase = 'TRACK_NEW'
-                    _state.frame_current = _state.frame_start
-                    context.scene.frame_set(_state.frame_start)
-                else:
-                    # No more gaps to fill, proceed
-                    _state.phase = 'FILTER_SHORT'
-                
-                context.area.tag_redraw()
-                return {'RUNNING_MODAL'}
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: TRACK NEW (Track newly added markers)
-            # ═══════════════════════════════════════════════════════════════
-            elif _state.phase == 'TRACK_NEW':
-                progress = (_state.frame_current - _state.frame_start) / clip.frame_duration
-                settings.solve_status = f"Tracking new markers... {int(progress*100)}%"
-                settings.solve_progress = 0.68 + progress * 0.02
-                
-                if _state.frame_current < _state.frame_end:
-                    tracker.track_frame(backwards=False)
-                    _state.frame_current += 1
-                    context.scene.frame_set(_state.frame_current)
-                    context.area.tag_redraw()
-                    return {'RUNNING_MODAL'}
-                else:
-                    # Check coverage again
-                    _state.phase = 'ANALYZE_COVERAGE'
-                    return {'RUNNING_MODAL'}
+            # NOTE: ANALYZE_COVERAGE, FILL_GAPS, TRACK_GAP_*, VERIFY_TIMELINE, EXTEND_* phases removed.
+            # These were replaced by adaptive monitor_and_replenish() during TRACK_FORWARD/BACKWARD,
+            # which handles gaps in real-time without requiring additional full-clip tracking passes.
             
             # ═══════════════════════════════════════════════════════════════
             # PHASE: RETRY DECISION
@@ -512,7 +368,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     
                     # If no confident diagnosis, apply aggressive generic fix
                     if not applied_diagnostic_fix:
-                        # Increase search significantly (better than 10% threshold tweak)
                         old_search = tracker.current_settings.get('search_size', 71)
                         tracker.current_settings['search_size'] = int(old_search * 1.5)
                         tracker.current_settings['correlation'] = max(
@@ -543,7 +398,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 # Note: keeping 'FILTER_SHORT' as phase name for backwards compat
                 # but this now does ALL cleanup in one pass
                 settings.solve_status = "Cleaning tracks..."
-                settings.solve_progress = 0.70
+                settings.solve_progress = 0.75
                 
                 # Unified cleanup: short tracks + spikes + non-rigid
                 tracker.cleanup_tracks(

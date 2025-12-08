@@ -153,13 +153,18 @@ Clip → Predict Settings → Track → IF FAILS: Diagnose → Fix → Retry
 **Modal Pipeline:**
 
 ```
-LOAD_LEARNING → CONFIGURE → DETECT → TRACK_FORWARD →
-TRACK_BACKWARD → ANALYZE → ANALYZE_COVERAGE → FILL_GAPS →
-CLEANUP → SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL →
-REFINE → COMPLETE
+LOAD_LEARNING → CONFIGURE → DETECT →
+TRACK_FORWARD (adaptive) → TRACK_BACKWARD (adaptive) →
+ANALYZE → RETRY_DECISION → CLEANUP →
+SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL → REFINE → COMPLETE
 ```
 
-**Note:** CLEANUP phase consolidates FILTER_SHORT, FILTER_SPIKES, and FILTER_NON_RIGID into a single pass.
+**Adaptive Tracking Features:**
+
+- `monitor_and_replenish()` called every 10 frames during tracking
+- Adds markers surgically where survival drops below 50%
+- Adapts settings if survival drops below 30%
+- Backward pass starts from `frame_end` to ensure all markers are covered
 
 **Learning Operators:**
 
@@ -271,9 +276,10 @@ Location: Movie Clip Editor → Sidebar (N) → AutoSolve tab
 ┌──────────────────────────────────────────┐
 │ Track frame-by-frame (modal)            │
 ├──────────────────────────────────────────┤
-│ • Forward: frame_start → frame_end      │
-│ • Backward: frame_end → frame_start     │
-│ • Live quality validation               │
+│ • Forward: optimal_start → frame_end    │
+│ • Backward: optimal_start → frame_start │
+│ • Fill gaps: bidirectional from gaps    │
+│ • Verify: extend tracks to full timeline│
 └──────┬───────────────────────────────────┘
        │
        ▼

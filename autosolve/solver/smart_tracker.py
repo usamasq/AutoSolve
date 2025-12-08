@@ -684,6 +684,38 @@ class SmartTracker:
         self._load_initial_settings()
     
     # ─────────────────────────────────────────────────────────────────────────
+    # FRAME COORDINATE CONVERSION
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def scene_to_clip_frame(self, scene_frame: int) -> int:
+        """
+        Convert scene frame to clip-relative frame number.
+        
+        Blender's marker API (track.markers.find_frame) uses clip-relative frames,
+        where frame 1 is the first frame of the clip, regardless of where the
+        clip is positioned in the timeline.
+        
+        Args:
+            scene_frame: Frame number in the scene/timeline
+            
+        Returns:
+            Frame number relative to the clip (1-indexed)
+        """
+        return scene_frame - self.clip.frame_start + 1
+    
+    def clip_to_scene_frame(self, clip_frame: int) -> int:
+        """
+        Convert clip-relative frame to scene frame number.
+        
+        Args:
+            clip_frame: Frame number relative to the clip (1-indexed)
+            
+        Returns:
+            Frame number in the scene/timeline
+        """
+        return clip_frame + self.clip.frame_start - 1
+
+    # ─────────────────────────────────────────────────────────────────────────
     # PROBE CACHING (Per-Clip Persistence)
     # ─────────────────────────────────────────────────────────────────────────
     
@@ -1007,14 +1039,151 @@ class SmartTracker:
             return 0.0
         
         active_at_frame = 0
+        clip_frame = self.scene_to_clip_frame(frame)  # Convert scene frame to clip-relative
         for track in self.tracking.tracks:
-            marker = track.markers.find_frame(frame)
+            marker = track.markers.find_frame(clip_frame)
             if marker and not marker.mute:
                 active_at_frame += 1
         
         rate = active_at_frame / total_tracks
         self.last_survival_rate = rate
         return rate
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # ADAPTIVE MONITORING (Real-time health tracking)
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    # Monitoring constants
+    MONITOR_INTERVAL = 10  # Check every 10 frames
+    SURVIVAL_THRESHOLD = 0.5  # Below 50% → add markers
+    CRITICAL_THRESHOLD = 0.3  # Below 30% → adapt settings
+    
+    def monitor_and_replenish(self, frame: int, backwards: bool = False) -> Dict:
+        """
+        Real-time monitoring with surgical replenishment.
+        
+        Called every MONITOR_INTERVAL frames during tracking.
+        
+        - Adds markers surgically where survival is dropping
+        - Adapts settings if survival is critical
+        - Records samples for learning
+        
+        Args:
+            frame: Current frame number
+            backwards: Whether tracking is going backwards (affects new marker priming)
+            
+        Returns:
+            Dict with monitoring results
+        """
+        result = {
+            'frame': frame,
+            'survival_rate': self.get_current_survival_rate(frame),
+            'markers_added': 0,
+            'adapted': False,
+            'changes': [],
+        }
+        
+        # 1. Check if we need to add markers
+        if result['survival_rate'] < self.SURVIVAL_THRESHOLD:
+            # Identify weak regions at current frame
+            weak_regions = self._identify_weak_regions_at_frame(frame)
+            
+            # Track which markers existed before so we can identify new ones
+            existing_tracks = set(self.tracking.tracks)
+            
+            for region in weak_regions[:3]:  # Max 3 regions per check
+                added = self.detect_in_region(region, count=1)
+                result['markers_added'] += added
+                if added > 0:
+                    result['changes'].append(f"+{added} in {region}")
+            
+            # CRITICAL: Track newly added markers in the current direction
+            # so they have keyframes at the next frame when tracking continues
+            if result['markers_added'] > 0:
+                # Find new tracks
+                new_tracks = [t for t in self.tracking.tracks if t not in existing_tracks]
+                
+                # Select only the new tracks and track them one frame
+                for track in self.tracking.tracks:
+                    track.select = track in new_tracks
+                
+                if new_tracks:
+                    try:
+                        self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
+                    except Exception as e:
+                        print(f"AutoSolve: Failed to prime new markers: {e}")
+                    
+                    # Re-select all tracks for the next main tracking step
+                    self.select_all_tracks()
+        
+        # 2. Adapt settings if critical
+        if result['survival_rate'] < self.CRITICAL_THRESHOLD:
+            adaptation = self.adapt_settings_mid_session(result['survival_rate'])
+            result['adapted'] = adaptation.get('adapted', False)
+            if result['adapted']:
+                result['changes'].extend(adaptation.get('changes', []))
+        
+        # 3. Log significant events
+        if result['markers_added'] > 0 or result['adapted']:
+            print(f"AutoSolve: Frame {frame} - survival: {result['survival_rate']:.0%}, "
+                  f"added: {result['markers_added']}, adapted: {result['adapted']}")
+        
+        return result
+    
+    def _identify_weak_regions_at_frame(self, frame: int) -> List[str]:
+        """
+        Identify regions with low track coverage at a specific frame.
+        
+        Returns:
+            List of region names needing more markers
+        """
+        all_regions = [
+            'top-left', 'top-center', 'top-right',
+            'mid-left', 'center', 'mid-right',
+            'bottom-left', 'bottom-center', 'bottom-right'
+        ]
+        
+        region_counts = {r: 0 for r in all_regions}
+        
+        for track in self.tracking.tracks:
+            marker = track.markers.find_frame(frame)
+            if marker and not marker.mute:
+                # Determine which region this marker is in
+                x, y = marker.co.x, marker.co.y
+                region = self._get_region_for_position(x, y)
+                if region:
+                    region_counts[region] = region_counts.get(region, 0) + 1
+        
+        # Exclude known dead zones
+        for dz in self.known_dead_zones:
+            if dz in region_counts:
+                del region_counts[dz]
+        
+        # Sort by count (ascending) and return regions with < 2 markers
+        weak = [r for r, count in sorted(region_counts.items(), key=lambda x: x[1]) 
+                if count < 2]
+        
+        return weak
+    
+    def _get_region_for_position(self, x: float, y: float) -> Optional[str]:
+        """Map normalized x,y position to region name."""
+        # x, y are 0-1 normalized (or may be absolute - handle both)
+        if x > 1 or y > 1:
+            # Probably absolute - normalize
+            x = x / self.clip.size[0] if self.clip.size[0] else x
+            y = y / self.clip.size[1] if self.clip.size[1] else y
+        
+        # Grid: 3x3
+        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
+        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)  # y is inverted in Blender
+        
+        region_map = [
+            ['top-left', 'top-center', 'top-right'],
+            ['mid-left', 'center', 'mid-right'],
+            ['bottom-left', 'bottom-center', 'bottom-right']
+        ]
+        
+        return region_map[row][col]
     
     def get_adaptation_summary(self) -> Dict:
         """
@@ -1866,10 +2035,18 @@ class SmartTracker:
         velocities = probe.get('velocities', {})
         
         # Check if this region had very low success in the probe
-        if region in region_success and region_success[region] < 0.2:
-            # Probe showed this region is problematic
-            print(f"AutoSolve: Skipping {region} - probe showed {region_success[region]:.0%} success")
-            return True
+        if region in region_success:
+            region_data = region_success[region]
+            # Handle both dict format (new) and float format (legacy)
+            if isinstance(region_data, dict):
+                success_rate = region_data.get('success_rate', 1.0)
+            else:
+                success_rate = region_data
+            
+            if success_rate < 0.2:
+                # Probe showed this region is problematic
+                print(f"AutoSolve: Skipping {region} - probe showed {success_rate:.0%} success")
+                return True
         
         # Check if this region had extremely high velocity (likely non-rigid)
         if region in velocities:
@@ -1942,10 +2119,11 @@ class SmartTracker:
         outside = []
         
         current_frame = bpy.context.scene.frame_current
+        clip_frame = self.scene_to_clip_frame(current_frame)  # Convert to clip-relative
         
         for track in new_tracks:
             # Try to find marker at current frame
-            marker = track.markers.find_frame(current_frame)
+            marker = track.markers.find_frame(clip_frame)
             
             # If no marker at exact frame, try to get any marker from this track
             if not marker and len(track.markers) > 0:
@@ -1990,7 +2168,7 @@ class SmartTracker:
         This is ~60% faster than calling detect_in_region 9 times because it:
         1. Runs detect_features ONCE globally
         2. Categorizes ALL features by region in one pass
-        3. Keeps top N per region, deletes the rest
+        3. Sorts by QUALITY and keeps top N per region
         
         Args:
             markers_per_region: Target markers per region (default 3)
@@ -2014,15 +2192,24 @@ class SmartTracker:
         
         initial_count = len(self.tracking.tracks)
         
-        # Single global detection with low threshold
-        threshold = self.current_settings.get('threshold', 0.3) * DETECTION_THRESHOLD_MULTIPLIER
+        # DEBUG: Log frame context before detection
+        scene_frame = bpy.context.scene.frame_current
+        print(f"AutoSolve DEBUG: detect_all_regions at scene_frame={scene_frame}, clip.frame_start={self.clip.frame_start}")
+        print(f"AutoSolve DEBUG: Expected clip_frame = {self.scene_to_clip_frame(scene_frame)}")
         
+        # Use HIGHER threshold for better quality initial features
+        # A higher threshold means only strong corners/features are detected
+        base_threshold = self.current_settings.get('threshold', 0.3)
+        threshold = max(0.4, base_threshold) * DETECTION_THRESHOLD_MULTIPLIER
+        
+        # Detect with smaller min_distance to get MORE candidates
+        # We'll filter by quality later
         try:
             self._run_ops(
                 bpy.ops.clip.detect_features,
                 threshold=threshold,
-                min_distance=40,  # Slightly lower for more candidates
-                margin=15,
+                min_distance=25,  # Smaller = more candidates to choose from
+                margin=20,        # Slightly larger margin to avoid edge issues
                 placement='FRAME'
             )
         except Exception as e:
@@ -2031,20 +2218,27 @@ class SmartTracker:
         
         new_tracks = list(self.tracking.tracks)[initial_count:]
         
+        # DEBUG: Show where markers were actually placed
+        if new_tracks:
+            sample_marker = new_tracks[0].markers[0] if len(new_tracks[0].markers) > 0 else None
+            if sample_marker:
+                print(f"AutoSolve DEBUG: First marker placed at clip frame {sample_marker.frame} (expected {self.scene_to_clip_frame(scene_frame)})")
+        
         if not new_tracks:
             print("AutoSolve: No features detected")
             return {r: 0 for r in CoverageAnalyzer.REGIONS}
         
         print(f"AutoSolve: Global detection found {len(new_tracks)} candidates")
         
-        # Categorize all tracks by region
-        tracks_by_region: Dict[str, List] = {r: [] for r in CoverageAnalyzer.REGIONS}
+        # Categorize all tracks by region WITH QUALITY SCORE
+        tracks_by_region: Dict[str, List[Tuple[Any, float]]] = {r: [] for r in CoverageAnalyzer.REGIONS}
         no_marker_tracks = []
         
         current_frame = bpy.context.scene.frame_current
+        clip_frame = self.scene_to_clip_frame(current_frame)  # Convert to clip-relative
         
         for track in new_tracks:
-            marker = track.markers.find_frame(current_frame)
+            marker = track.markers.find_frame(clip_frame)
             if not marker and len(track.markers) > 0:
                 marker = track.markers[0]
             
@@ -2052,10 +2246,13 @@ class SmartTracker:
                 no_marker_tracks.append(track)
                 continue
             
+            # Score the feature based on position quality
+            quality = self._score_feature_quality(marker, track)
+            
             region = self.coverage_analyzer.get_region(marker.co.x, marker.co.y)
-            tracks_by_region[region].append(track)
+            tracks_by_region[region].append((track, quality))
         
-        # Process each region: keep top N, mark rest for deletion
+        # Process each region: SORT BY QUALITY, keep top N
         result: Dict[str, int] = {}
         to_delete = list(no_marker_tracks)  # Always delete tracks without markers
         
@@ -2064,19 +2261,22 @@ class SmartTracker:
             
             if region in skip_regions:
                 # Skip this region entirely - delete all its tracks
-                to_delete.extend(region_tracks)
+                to_delete.extend([t for t, _ in region_tracks])
                 result[region] = 0
                 continue
             
-            # Keep up to markers_per_region
+            # SORT by quality score (highest first)
+            region_tracks.sort(key=lambda x: x[1], reverse=True)
+            
+            # Keep up to markers_per_region of the BEST quality features
             keep_count = min(len(region_tracks), markers_per_region)
             
-            for track in region_tracks[:keep_count]:
+            for track, quality in region_tracks[:keep_count]:
                 self._apply_track_settings(track)
                 track.select = False
             
             # Mark excess for deletion
-            to_delete.extend(region_tracks[keep_count:])
+            to_delete.extend([t for t, _ in region_tracks[keep_count:]])
             result[region] = keep_count
         
         # Single batch deletion
@@ -2090,9 +2290,63 @@ class SmartTracker:
         
         total = sum(result.values())
         active_regions = sum(1 for c in result.values() if c > 0)
-        print(f"AutoSolve: Distributed {total} markers across {active_regions}/9 regions")
+        print(f"AutoSolve: Distributed {total} quality-selected markers across {active_regions}/9 regions")
         
         return result
+    
+    def _score_feature_quality(self, marker, track) -> float:
+        """
+        Score a feature by its quality for tracking.
+        
+        Higher scores indicate better features:
+        - Center of frame preferred (more stable tracking)
+        - Avoid extreme edges
+        - Pattern size affects tracking stability
+        
+        Returns a score from 0.0 to 1.0
+        """
+        x, y = marker.co.x, marker.co.y
+        
+        # Base score - start at 1.0
+        score = 1.0
+        
+        # Penalty for extreme edges (features near edges are less stable)
+        edge_margin = 0.08
+        if x < edge_margin or x > (1.0 - edge_margin):
+            score *= 0.7
+        if y < edge_margin or y > (1.0 - edge_margin):
+            score *= 0.7
+        
+        # Small bonus for center region (more parallax information)
+        center_dist = ((x - 0.5) ** 2 + (y - 0.5) ** 2) ** 0.5
+        if center_dist < 0.25:
+            score *= 1.1
+        
+        # Prefer features not too close to other existing tracks
+        # (spatial diversity)
+        min_dist_to_existing = self._min_distance_to_existing_tracks(x, y)
+        if min_dist_to_existing < 0.03:  # Too close to existing
+            score *= 0.6
+        elif min_dist_to_existing > 0.1:  # Good distance
+            score *= 1.15
+        
+        return min(score, 1.0)
+    
+    def _min_distance_to_existing_tracks(self, x: float, y: float) -> float:
+        """Calculate minimum distance to existing tracks (that we're keeping)."""
+        min_dist = float('inf')
+        
+        current_frame = bpy.context.scene.frame_current
+        clip_frame = self.scene_to_clip_frame(current_frame)
+        
+        for track in self.tracking.tracks:
+            if not track.select:  # Only check tracks we're keeping
+                marker = track.markers.find_frame(clip_frame)
+                if marker:
+                    dist = ((marker.co.x - x) ** 2 + (marker.co.y - y) ** 2) ** 0.5
+                    min_dist = min(min_dist, dist)
+        
+        return min_dist if min_dist != float('inf') else 1.0
     
 
     # Exploratory settings variations for learning what works
@@ -2690,30 +2944,36 @@ class SmartTracker:
         
         return middle_frame
     
-    def fill_coverage_gaps(self) -> int:
+    def fill_coverage_gaps(self) -> Dict:
         """
         Fill gaps in coverage by adding markers to weak zones.
         
         Called after initial tracking pass to ensure balanced distribution.
         
         Returns:
-            Number of new markers added
+            Dict with:
+                - markers_added: Number of new markers added
+                - detection_frames: List of frames where markers were detected
         """
+        result = {
+            'markers_added': 0,
+            'detection_frames': [],
+        }
+        
         # Analyze current coverage
         self.coverage_analyzer.analyze_tracking(self.tracking)
         summary = self.coverage_analyzer.get_coverage_summary()
         
         if summary['is_balanced']:
             print(f"AutoSolve: Coverage is balanced ({summary['regions_with_tracks']}/9 regions)")
-            return 0
+            return result
         
         # Get weak zones (regions needing more tracks)
         weak_zones = self.coverage_analyzer.get_weak_zones()
         if not weak_zones:
             print("AutoSolve: No weak zones identified")
-            return 0
+            return result
         
-        total_added = 0
         processed_regions = set()
         
         # Process weak zones, limiting by segment to target specific time ranges
@@ -2727,12 +2987,14 @@ class SmartTracker:
             
             # Detect in this region
             added = self.detect_in_region(region, count=2)
-            total_added += added
+            result['markers_added'] += added
+            if added > 0:
+                result['detection_frames'].append(target_frame)
             processed_regions.add(region)
             
             print(f"AutoSolve: Added {added} markers to {region} at frame {target_frame}")
         
-        return total_added
+        return result
     
     def get_coverage_analysis(self) -> Dict:
         """
@@ -2759,7 +3021,7 @@ class SmartTracker:
         4. Track those new markers
         
         Returns:
-            Dict with iteration results
+            Dict with iteration results including detection_frames for bidirectional tracking
         """
         self.strategic_iteration += 1
         print(f"AutoSolve: Strategic iteration {self.strategic_iteration}")
@@ -2771,6 +3033,7 @@ class SmartTracker:
             'iteration': self.strategic_iteration,
             'coverage_before': summary.copy(),
             'markers_added': 0,
+            'detection_frames': [],
             'coverage_after': None,
         }
         
@@ -2778,11 +3041,100 @@ class SmartTracker:
             print("AutoSolve: Coverage is balanced, no more iterations needed")
             return result
         
-        # Fill gaps
-        result['markers_added'] = self.fill_coverage_gaps()
+        # Fill gaps and get detection info
+        gap_result = self.fill_coverage_gaps()
+        result['markers_added'] = gap_result['markers_added']
+        result['detection_frames'] = gap_result['detection_frames']
         
         # Re-analyze
         result['coverage_after'] = self.get_coverage_analysis()
+        
+        return result
+    
+    def verify_full_timeline_coverage(self) -> Dict:
+        """
+        Verify that all surviving tracks cover the full timeline.
+        
+        This is the key to ensuring no gaps remain at start/end frames.
+        
+        Returns:
+            Dict with:
+                - needs_backward_extension: Tracks missing early frames
+                - needs_forward_extension: Tracks missing late frames
+                - earliest_track_start: Earliest frame where a track starts
+                - latest_track_end: Latest frame where a track ends
+                - recommended_action: 'none', 'extend_backward', 'extend_forward', 'extend_both'
+        """
+        frame_start = self.clip.frame_start
+        frame_end = frame_start + self.clip.frame_duration - 1
+        
+        result = {
+            'needs_backward_extension': [],
+            'needs_forward_extension': [],
+            'earliest_track_start': frame_end,
+            'latest_track_end': frame_start,
+            'total_tracks': 0,
+            'fully_covered_tracks': 0,
+            'recommended_action': 'none',
+        }
+        
+        # Tolerance: tracks don't need to reach exact frame_start/frame_end
+        # Allow 5 frame margin at each end
+        MARGIN = 5
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            
+            result['total_tracks'] += 1
+            
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            track_start = markers_sorted[0].frame
+            track_end = markers_sorted[-1].frame
+            
+            result['earliest_track_start'] = min(result['earliest_track_start'], track_start)
+            result['latest_track_end'] = max(result['latest_track_end'], track_end)
+            
+            # Check if track needs extension
+            needs_backward = track_start > frame_start + MARGIN
+            needs_forward = track_end < frame_end - MARGIN
+            
+            if needs_backward:
+                result['needs_backward_extension'].append({
+                    'name': track.name,
+                    'current_start': track_start,
+                    'target_start': frame_start,
+                })
+            
+            if needs_forward:
+                result['needs_forward_extension'].append({
+                    'name': track.name,
+                    'current_end': track_end,
+                    'target_end': frame_end,
+                })
+            
+            if not needs_backward and not needs_forward:
+                result['fully_covered_tracks'] += 1
+        
+        # Determine recommended action
+        if result['needs_backward_extension'] and result['needs_forward_extension']:
+            result['recommended_action'] = 'extend_both'
+        elif result['needs_backward_extension']:
+            result['recommended_action'] = 'extend_backward'
+        elif result['needs_forward_extension']:
+            result['recommended_action'] = 'extend_forward'
+        else:
+            result['recommended_action'] = 'none'
+        
+        coverage_pct = result['fully_covered_tracks'] / max(result['total_tracks'], 1) * 100
+        print(f"AutoSolve: Timeline coverage: {result['fully_covered_tracks']}/{result['total_tracks']} tracks "
+              f"({coverage_pct:.0f}%) cover full range")
+        
+        if result['needs_backward_extension']:
+            print(f"AutoSolve: {len(result['needs_backward_extension'])} tracks need backward extension")
+        if result['needs_forward_extension']:
+            print(f"AutoSolve: {len(result['needs_forward_extension'])} tracks need forward extension")
         
         return result
     
@@ -3155,7 +3507,36 @@ class SmartTracker:
     def track_frame(self, backwards: bool = False):
         """Track one frame."""
         self.select_all_tracks()
+        
+        # Count markers BEFORE tracking
+        frame = bpy.context.scene.frame_current
+        clip_frame = self.scene_to_clip_frame(frame)  # Convert to clip-relative
+        selected_count = sum(1 for t in self.tracking.tracks if t.select)
+        markers_at_frame_before = sum(1 for t in self.tracking.tracks 
+                                      if t.markers.find_frame(clip_frame) is not None)
+        
+        # ALWAYS log first few frames to confirm tracking runs
+        if frame <= 190 or frame % 50 == 0:
+            print(f"AutoSolve DEBUG: track_frame({backwards=}) frame={frame} selected={selected_count} markers_here={markers_at_frame_before}")
+            # Inspect first track to see where its markers are
+            if selected_count > 0 and markers_at_frame_before == 0:
+                for track in self.tracking.tracks:
+                    if track.select:
+                        print(f"  - Track {track.name} has {len(track.markers)} markers at frames: {[m.frame for m in track.markers]}")
+                        break
+        
         self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
+        
+        # Count markers AFTER tracking at next frame
+        next_frame = frame - 1 if backwards else frame + 1
+        next_clip_frame = self.scene_to_clip_frame(next_frame)
+        markers_at_next = sum(1 for t in self.tracking.tracks 
+                              if t.markers.find_frame(next_clip_frame) is not None)
+        
+        # Log if tracking failed
+        if markers_at_next == 0 and markers_at_frame_before > 0:
+            print(f"AutoSolve DEBUG: TRACKING FAILED at frame {frame} → {next_frame}")
+            print(f"  - Had {markers_at_frame_before} markers, now {markers_at_next}")
     
     def track_sequence(self, start_frame: int, end_frame: int, backwards: bool = False) -> int:
         """
@@ -3449,9 +3830,10 @@ class SmartTracker:
         # Collect track positions (first marker position)
         track_positions = {}
         current_frame = bpy.context.scene.frame_current
+        clip_frame = self.scene_to_clip_frame(current_frame)
         
         for track in self.tracking.tracks:
-            marker = track.markers.find_frame(current_frame)
+            marker = track.markers.find_frame(clip_frame)
             if not marker:
                 markers = [m for m in track.markers if not m.mute]
                 if markers:
@@ -3696,10 +4078,33 @@ class SmartTracker:
         if hasattr(self.settings, 'use_tripod_solver'):
             self.settings.use_tripod_solver = tripod_mode
         
+        # DEBUG: Log track status before solve
+        track_count = len(self.tracking.tracks)
+        tracks_with_markers = sum(1 for t in self.tracking.tracks if len(t.markers) > 0)
+        
+        # Check marker distribution across frame range
+        frame_coverage = {}
+        for t in self.tracking.tracks:
+            for m in t.markers:
+                if not m.mute:
+                    frame_coverage[m.frame] = frame_coverage.get(m.frame, 0) + 1
+        
+        min_markers = min(frame_coverage.values()) if frame_coverage else 0
+        max_markers = max(frame_coverage.values()) if frame_coverage else 0
+        
+        print(f"AutoSolve DEBUG: solve_camera - {track_count} tracks, {tracks_with_markers} with markers")
+        print(f"AutoSolve DEBUG: Frame coverage - min {min_markers} markers, max {max_markers} markers")
+        
         try:
             self._run_ops(bpy.ops.clip.solve_camera)
-            return self.tracking.reconstruction.is_valid
-        except RuntimeError:
+            is_valid = self.tracking.reconstruction.is_valid
+            if is_valid:
+                print(f"AutoSolve DEBUG: Solve SUCCESS - error {self.tracking.reconstruction.average_error:.2f}")
+            else:
+                print(f"AutoSolve DEBUG: Solve FAILED - reconstruction not valid")
+            return is_valid
+        except RuntimeError as e:
+            print(f"AutoSolve DEBUG: Solve EXCEPTION - {e}")
             return False
     
     def get_solve_error(self) -> float:
@@ -3718,6 +4123,15 @@ class SmartTracker:
                 if area.type == 'CLIP_EDITOR':
                     for region in area.regions:
                         if region.type == 'WINDOW':
+                            # CRITICAL: Sync clip editor's frame with scene frame
+                            # The clip editor has its own frame cursor separate from scene
+                            for space in area.spaces:
+                                if space.type == 'CLIP_EDITOR':
+                                    # Set clip space frame to match scene frame
+                                    # This ensures detect_features places markers at the correct frame
+                                    space.clip_user.frame_current = bpy.context.scene.frame_current
+                                    break
+                            
                             return {
                                 'window': window,
                                 'screen': window.screen,
