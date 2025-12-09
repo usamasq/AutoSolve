@@ -2,6 +2,8 @@
 
 > **One-click automated camera tracking using Blender's native tracking system**
 
+> [!NOTE] > **🧪 Research Beta** - This architecture is actively evolving. The learning system improves with community data contributions.
+
 ---
 
 ## Overview
@@ -20,22 +22,23 @@ autosolve/
 ├── operators.py         # Main operators (Analyze & Solve, training tools)
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
-└── solver/
-    ├── smart_tracker.py      # Adaptive tracking engine
+└── tracker/             # Core tracking engine
+    ├── smart_tracker.py      # Adaptive tracking with learning
     ├── blender_tracker.py    # Low-level Blender API wrapper
     ├── settings_manager.py   # Centralized settings management
-    └── learning/
-        ├── session_recorder.py    # Session telemetry collection
-        ├── settings_predictor.py  # Optimal settings prediction
-        ├── failure_diagnostics.py # Failure analysis & fixes
-        └── pretrained_model.json  # Bundled community defaults
+    └── learning/             # ML & learning components
+        ├── session_recorder.py        # Session telemetry collection
+        ├── settings_predictor.py      # Optimal settings prediction
+        ├── track_quality_predictor.py # Track quality estimation
+        ├── failure_diagnostics.py     # Failure analysis & fixes
+        └── pretrained_model.json      # Bundled community defaults
 ```
 
 ---
 
 ## Core Components
 
-### 1. Smart Tracker (`solver/smart_tracker.py`)
+### 1. Smart Tracker (`tracker/smart_tracker.py`)
 
 **Purpose:** Intelligent tracking orchestrator with adaptive learning.
 
@@ -79,7 +82,7 @@ Phase 3: REINFORCEMENT (if <8 markers)
 
 ---
 
-### 2. Blender Tracker (`solver/blender_tracker.py`)
+### 2. Blender Tracker (`tracker/blender_tracker.py`)
 
 **Purpose:** Low-level wrapper for Blender's tracking operators.
 
@@ -101,7 +104,7 @@ def solve_camera(tripod_mode)
 
 ---
 
-### 3. Learning System (`solver/learning/`)
+### 3. Learning System (`tracker/learning/`)
 
 **Purpose:** Adaptive learning that improves tracking over time.
 
@@ -480,7 +483,7 @@ if should_retry(analysis):
 
 ### Custom Learning Strategies
 
-Extend `SettingsPredictor` in `solver/learning/settings_predictor.py`:
+Extend `SettingsPredictor` in `tracker/learning/settings_predictor.py`:
 
 - Add new prediction algorithms
 - Implement failure pattern learning

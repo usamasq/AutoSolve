@@ -72,7 +72,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
             self.report({'ERROR'}, "Clip must have at least 10 frames")
             return {'CANCELLED'}
         
-        from .solver.smart_tracker import SmartTracker, sync_scene_to_clip
+        from .tracker.smart_tracker import SmartTracker, sync_scene_to_clip
         
         robust = getattr(settings, 'robust_mode', False)
         footage_type = getattr(settings, 'footage_type', 'AUTO')
@@ -89,7 +89,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
             if _edit_recorder:
                 edit_session = _edit_recorder.stop_monitoring()
                 if edit_session:
-                    from .solver.learning.session_recorder import SessionRecorder
+                    from .tracker.learning.session_recorder import SessionRecorder
                     try:
                         recorder = SessionRecorder()
                         recorder._save_edit_session(edit_session)
@@ -391,7 +391,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     applied_diagnostic_fix = False
                     diagnosis = None
                     if _state.last_analysis:
-                        from .solver.learning.failure_diagnostics import FailureDiagnostics
+                        from .tracker.learning.failure_diagnostics import FailureDiagnostics
                         diagnostics = FailureDiagnostics()
                         diagnosis = diagnostics.diagnose(_state.last_analysis, tracker.current_settings)
                         
@@ -473,6 +473,11 @@ class AUTOSOLVE_OT_run_solve(Operator):
             elif _state.phase == 'SOLVE_DRAFT':
                 settings.solve_status = "Draft solve..."
                 settings.solve_progress = 0.78
+                
+                # Compute pre-solve confidence for ML training
+                pre_confidence = tracker.compute_pre_solve_confidence()
+                if pre_confidence.get('confidence', 1.0) < 0.4:
+                    self.report({'WARNING'}, f"Low solve confidence: {pre_confidence.get('warnings', ['unknown'])}")
                 
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
                 
@@ -619,7 +624,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 }
                 
                 # Learn from behavior with correct error comparison
-                from .solver.learning.settings_predictor import SettingsPredictor
+                from .tracker.learning.settings_predictor import SettingsPredictor
                 try:
                     predictor = SettingsPredictor()
                     predictor.learn_from_behavior(_pending_behavior_footage_class, _pending_behavior)
@@ -650,12 +655,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             
             # Start edit recorder
-            from .solver.learning.user_edit_recorder import UserEditRecorder
+            from .tracker.learning.user_edit_recorder import UserEditRecorder
             _edit_recorder = UserEditRecorder(clip)
             _edit_recorder.start_monitoring()
             
             # Start behavior recorder
-            from .solver.learning.behavior_recorder import BehaviorRecorder
+            from .tracker.learning.behavior_recorder import BehaviorRecorder
             _behavior_recorder = BehaviorRecorder()
             _behavior_recorder.start_monitoring(
                 clip=clip,
@@ -731,7 +736,7 @@ class AUTOSOLVE_OT_export_training_data(Operator):
         from datetime import datetime
         
         try:
-            from .solver.learning.settings_predictor import SettingsPredictor
+            from .tracker.learning.settings_predictor import SettingsPredictor
             
             predictor = SettingsPredictor()
             base_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
@@ -835,7 +840,7 @@ class AUTOSOLVE_OT_import_training_data(Operator):
         from pathlib import Path
         
         try:
-            from .solver.learning.settings_predictor import SettingsPredictor
+            from .tracker.learning.settings_predictor import SettingsPredictor
             
             filepath = Path(self.filepath)
             
@@ -963,7 +968,7 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
     
     def execute(self, context):
         try:
-            from .solver.learning.settings_predictor import SettingsPredictor
+            from .tracker.learning.settings_predictor import SettingsPredictor
             
             predictor = SettingsPredictor()
             
@@ -998,7 +1003,7 @@ class AUTOSOLVE_OT_view_training_stats(Operator):
     
     def execute(self, context):
         try:
-            from .solver.learning.settings_predictor import SettingsPredictor
+            from .tracker.learning.settings_predictor import SettingsPredictor
             
             predictor = SettingsPredictor()
             stats = predictor.get_stats()

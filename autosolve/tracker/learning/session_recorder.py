@@ -67,29 +67,24 @@ class CameraIntrinsics:
 @dataclass
 class SessionData:
     """Complete data for a tracking session."""
-    # Metadata (required fields - no defaults)
+    # Metadata (required fields - no defaults) - MUST COME FIRST
     timestamp: str
     clip_name: str
     iteration: int
     duration_seconds: float
-    
-    # Footage characteristics
     resolution: Tuple[int, int]
     fps: float
     frame_count: int
-    
-    # Settings used
     settings: Dict
-    
-    # Results
     success: bool
     solve_error: float
     total_tracks: int
     successful_tracks: int
     bundle_count: int
     
-    # Schema version (has default, so must come after required fields)
-    schema_version: int = 3
+    # Optional fields (have defaults) - MUST COME AFTER REQUIRED FIELDS
+    # Schema version
+    schema_version: int = 1
     
     # Detailed track data
     tracks: List[Dict] = field(default_factory=list)
@@ -140,6 +135,21 @@ class SessionData:
     # ML Enhancement: Per-frame samples for temporal analysis
     # Format: [{"frame": int, "active_tracks": int, "tracks_lost": int, "avg_velocity": float}, ...]
     frame_samples: List[Dict] = field(default_factory=list)
+    
+    # ML Enhancement: Source video metadata (anonymized)
+    source_metadata: Dict = field(default_factory=lambda: {
+        'file_extension': '',
+        'file_size_mb': 0.0,
+        'codec_hint': '',  # Inferred from extension
+    })
+    
+    # ML Enhancement: Pre-solve confidence estimate
+    pre_solve_confidence: Dict = field(default_factory=lambda: {
+        'confidence': 0.0,  # 0-1 estimate of solve success
+        'parallax_score': 0.0,
+        'track_distribution_score': 0.0,
+        'warnings': [],
+    })
 
 
 class SessionRecorder:
@@ -170,6 +180,9 @@ class SessionRecorder:
         # Extract camera intrinsics
         camera_intrinsics = self._extract_camera_intrinsics(clip)
         
+        # Extract source video metadata
+        source_metadata = self._extract_source_metadata(clip)
+        
         self.current_session = SessionData(
             timestamp=self.start_time.isoformat(),
             clip_name=clip.name,
@@ -185,6 +198,7 @@ class SessionRecorder:
             successful_tracks=0,
             bundle_count=0,
             camera_intrinsics=camera_intrinsics,
+            source_metadata=source_metadata,
         )
     
     def _extract_camera_intrinsics(self, clip: bpy.types.MovieClip) -> Dict:
@@ -222,6 +236,69 @@ class SessionRecorder:
         except (AttributeError, TypeError) as e:
             print(f"AutoSolve: Error extracting camera intrinsics: {e}")
             return asdict(CameraIntrinsics())  # Return defaults
+    
+    def _extract_source_metadata(self, clip: bpy.types.MovieClip) -> Dict:
+        """
+        Extract metadata from source video file.
+        
+        Collects anonymized info about the source file that may affect tracking:
+        - File extension (codec hint)
+        - File size (compression level indicator)
+        """
+        metadata = {
+            'file_extension': '',
+            'file_size_mb': 0.0,
+            'codec_hint': '',
+        }
+        
+        try:
+            filepath = bpy.path.abspath(clip.filepath)
+            if filepath:
+                from pathlib import Path
+                path = Path(filepath)
+                
+                metadata['file_extension'] = path.suffix.lower()
+                
+                # Infer codec from extension
+                codec_hints = {
+                    '.mp4': 'h264/h265',
+                    '.mov': 'prores/h264',
+                    '.mkv': 'various',
+                    '.avi': 'legacy',
+                    '.webm': 'vp9/av1',
+                    '.mxf': 'professional',
+                }
+                metadata['codec_hint'] = codec_hints.get(metadata['file_extension'], 'unknown')
+                
+                # Get file size (anonymized to MB range)
+                if path.exists():
+                    size_bytes = path.stat().st_size
+                    metadata['file_size_mb'] = round(size_bytes / (1024 * 1024), 1)
+        except Exception as e:
+            print(f"AutoSolve: Error extracting source metadata: {e}")
+        
+        return metadata
+    
+    def record_pre_solve_confidence(self, confidence_data: Dict):
+        """
+        Record pre-solve confidence estimate.
+        
+        Args:
+            confidence_data: Dict with keys:
+                - confidence: 0-1 overall estimate
+                - parallax_score: 0-1 depth variation
+                - track_distribution_score: 0-1 coverage quality
+                - warnings: List of warning strings
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.pre_solve_confidence = {
+            'confidence': confidence_data.get('confidence', 0.0),
+            'parallax_score': confidence_data.get('parallax_score', 0.0),
+            'track_distribution_score': confidence_data.get('track_distribution_score', 0.0),
+            'warnings': confidence_data.get('warnings', []),
+        }
     
     def record_iteration(self, iteration: int, settings: Dict, analysis: Dict):
         """Record data for a single iteration."""
@@ -324,6 +401,23 @@ class SessionRecorder:
             mean_v = sum(all_velocities) / len(all_velocities)
             variance = sum((v - mean_v) ** 2 for v in all_velocities) / len(all_velocities)
             self.current_session.motion_consistency = round(1.0 - min(variance ** 0.5 / max(mean_v, 0.001), 1.0), 3)
+        
+        # Compute region_stats from recorded tracks (for ML training)
+        region_stats = {}
+        for track_data in self.current_session.tracks:
+            region = track_data.get('region', 'center')
+            if region not in region_stats:
+                region_stats[region] = {'total_tracks': 0, 'successful_tracks': 0, 'avg_lifespan': 0.0}
+            region_stats[region]['total_tracks'] += 1
+            if track_data.get('contributed_to_solve', False):
+                region_stats[region]['successful_tracks'] += 1
+            # Update running average lifespan
+            count = region_stats[region]['total_tracks']
+            old_avg = region_stats[region]['avg_lifespan']
+            new_lifespan = track_data.get('lifespan', 0)
+            region_stats[region]['avg_lifespan'] = old_avg + (new_lifespan - old_avg) / count
+        
+        self.current_session.region_stats = region_stats
         
         # Compute optical flow descriptors for ML
         self._compute_optical_flow(all_velocities, all_motion_vectors, tracking)

@@ -101,7 +101,7 @@ class SettingsPredictor:
         # Default empty model
         if model is None:
             model = {
-                'version': 2,  # Bumped for HER schema
+                'version': 1,
                 'footage_classes': {},
                 'region_models': {},
             }

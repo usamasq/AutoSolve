@@ -1,22 +1,39 @@
-# AutoSolve - One-Click Camera Tracking for Blender
+# AutoSolve - Automatic Camera Tracking for Blender
 
 > **A personal project by Usama Bin Shahid**  
 > _Dedicated to my students, with ❤️ from Pakistan_
 
-AutoSolve is a Blender extension that automates camera tracking using **adaptive learning algorithms**. It replaces Blender's manual tracking workflow with a single "Analyze & Solve" button that learns and improves from each session.
+> [!IMPORTANT] > **🧪 Research Beta** - This addon is in active development and learns from usage data.
+> Your tracking sessions help train the ML model that improves settings for everyone.
+> **[Contribute your data](#contribute-training-data)** to make AutoSolve smarter for the community!
+
+AutoSolve is a Blender addon that **automates the entire camera tracking workflow** - from feature detection to camera solve. It uses **adaptive learning** to improve tracking quality over time by learning from each session.
+
+## What It Does
+
+| Step                     | Manual Workflow                               | AutoSolve                                                  |
+| ------------------------ | --------------------------------------------- | ---------------------------------------------------------- |
+| **1. Feature Detection** | Place markers manually or use Detect Features | ✅ Smart detection with balanced region coverage           |
+| **2. Tracking**          | Track forward/backward, fix lost markers      | ✅ Bidirectional tracking with automatic replenishment     |
+| **3. Track Cleanup**     | Delete short/bad tracks manually              | ✅ Automatic filtering of jittery, short, and spike tracks |
+| **4. Camera Solve**      | Run solver, hope for low error                | ✅ Iterative refinement with failure diagnosis             |
+| **5. Learning**          | Remember what worked                          | ✅ Learns settings that work for your footage types        |
+
+> **Note:** AutoSolve uses Blender's native tracking - no external dependencies required.
 
 ---
 
 ## Features
 
-| Feature                    | Description                                                    |
-| -------------------------- | -------------------------------------------------------------- |
-| **One-Click Solve**        | Automatic feature detection, tracking, and camera solve        |
-| **Adaptive Learning**      | Learns from your footage to improve settings over time         |
-| **Exploratory Detection**  | Uses varied settings per region to discover optimal parameters |
-| **Bidirectional Tracking** | Starts from mid-clip for better early frame coverage           |
-| **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes         |
-| **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.           |
+| Feature                    | Description                                               |
+| -------------------------- | --------------------------------------------------------- |
+| **One-Click Tracking**     | Automatic feature detection, tracking, cleanup, and solve |
+| **Adaptive Learning**      | Learns optimal settings from your footage over time       |
+| **Smart Detection**        | Balanced marker placement across all screen regions       |
+| **Bidirectional Tracking** | Starts from mid-clip for better frame coverage            |
+| **Quality Prediction**     | Estimates solve quality before running solver             |
+| **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes    |
+| **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.      |
 
 ---
 
@@ -107,14 +124,16 @@ AutoSolve/
 │   ├── operators.py         # Main operators (Analyze & Solve)
 │   ├── properties.py        # Scene properties
 │   ├── ui.py                # N-Panel interface
-│   └── solver/
-│       ├── smart_tracker.py      # Core tracking engine
+│   └── tracker/             # Core tracking engine
+│       ├── smart_tracker.py      # Smart tracking with adaptive learning
 │       ├── blender_tracker.py    # Blender API wrapper
-│       └── learning/
-│           ├── session_recorder.py    # Session telemetry
-│           ├── settings_predictor.py  # Settings prediction
-│           ├── failure_diagnostics.py # Failure analysis
-│           └── pretrained_model.json  # Bundled defaults
+│       ├── settings_manager.py   # Settings presets and management
+│       └── learning/             # ML and learning components
+│           ├── session_recorder.py      # Session telemetry
+│           ├── settings_predictor.py    # Settings prediction
+│           ├── track_quality_predictor.py # Track quality estimation
+│           ├── failure_diagnostics.py   # Failure analysis
+│           └── pretrained_model.json    # Bundled defaults
 ```
 
 ### Key Files to Understand

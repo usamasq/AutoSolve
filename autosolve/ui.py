@@ -145,8 +145,8 @@ class AUTOSOLVE_PT_training_panel(Panel):
         box.label(text="Learning Model", icon='EXPERIMENTAL')
         
         try:
-            from .solver.learning.settings_predictor import SettingsPredictor
-            from .solver.learning.behavior_recorder import BehaviorRecorder
+            from .tracker.learning.settings_predictor import SettingsPredictor
+            from .tracker.learning.behavior_recorder import BehaviorRecorder
             
             predictor = SettingsPredictor()
             stats = predictor.get_stats()

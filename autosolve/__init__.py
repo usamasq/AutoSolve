@@ -8,7 +8,7 @@ Modules:
 - properties: Scene properties and settings
 - operators: Main tracking operator and learning tools
 - ui: N-Panel interface
-- solver: Smart tracking with adaptive learning
+- tracker: Smart tracking with adaptive learning
 """
 
 from . import properties

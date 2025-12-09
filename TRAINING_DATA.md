@@ -2,6 +2,10 @@
 
 > **How AutoSolve learns and improves from your tracking sessions**
 
+> [!IMPORTANT] > **🧪 Research Beta** - Your data contributions directly improve AutoSolve for everyone.
+> By sharing anonymized tracking data, you help train the ML model that predicts optimal settings.
+> **[How to contribute](#contributing-your-data)**
+
 ---
 
 ## Overview
@@ -32,7 +36,7 @@ AutoSolve/
 **Bundled with addon:**
 
 ```
-autosolve/solver/learning/
+autosolve/tracker/learning/
 └── pretrained_model.json  # Community defaults (fallback)
 ```
 
@@ -46,7 +50,7 @@ Each tracking session generates a JSON file with this structure:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "timestamp": "2025-12-07T19:30:00",
   "clip_name": "footage_001",
   "iteration": 1,
@@ -294,9 +298,9 @@ Continuous metrics for neural network training:
 | `best_regions`         | [str]  | Regions with >50% survival during probe          |
 | `adaptation_history`   | [obj]  | List of mid-session settings adaptations         |
 | `region_confidence`    | Dict   | Probabilistic confidence scores per region (0-1) |
-| `frame_samples`        | [obj]  | Per-frame statistics for temporal ML (v3+)       |
+| `frame_samples`        | [obj]  | Per-frame statistics for temporal ML (v1+)       |
 
-### Frame Samples (v3 Schema)
+### Frame Samples (v1 Schema)
 
 Per-frame telemetry for RNN/LSTM training:
 
@@ -344,7 +348,7 @@ The aggregated model tracks performance using HER (Hindsight Experience Replay):
 
 ```json
 {
-  "version": 2,
+  "version": 1,
   "global_stats": {
     "total_sessions": 47,
     "successful_sessions": 42

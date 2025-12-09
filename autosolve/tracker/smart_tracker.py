@@ -1462,6 +1462,117 @@ class SmartTracker:
         
         return is_valid, issues
     
+    def compute_pre_solve_confidence(self) -> Dict:
+        """
+        Estimate solve quality before running the solver.
+        
+        Uses track features to predict likelihood of successful solve.
+        Records result for ML training correlation with actual solve error.
+        
+        Returns:
+            Dict with:
+                - confidence: 0-1 overall estimate (1 = likely good solve)
+                - parallax_score: 0-1 depth variation detected
+                - track_distribution_score: 0-1 how well tracks cover the frame
+                - warnings: List of potential issues
+        """
+        confidence = 1.0
+        warnings = []
+        
+        # 1. Check track count
+        track_count = len(self.tracking.tracks)
+        if track_count < 15:
+            confidence *= 0.6
+            warnings.append(f"Low track count ({track_count})")
+        elif track_count < 25:
+            confidence *= 0.85
+        
+        # 2. Compute parallax score from motion vectors
+        motion_vectors = []
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            markers.sort(key=lambda x: x.frame)
+            dx = markers[-1].co.x - markers[0].co.x
+            dy = markers[-1].co.y - markers[0].co.y
+            motion_vectors.append((dx, dy))
+        
+        parallax_score = 0.0
+        if len(motion_vectors) >= 3:
+            # Compute variance in motion directions
+            avg_dx = sum(v[0] for v in motion_vectors) / len(motion_vectors)
+            avg_dy = sum(v[1] for v in motion_vectors) / len(motion_vectors)
+            
+            variance = sum(
+                ((v[0] - avg_dx)**2 + (v[1] - avg_dy)**2) 
+                for v in motion_vectors
+            ) / len(motion_vectors)
+            
+            avg_magnitude = (avg_dx**2 + avg_dy**2)**0.5
+            if avg_magnitude > 0.0001:
+                parallax_score = min(1.0, (variance**0.5) / avg_magnitude)
+        
+        if parallax_score < 0.05:
+            confidence *= 0.5
+            warnings.append("Very low parallax - consider tripod mode")
+        elif parallax_score < 0.15:
+            confidence *= 0.75
+            warnings.append("Low parallax - perspective solve may struggle")
+        
+        # 3. Check track distribution (coverage of 9 regions)
+        regions_covered = set()
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if markers:
+                avg_x = sum(m.co.x for m in markers) / len(markers)
+                avg_y = sum(m.co.y for m in markers) / len(markers)
+                col = 0 if avg_x < 0.33 else (1 if avg_x < 0.66 else 2)
+                row = 2 if avg_y < 0.33 else (1 if avg_y < 0.66 else 0)
+                regions_covered.add((row, col))
+        
+        distribution_score = len(regions_covered) / 9.0
+        
+        if distribution_score < 0.5:
+            confidence *= 0.7
+            warnings.append(f"Poor track distribution ({len(regions_covered)}/9 regions)")
+        elif distribution_score < 0.7:
+            confidence *= 0.9
+        
+        # 4. Check track lifespan consistency
+        lifespans = []
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) >= 2:
+                markers.sort(key=lambda x: x.frame)
+                lifespans.append(markers[-1].frame - markers[0].frame)
+        
+        if lifespans:
+            avg_lifespan = sum(lifespans) / len(lifespans)
+            if avg_lifespan < 30:
+                confidence *= 0.8
+                warnings.append(f"Short average track lifespan ({avg_lifespan:.0f} frames)")
+        
+        result = {
+            'confidence': round(confidence, 3),
+            'parallax_score': round(parallax_score, 3),
+            'track_distribution_score': round(distribution_score, 3),
+            'track_count': track_count,
+            'warnings': warnings,
+        }
+        
+        # Log and record for ML training
+        print(f"AutoSolve: Pre-solve confidence: {confidence:.0%} "
+              f"(parallax: {parallax_score:.2f}, distribution: {distribution_score:.2f})")
+        if warnings:
+            print(f"  Warnings: {', '.join(warnings)}")
+        
+        # Record to session for correlation with actual solve error
+        if hasattr(self, 'recorder') and self.recorder and self.recorder.current_session:
+            self.recorder.record_pre_solve_confidence(result)
+        
+        return result
+    
     def sanitize_tracks_before_solve(self) -> int:
         """
         Actively clean up problematic tracks before camera solve.
@@ -3433,6 +3544,11 @@ class SmartTracker:
         return success
     def configure_settings(self):
         """Apply current settings to Blender's tracker."""
+        # Start recording session for ML data collection
+        if hasattr(self, 'recorder') and self.recorder:
+            if not self.recorder.current_session:
+                self.recorder.start_session(self.clip, self.current_settings)
+        
         s = self.settings
         
         if hasattr(s, 'default_pattern_size'):
@@ -3559,12 +3675,19 @@ class SmartTracker:
             frame_range = range(start_frame, end_frame)
         
         frames_tracked = 0
+        prev_active_count = 0
         self.select_all_tracks()
         
         for frame in frame_range:
             bpy.context.scene.frame_set(frame)
             self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
             frames_tracked += 1
+            
+            # Record frame sample every 10 frames for ML temporal analysis
+            if hasattr(self, 'recorder') and self.recorder and frames_tracked % 10 == 0:
+                prev_active_count = self.recorder.record_frame_sample(
+                    frame, self.tracking, prev_active_count
+                )
         
         return frames_tracked
     

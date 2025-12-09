@@ -9,24 +9,24 @@
       "best_settings": {
         "pattern_size": 15,
         "search_size": 71,
-        "correlation": 0.70,
+        "correlation": 0.75,
         "threshold": 0.30,
         "motion_model": "LocRot"
       },
-      "best_error": 0.46
+      "best_error": 0.17
     },
     "HD_24fps": {
-      "sample_count": 1,
-      "success_count": 1,
+      "sample_count": 9,
+      "success_count": 9,
       "avg_success_rate": 1.0,
       "best_settings": {
-        "pattern_size": 17,
-        "search_size": 91,
-        "correlation": 0.68,
-        "threshold": 0.28,
+        "pattern_size": 21,
+        "search_size": 121,
+        "correlation": 0.75,
+        "threshold": 0.15,
         "motion_model": "LocRot"
       },
-      "best_error": 0.50
+      "best_error": 0.17
     },
     "HD_60fps": {
       "sample_count": 1,
@@ -42,17 +42,17 @@
       "best_error": 0.40
     },
     "4K_24fps": {
-      "sample_count": 1,
+      "sample_count": 2,
       "success_count": 1,
-      "avg_success_rate": 1.0,
+      "avg_success_rate": 0.5,
       "best_settings": {
-        "pattern_size": 31,
-        "search_size": 150,
-        "correlation": 0.45,
-        "threshold": 0.08,
-        "motion_model": "Affine"
+        "pattern_size": 21,
+        "search_size": 101,
+        "correlation": 0.72,
+        "threshold": 0.30,
+        "motion_model": "Loc"
       },
-      "best_error": 0.93
+      "best_error": 4.53
     },
     "4K_30fps": {
       "sample_count": 1,
@@ -160,18 +160,18 @@
   },
   "region_models": {
     "top-left": {"success_rate": 0.967, "priority": "normal"},
-    "top-center": {"success_rate": 1.0, "priority": "prioritize"},
-    "top-right": {"success_rate": 0.989, "priority": "prioritize"},
-    "mid-left": {"success_rate": 0.989, "priority": "prioritize"},
+    "top-center": {"success_rate": 0.967, "priority": "normal"},
+    "top-right": {"success_rate": 0.963, "priority": "normal"},
+    "mid-left": {"success_rate": 1.0, "priority": "prioritize"},
     "center": {"success_rate": 1.0, "priority": "prioritize"},
-    "mid-right": {"success_rate": 0.996, "priority": "prioritize"},
+    "mid-right": {"success_rate": 0.958, "priority": "normal"},
     "bottom-left": {"success_rate": 1.0, "priority": "prioritize"},
     "bottom-center": {"success_rate": 1.0, "priority": "prioritize"},
-    "bottom-right": {"success_rate": 0.986, "priority": "normal"}
+    "bottom-right": {"success_rate": 1.0, "priority": "prioritize"}
   },
   "global_stats": {
-    "total_sessions": 8,
-    "successful_sessions": 8,
+    "total_sessions": 19,
+    "successful_sessions": 19,
     "avg_success_rate": 1.0,
     "avg_best_error": 0.58
   }
