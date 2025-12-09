@@ -65,6 +65,9 @@ class CameraIntrinsics:
 @dataclass
 class SessionData:
     """Complete data for a tracking session."""
+    # Schema version for ML pipeline compatibility
+    schema_version: int = 3
+    
     # Metadata
     timestamp: str
     clip_name: str
@@ -100,6 +103,26 @@ class SessionData:
     # ML Enhancement: Global motion descriptors
     global_motion_vector: List[float] = field(default_factory=lambda: [0.0, 0.0])
     motion_consistency: float = 0.0  # Std dev of per-track velocities
+    
+    # ML Enhancement: Optical Flow Descriptors (raw metrics for ML)
+    # All values are continuous and normalized for direct ML consumption
+    optical_flow: Dict = field(default_factory=lambda: {
+        # Velocity statistics (normalized: pixels/frame / image_diagonal)
+        'velocity_mean': 0.0,       # Average track movement per frame
+        'velocity_std': 0.0,        # Velocity standard deviation
+        'velocity_max': 0.0,        # Maximum velocity observed
+        
+        # Parallax detection (0.0 = uniform motion, 1.0 = strong depth variance)
+        'parallax_score': 0.0,      # Variance between track motion vectors
+        
+        # Motion direction (unit vector of dominant camera movement)
+        'dominant_direction': [0.0, 0.0],  # [dx, dy] normalized
+        'direction_entropy': 0.0,   # 0.0 = all same direction, 1.0 = random
+        
+        # Temporal stability
+        'velocity_acceleration': 0.0,  # Change in velocity over clip
+        'track_dropout_rate': 0.0,     # Fraction of tracks that fail early
+    })
     
     # ML Enhancement: Failure classification
     failure_type: str = 'NONE'  # NONE, BLUR, CONTRAST, CUT, DRIFT, INSUFFICIENT
@@ -299,6 +322,69 @@ class SessionRecorder:
             mean_v = sum(all_velocities) / len(all_velocities)
             variance = sum((v - mean_v) ** 2 for v in all_velocities) / len(all_velocities)
             self.current_session.motion_consistency = round(1.0 - min(variance ** 0.5 / max(mean_v, 0.001), 1.0), 3)
+        
+        # Compute optical flow descriptors for ML
+        self._compute_optical_flow(all_velocities, all_motion_vectors, tracking)
+    
+    def _compute_optical_flow(self, velocities: List[float], motion_vectors: List, tracking):
+        """
+        Compute comprehensive optical flow metrics for ML training.
+        
+        All values are continuous and normalized for direct use in neural networks.
+        """
+        if not self.current_session:
+            return
+        
+        of = self.current_session.optical_flow
+        
+        # Velocity statistics
+        if velocities:
+            of['velocity_mean'] = round(sum(velocities) / len(velocities), 6)
+            of['velocity_std'] = round((sum((v - of['velocity_mean'])**2 for v in velocities) / len(velocities))**0.5, 6)
+            of['velocity_max'] = round(max(velocities), 6)
+        
+        # Parallax detection: variance in motion direction between tracks
+        # Low parallax = tripod/uniform motion, High = drone/depth variation
+        if len(motion_vectors) >= 3:
+            avg_dx = sum(v[0] for v in motion_vectors) / len(motion_vectors)
+            avg_dy = sum(v[1] for v in motion_vectors) / len(motion_vectors)
+            
+            # Compute variance from mean direction
+            dir_variance = sum(
+                ((v[0] - avg_dx)**2 + (v[1] - avg_dy)**2) 
+                for v in motion_vectors
+            ) / len(motion_vectors)
+            
+            # Normalize: sqrt(variance) / magnitude of average motion
+            avg_magnitude = (avg_dx**2 + avg_dy**2)**0.5
+            if avg_magnitude > 0.0001:
+                of['parallax_score'] = round(min(1.0, (dir_variance**0.5) / avg_magnitude), 4)
+            else:
+                of['parallax_score'] = 0.0
+            
+            # Dominant direction (unit vector)
+            if avg_magnitude > 0.0001:
+                of['dominant_direction'] = [
+                    round(avg_dx / avg_magnitude, 4),
+                    round(avg_dy / avg_magnitude, 4)
+                ]
+            
+            # Direction entropy: how varied are the motion directions?
+            # Use angle variance as proxy for entropy
+            import math
+            angles = [math.atan2(v[1], v[0]) for v in motion_vectors if (v[0]**2 + v[1]**2) > 1e-10]
+            if angles:
+                mean_angle = sum(angles) / len(angles)
+                angle_variance = sum((a - mean_angle)**2 for a in angles) / len(angles)
+                # Normalize to 0-1 (pi/2 radians variance = 1.0)
+                of['direction_entropy'] = round(min(1.0, angle_variance / (math.pi/2)**2), 4)
+        
+        # Track dropout rate
+        tracks = self.current_session.tracks
+        if tracks:
+            total_possible_lifespan = self.current_session.frame_count
+            early_failures = sum(1 for t in tracks if t.get('lifespan', 0) < total_possible_lifespan * 0.3)
+            of['track_dropout_rate'] = round(early_failures / len(tracks), 4)
     
     def record_motion_probe(self, probe_results: Dict):
         """Record motion probe results for ML training."""

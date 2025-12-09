@@ -31,8 +31,16 @@ class TrackingState:
 
 _state = TrackingState()
 
-# Global edit recorder (persists between solves)
+# Global recorders (persist between solves to capture user behavior)
 _edit_recorder = None
+_behavior_recorder = None
+_last_solve_settings = None
+_last_solve_error = None
+_last_solve_footage_class = None
+
+# Pending behavior to learn from AFTER the new solve completes
+_pending_behavior = None
+_pending_behavior_footage_class = None
 
 
 class AUTOSOLVE_OT_run_solve(Operator):
@@ -70,18 +78,55 @@ class AUTOSOLVE_OT_run_solve(Operator):
         footage_type = getattr(settings, 'footage_type', 'AUTO')
         _state.reset()
         
-        # Stop any previous edit recording and save results
-        global _edit_recorder
-        if _edit_recorder and settings.record_edits:
-            edit_session = _edit_recorder.stop_monitoring()
-            if edit_session:
-                # Store edit session for export
-                from .solver.learning.session_recorder import SessionRecorder
-                try:
-                    recorder = SessionRecorder()
-                    recorder._save_edit_session(edit_session)
-                except Exception as e:
-                    print(f"AutoSolve: Failed to save edit session: {e}")
+        # ═══════════════════════════════════════════════════════════════
+        # BEHAVIOR LEARNING: Capture and learn from user edits since last solve
+        # ═══════════════════════════════════════════════════════════════
+        global _edit_recorder, _behavior_recorder
+        global _last_solve_settings, _last_solve_error, _last_solve_footage_class
+        
+        if settings.record_edits:
+            # 1. Stop edit monitoring and save
+            if _edit_recorder:
+                edit_session = _edit_recorder.stop_monitoring()
+                if edit_session:
+                    from .solver.learning.session_recorder import SessionRecorder
+                    try:
+                        recorder = SessionRecorder()
+                        recorder._save_edit_session(edit_session)
+                    except Exception as e:
+                        print(f"AutoSolve: Failed to save edit session: {e}")
+            
+            # 2. Stop behavior monitoring and STORE for later
+            #    (Don't learn yet - we need the new solve's error to compare)
+            if _behavior_recorder and _last_solve_footage_class:
+                # Get current settings (user may have changed them)
+                current_settings = {
+                    'pattern_size': clip.tracking.settings.default_pattern_size,
+                    'search_size': clip.tracking.settings.default_search_size,
+                    'correlation': clip.tracking.settings.default_correlation_min,
+                }
+                
+                # Stop monitoring - pass settings for comparison, 
+                # but error comparison will happen AFTER new solve
+                behavior = _behavior_recorder.stop_monitoring(current_settings, None)
+                if behavior:
+                    _behavior_recorder.save_behavior(behavior)
+                    
+                    # Store pending behavior - will learn after new solve completes
+                    from dataclasses import asdict
+                    _pending_behavior = asdict(behavior)
+                    _pending_behavior_footage_class = _last_solve_footage_class
+                    
+                    # Store old error for comparison after new solve
+                    _pending_behavior['_previous_error'] = _last_solve_error
+                    
+                    print(f"AutoSolve: Captured user behavior - will learn after new solve")
+        
+        # Reset recorders (but keep pending behavior)
+        _behavior_recorder = None
+        _edit_recorder = None
+        _last_solve_settings = None
+        _last_solve_error = None
         
         _state.tracker = SmartTracker(clip, robust_mode=robust, footage_type=footage_type)
         _state.frame_start = clip.frame_start
@@ -546,13 +591,80 @@ class AUTOSOLVE_OT_run_solve(Operator):
         return {'RUNNING_MODAL'}
     
     def _finish(self, context, success=False):
-        # Start edit monitoring if enabled
-        global _edit_recorder
+        # Start behavior and edit monitoring after successful solve
+        global _edit_recorder, _behavior_recorder
+        global _last_solve_settings, _last_solve_error, _last_solve_footage_class
+        global _pending_behavior, _pending_behavior_footage_class
+        
         settings = context.scene.autosolve
-        if success and settings.record_edits:
+        clip = context.edit_movieclip
+        tracker = _state.tracker
+        
+        # ═══════════════════════════════════════════════════════════════
+        # LEARN FROM PENDING BEHAVIOR (now we have the ACTUAL new error)
+        # ═══════════════════════════════════════════════════════════════
+        if success and _pending_behavior and _pending_behavior_footage_class:
+            new_error = clip.tracking.reconstruction.average_error if clip.tracking.reconstruction.is_valid else None
+            previous_error = _pending_behavior.get('_previous_error')
+            
+            if new_error is not None and previous_error is not None:
+                # NOW we can correctly compute if user's changes helped
+                improvement = previous_error - new_error
+                _pending_behavior['re_solve'] = {
+                    'attempted': True,
+                    'error_before': previous_error,
+                    'error_after': new_error,
+                    'improvement': improvement,
+                    'improved': improvement > 0
+                }
+                
+                # Learn from behavior with correct error comparison
+                from .solver.learning.settings_predictor import SettingsPredictor
+                try:
+                    predictor = SettingsPredictor()
+                    predictor.learn_from_behavior(_pending_behavior_footage_class, _pending_behavior)
+                    
+                    if improvement > 0:
+                        print(f"AutoSolve: Learned from user behavior (error improved: {previous_error:.2f}→{new_error:.2f})")
+                    else:
+                        print(f"AutoSolve: Noted user behavior (error not improved: {previous_error:.2f}→{new_error:.2f})")
+                except Exception as e:
+                    print(f"AutoSolve: Failed to learn from behavior: {e}")
+            
+            # Clear pending behavior
+            _pending_behavior = None
+            _pending_behavior_footage_class = None
+        
+        if success and settings.record_edits and clip:
+            # Store current solve state for comparison when user re-solves
+            _last_solve_settings = {
+                'pattern_size': clip.tracking.settings.default_pattern_size,
+                'search_size': clip.tracking.settings.default_search_size,
+                'correlation': clip.tracking.settings.default_correlation_min,
+            }
+            _last_solve_error = clip.tracking.reconstruction.average_error if clip.tracking.reconstruction.is_valid else 0.0
+            _last_solve_footage_class = tracker.footage_class if tracker else None
+            
+            # Create session ID for linking behavior with session
+            from datetime import datetime
+            session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Start edit recorder
             from .solver.learning.user_edit_recorder import UserEditRecorder
-            _edit_recorder = UserEditRecorder(context.edit_movieclip)
+            _edit_recorder = UserEditRecorder(clip)
             _edit_recorder.start_monitoring()
+            
+            # Start behavior recorder
+            from .solver.learning.behavior_recorder import BehaviorRecorder
+            _behavior_recorder = BehaviorRecorder()
+            _behavior_recorder.start_monitoring(
+                clip=clip,
+                settings=_last_solve_settings,
+                solve_error=_last_solve_error,
+                session_id=session_id
+            )
+            
+            print(f"AutoSolve: Monitoring for user edits and behavior changes")
         
         self._cleanup(context)
         return {'FINISHED'}
@@ -590,7 +702,7 @@ class AUTOSOLVE_OT_setup_scene(Operator):
 
 
 class AUTOSOLVE_OT_export_training_data(Operator):
-    """Export training data to share with others or backup."""
+    """Export training data as ZIP for ML training."""
     
     bl_idname = "autosolve.export_training_data"
     bl_label = "Export Training Data"
@@ -599,12 +711,12 @@ class AUTOSOLVE_OT_export_training_data(Operator):
     filepath: bpy.props.StringProperty(
         name="File Path",
         description="Path to export training data",
-        default="autosolve_training.json",
+        default="autosolve_training.zip",
         subtype='FILE_PATH',
     )
     
     filter_glob: bpy.props.StringProperty(
-        default="*.json",
+        default="*.zip",
         options={'HIDDEN'},
     )
     
@@ -614,53 +726,83 @@ class AUTOSOLVE_OT_export_training_data(Operator):
     
     def execute(self, context):
         import json
+        import zipfile
         from pathlib import Path
+        from datetime import datetime
         
         try:
             from .solver.learning.settings_predictor import SettingsPredictor
             
             predictor = SettingsPredictor()
-            
-            # Prepare export data with metadata
-            export_data = {
-                'format_version': 3,
-                'export_type': 'autosolve_training_data',
-                'global_stats': predictor.model.get('global_stats', {}),
-                'footage_classes': predictor.model.get('footage_classes', {}),
-                'region_models': predictor.model.get('region_models', {}),
-                'failure_patterns': predictor.model.get('failure_patterns', {}),
-                'sessions': [],  # Detailed session logs
-            }
-            
-            # Collect session logs
-            data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'sessions'
-            if data_dir.exists():
-                for session_file in data_dir.glob('*.json'):
-                    try:
-                        with open(session_file) as f:
-                            session_data = json.load(f)
-                            export_data['sessions'].append(session_data)
-                    except Exception as e:
-                        print(f"AutoSolve: Failed to export session {session_file.name}: {e}")
+            base_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
             
             filepath = Path(self.filepath)
-            if not filepath.suffix:
-                filepath = filepath.with_suffix('.json')
+            if not filepath.suffix or filepath.suffix != '.zip':
+                filepath = filepath.with_suffix('.zip')
             
-            with open(filepath, 'w') as f:
-                json.dump(export_data, f, indent=2)
+            session_count = 0
+            behavior_count = 0
+            total_tracks = 0
             
-            total_sessions = export_data['global_stats'].get('total_sessions', len(export_data['sessions']))
-            self.report({'INFO'}, f"Exported {total_sessions} sessions to {filepath.name}")
+            with zipfile.ZipFile(filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # 1. Export sessions
+                sessions_dir = base_dir / 'sessions'
+                if sessions_dir.exists():
+                    for session_file in sessions_dir.glob('*.json'):
+                        try:
+                            with open(session_file) as f:
+                                data = json.load(f)
+                                total_tracks += len(data.get('tracks', []))
+                            # Use just timestamp as filename
+                            zf.write(session_file, f"sessions/{session_file.name}")
+                            session_count += 1
+                        except Exception as e:
+                            print(f"AutoSolve: Failed to export {session_file.name}: {e}")
+                
+                # 2. Export behavior data
+                behavior_dir = base_dir / 'behavior'
+                if behavior_dir.exists():
+                    for behavior_file in behavior_dir.glob('*.json'):
+                        try:
+                            zf.write(behavior_file, f"behavior/{behavior_file.name}")
+                            behavior_count += 1
+                        except Exception as e:
+                            print(f"AutoSolve: Failed to export {behavior_file.name}: {e}")
+                
+                # 3. Export model
+                model_data = {
+                    'version': predictor.model.get('version', 2),
+                    'global_stats': predictor.model.get('global_stats', {}),
+                    'footage_classes': predictor.model.get('footage_classes', {}),
+                    'region_models': predictor.model.get('region_models', {}),
+                    'failure_patterns': predictor.model.get('failure_patterns', {}),
+                }
+                zf.writestr('model.json', json.dumps(model_data, indent=2))
+                
+                # 4. Create manifest
+                manifest = {
+                    'export_version': 1,
+                    'export_date': datetime.now().isoformat(),
+                    'addon_version': '1.0.0',
+                    'session_count': session_count,
+                    'behavior_count': behavior_count,
+                    'total_tracks': total_tracks,
+                }
+                zf.writestr('manifest.json', json.dumps(manifest, indent=2))
+            
+            self.report({'INFO'}, 
+                f"Exported {session_count} sessions, {behavior_count} behaviors to {filepath.name}")
             return {'FINISHED'}
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.report({'ERROR'}, f"Export failed: {str(e)}")
             return {'CANCELLED'}
 
 
 class AUTOSOLVE_OT_import_training_data(Operator):
-    """Import training data from file."""
+    """Import training data from ZIP file."""
     
     bl_idname = "autosolve.import_training_data"
     bl_label = "Import Training Data"
@@ -673,7 +815,7 @@ class AUTOSOLVE_OT_import_training_data(Operator):
     )
     
     filter_glob: bpy.props.StringProperty(
-        default="*.json",
+        default="*.zip;*.json",
         options={'HIDDEN'},
     )
     
@@ -689,6 +831,7 @@ class AUTOSOLVE_OT_import_training_data(Operator):
     
     def execute(self, context):
         import json
+        import zipfile
         from pathlib import Path
         
         try:
@@ -700,67 +843,112 @@ class AUTOSOLVE_OT_import_training_data(Operator):
                 self.report({'ERROR'}, "File not found")
                 return {'CANCELLED'}
             
-            with open(filepath) as f:
-                import_data = json.load(f)
-            
-            # Validate format
-            if import_data.get('export_type') != 'autosolve_training_data':
-                self.report({'ERROR'}, "Invalid training data format")
-                return {'CANCELLED'}
-            
             predictor = SettingsPredictor()
+            base_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
+            session_count = 0
+            behavior_count = 0
             
-            if self.merge:
-                # Merge footage classes
-                for cls, data in import_data.get('footage_classes', {}).items():
-                    if cls not in predictor.model['footage_classes']:
-                        predictor.model['footage_classes'][cls] = data
-                    else:
-                        existing = predictor.model['footage_classes'][cls]
-                        if data.get('sample_count', 0) > existing.get('sample_count', 0):
-                            predictor.model['footage_classes'][cls] = data
+            # Handle ZIP format
+            if filepath.suffix == '.zip':
+                with zipfile.ZipFile(filepath, 'r') as zf:
+                    # Extract sessions
+                    sessions_dir = base_dir / 'sessions'
+                    sessions_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for name in zf.namelist():
+                        if name.startswith('sessions/') and name.endswith('.json'):
+                            data = zf.read(name)
+                            out_path = sessions_dir / Path(name).name
+                            if not out_path.exists() or not self.merge:
+                                out_path.write_bytes(data)
+                                session_count += 1
+                    
+                    # Extract behavior
+                    behavior_dir = base_dir / 'behavior'
+                    behavior_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    for name in zf.namelist():
+                        if name.startswith('behavior/') and name.endswith('.json'):
+                            data = zf.read(name)
+                            out_path = behavior_dir / Path(name).name
+                            if not out_path.exists() or not self.merge:
+                                out_path.write_bytes(data)
+                                behavior_count += 1
+                    
+                    # Import model
+                    if 'model.json' in zf.namelist():
+                        model_data = json.loads(zf.read('model.json'))
+                        self._merge_model(predictor, model_data, self.merge)
                 
-                # Merge region models
-                for region, data in import_data.get('region_models', {}).items():
-                    if region not in predictor.model['region_models']:
-                        predictor.model['region_models'][region] = data
-                    else:
-                        predictor.model['region_models'][region]['total_tracks'] = \
-                            predictor.model['region_models'][region].get('total_tracks', 0) + data.get('total_tracks', data.get('total', 0))
-                        predictor.model['region_models'][region]['successful_tracks'] = \
-                            predictor.model['region_models'][region].get('successful_tracks', 0) + data.get('successful_tracks', data.get('successful', 0))
-                
-                # Merge failure patterns (v2)
-                for key, data in import_data.get('failure_patterns', {}).items():
-                    if key not in predictor.model.get('failure_patterns', {}):
-                        if 'failure_patterns' not in predictor.model:
-                            predictor.model['failure_patterns'] = {}
-                        predictor.model['failure_patterns'][key] = data
-                
-                # Update global stats
-                stats = import_data.get('global_stats', {})
-                predictor.model['global_stats']['total_sessions'] += stats.get('total_sessions', import_data.get('session_count', 0))
-                predictor.model['global_stats']['successful_sessions'] += stats.get('successful_sessions', 0)
+                predictor._save_model()
+                self.report({'INFO'}, 
+                    f"Imported {session_count} sessions, {behavior_count} behaviors from {filepath.name}")
+            
+            # Handle legacy JSON format
             else:
-                # Replace entire model
-                predictor.model['footage_classes'] = import_data.get('footage_classes', {})
-                predictor.model['region_models'] = import_data.get('region_models', {})
-                predictor.model['failure_patterns'] = import_data.get('failure_patterns', {})
-                predictor.model['global_stats'] = import_data.get('global_stats', {
-                    'total_sessions': import_data.get('session_count', 0),
-                    'successful_sessions': 0
-                })
+                with open(filepath) as f:
+                    import_data = json.load(f)
+                
+                if import_data.get('export_type') != 'autosolve_training_data':
+                    self.report({'ERROR'}, "Invalid training data format")
+                    return {'CANCELLED'}
+                
+                self._merge_model(predictor, import_data, self.merge)
+                predictor._save_model()
+                
+                session_count = import_data.get('global_stats', {}).get('total_sessions', 0)
+                self.report({'INFO'}, f"Imported {session_count} sessions from {filepath.name}")
             
-            predictor._save_model()
-            
-            imported_count = import_data.get('global_stats', {}).get('total_sessions', import_data.get('session_count', 0))
-            action = "Merged" if self.merge else "Imported"
-            self.report({'INFO'}, f"{action} {imported_count} sessions from {filepath.name}")
             return {'FINISHED'}
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.report({'ERROR'}, f"Import failed: {str(e)}")
             return {'CANCELLED'}
+    
+    def _merge_model(self, predictor, import_data: dict, merge: bool):
+        """Merge or replace model data."""
+        if merge:
+            # Merge footage classes
+            for cls, data in import_data.get('footage_classes', {}).items():
+                if cls not in predictor.model['footage_classes']:
+                    predictor.model['footage_classes'][cls] = data
+                else:
+                    existing = predictor.model['footage_classes'][cls]
+                    if data.get('sample_count', 0) > existing.get('sample_count', 0):
+                        predictor.model['footage_classes'][cls] = data
+            
+            # Merge region models
+            for region, data in import_data.get('region_models', {}).items():
+                if region not in predictor.model['region_models']:
+                    predictor.model['region_models'][region] = data
+                else:
+                    predictor.model['region_models'][region]['total_tracks'] = \
+                        predictor.model['region_models'][region].get('total_tracks', 0) + data.get('total_tracks', 0)
+                    predictor.model['region_models'][region]['successful_tracks'] = \
+                        predictor.model['region_models'][region].get('successful_tracks', 0) + data.get('successful_tracks', 0)
+            
+            # Merge failure patterns
+            for key, data in import_data.get('failure_patterns', {}).items():
+                if key not in predictor.model.get('failure_patterns', {}):
+                    if 'failure_patterns' not in predictor.model:
+                        predictor.model['failure_patterns'] = {}
+                    predictor.model['failure_patterns'][key] = data
+            
+            # Update global stats
+            stats = import_data.get('global_stats', {})
+            predictor.model['global_stats']['total_sessions'] += stats.get('total_sessions', 0)
+            predictor.model['global_stats']['successful_sessions'] += stats.get('successful_sessions', 0)
+        else:
+            # Replace entire model
+            predictor.model['footage_classes'] = import_data.get('footage_classes', {})
+            predictor.model['region_models'] = import_data.get('region_models', {})
+            predictor.model['failure_patterns'] = import_data.get('failure_patterns', {})
+            predictor.model['global_stats'] = import_data.get('global_stats', {
+                'total_sessions': 0,
+                'successful_sessions': 0
+            })
 
 
 class AUTOSOLVE_OT_reset_training_data(Operator):

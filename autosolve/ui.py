@@ -146,18 +146,30 @@ class AUTOSOLVE_PT_training_panel(Panel):
         
         try:
             from .solver.learning.settings_predictor import SettingsPredictor
+            from .solver.learning.behavior_recorder import BehaviorRecorder
+            
             predictor = SettingsPredictor()
             stats = predictor.get_stats()
             
             col = box.column(align=True)
-            col.label(text=f"Sessions tracked: {stats.get('total_sessions', 0)}")
+            col.label(text=f"Sessions: {stats.get('total_sessions', 0)}")
+            
+            # Show behavior count
+            try:
+                behavior_recorder = BehaviorRecorder()
+                behavior_count = behavior_recorder.get_behavior_count()
+                col.label(text=f"Behaviors: {behavior_count}")
+            except:
+                pass
+            
             col.label(text=f"Footage classes: {stats.get('footage_classes_known', 0)}")
             col.label(text=f"Success rate: {stats.get('success_rate', 0):.0%}")
             
-            # Show region info
-            regions = stats.get('regions_analyzed', 0)
-            if regions > 0:
-                col.label(text=f"Regions analyzed: {regions}")
+            # Show behavior patterns if any
+            behavior_patterns = len(predictor.model.get('behavior_patterns', {}))
+            if behavior_patterns > 0:
+                col.label(text=f"Learned patterns: {behavior_patterns}")
+                
         except Exception as e:
             box.label(text="No training data yet")
         
@@ -170,7 +182,7 @@ class AUTOSOLVE_PT_training_panel(Panel):
         row.prop(settings, "record_edits", icon='REC')
         row = box.row()
         row.scale_y = 0.7
-        row.label(text="Helps make tracking smarter for everyone", icon='INFO')
+        row.label(text="Helps AutoSolve learn from your corrections", icon='INFO')
         
         layout.separator()
         

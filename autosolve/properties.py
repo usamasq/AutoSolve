@@ -101,11 +101,12 @@ class AutoSolveSettings(PropertyGroup):
     # ═══════════════════════════════════════════════════════════
     
     record_edits: BoolProperty(
-        name="Record My Edits",
-        description="Help improve AutoSolve! When enabled, your track edits "
-                    "(deletions, refinements) are anonymously recorded between solves. "
-                    "Shared data makes tracking smarter for everyone",
-        default=False,
+        name="Learn from My Edits",
+        description="AutoSolve learns from your corrections! When you delete bad tracks "
+                    "or adjust settings before re-solving, AutoSolve learns what works "
+                    "for your footage types. All data stays local and anonymous. "
+                    "Disable if you prefer not to contribute to the learning model",
+        default=True,
     )
     
     # ═══════════════════════════════════════════════════════════

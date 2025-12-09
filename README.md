@@ -183,7 +183,6 @@ Please refer to **[CONTRIBUTING_DATA.md](CONTRIBUTING_DATA.md)** for:
 - ✅ Data privacy details
 - ✅ Export instructions
 - ✅ Data quality guidelines
-- ✅ ML training instructions
 
 ---
 

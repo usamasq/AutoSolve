@@ -3672,16 +3672,19 @@ class SmartTracker:
     
     def save_session_results(self, success: bool, solve_error: float):
         """Save session results for future learning."""
+        bundle_count = self.get_bundle_count()
+        
         if self.last_analysis:
             # Extract region_stats from last_analysis properly
             region_stats = self.last_analysis.get('region_stats', {})
             
             self.predictor.update_from_session(
                 footage_class=self.footage_class,
-                success=success,                    # bool
-                settings=self.current_settings,     # dict with tracker settings
+                success=success,
+                settings=self.current_settings,
                 error=solve_error,
-                region_stats=region_stats           # dict with per-region stats
+                region_stats=region_stats,
+                bundle_count=bundle_count  # NEW: For HER reward computation
             )
             
         # ═══════════════════════════════════════════════════════════════

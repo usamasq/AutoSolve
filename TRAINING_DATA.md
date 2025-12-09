@@ -22,9 +22,11 @@ AutoSolve uses an **adaptive learning system** that collects anonymous telemetry
 
 ```
 AutoSolve/
-├── model.json           # User's learned model
-└── sessions/
-    └── *.json           # Individual session records
+├── model.json           # Learned patterns & HER experiences
+├── sessions/
+│   └── *.json           # Individual session records
+└── behavior/
+    └── *.json           # User behavior records (new)
 ```
 
 **Bundled with addon:**
@@ -44,6 +46,7 @@ Each tracking session generates a JSON file with this structure:
 
 ```json
 {
+  "schema_version": 3,
   "timestamp": "2025-12-07T19:30:00",
   "clip_name": "footage_001",
   "iteration": 1,
@@ -143,7 +146,76 @@ Each tracking session generates a JSON file with this structure:
     "center": 0.85,
     "top-left": 0.32,
     "top-center": 0.45
+  },
+
+  "optical_flow": {
+    "velocity_mean": 0.0234,
+    "velocity_std": 0.0089,
+    "velocity_max": 0.067,
+    "parallax_score": 0.32,
+    "dominant_direction": [0.98, -0.12],
+    "direction_entropy": 0.15,
+    "velocity_acceleration": 0.002,
+    "track_dropout_rate": 0.18
   }
+}
+```
+
+---
+
+### Behavior Record (`behavior/*.json`)
+
+User behavior is recorded separately for ML training:
+
+```json
+{
+  "schema_version": 1,
+  "session_id": "20251209_093000",
+  "timestamp": "2025-12-09T09:35:00",
+
+  "editing_duration_seconds": 45.0,
+
+  "settings_adjustments": {
+    "search_size": {
+      "before": 71,
+      "after": 100,
+      "delta": 29
+    },
+    "correlation": {
+      "before": 0.7,
+      "after": 0.6,
+      "delta": -0.1
+    }
+  },
+
+  "re_solve": {
+    "attempted": true,
+    "error_before": 1.8,
+    "error_after": 0.9,
+    "improvement": 0.9,
+    "improved": true
+  },
+
+  "track_deletions": [
+    {
+      "track_name": "Track.005",
+      "region": "top-left",
+      "lifespan": 23,
+      "had_bundle": true,
+      "reprojection_error": 3.2,
+      "inferred_reason": "high_error"
+    }
+  ],
+
+  "marker_refinements": [
+    {
+      "track_name": "Track.008",
+      "frame": 45,
+      "old_position": [0.52, 0.48],
+      "new_position": [0.524, 0.477],
+      "displacement_px": 2.3
+    }
+  ]
 }
 ```
 
@@ -196,6 +268,21 @@ Each tracking session generates a JSON file with this structure:
 | `frame_of_failure`     | int/null | Frame where track count first dropped critically |
 
 ---
+
+## Optical Flow Fields (ML-Ready)
+
+Continuous metrics for neural network training:
+
+| Field                   | Type     | Description                                     |
+| ----------------------- | -------- | ----------------------------------------------- |
+| `velocity_mean`         | float    | Average track velocity (normalized to diagonal) |
+| `velocity_std`          | float    | Velocity standard deviation                     |
+| `velocity_max`          | float    | Maximum velocity observed                       |
+| `parallax_score`        | float    | 0.0=uniform, 1.0=strong depth variation         |
+| `dominant_direction`    | [dx, dy] | Unit vector of camera motion                    |
+| `direction_entropy`     | float    | 0.0=all same direction, 1.0=random              |
+| `velocity_acceleration` | float    | Change in velocity over clip                    |
+| `track_dropout_rate`    | float    | Fraction of tracks that fail early              |
 
 ## Motion Probe & Adaptation Fields (NEW)
 
@@ -253,11 +340,11 @@ Each entry in `adaptation_history` contains:
 
 ## Learning Model (`model.json`)
 
-The aggregated model tracks performance across footage types:
+The aggregated model tracks performance using HER (Hindsight Experience Replay):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "global_stats": {
     "total_sessions": 47,
     "successful_sessions": 42
@@ -267,21 +354,30 @@ The aggregated model tracks performance across footage types:
       "sample_count": 23,
       "success_count": 21,
       "avg_success_rate": 0.91,
-      "best_settings": {
-        "pattern_size": 17,
-        "search_size": 91,
-        "correlation": 0.68,
-        "threshold": 0.28
-      },
-      "settings_history": [...]
-    },
-    "4K_24fps": {...}
+      "experiences": [
+        {
+          "settings": {"pattern_size": 17, "search_size": 91},
+          "outcome": "SUCCESS",
+          "reward": 0.85,
+          "solve_error": 0.7,
+          "failure_type": null
+        }
+      ],
+      "best_settings": {...}
+    }
   },
   "region_models": {
     "center": {
       "total_tracks": 234,
       "successful_tracks": 198,
       "avg_lifespan": 145
+    }
+  },
+  "behavior_patterns": {
+    "HD_30fps:search_size_increase": {
+      "count": 5,
+      "confidence": 0.8,
+      "avg_delta": 29
     }
   }
 }
@@ -410,11 +506,17 @@ def predict_settings(clip):
 Clip Editor → AutoSolve → Training Data → Export
 ```
 
-Creates a JSON bundle containing:
+Creates a ZIP archive containing:
 
-- All session records
-- Aggregated model
-- Version info
+```
+autosolve_training_YYYYMMDD.zip
+├── manifest.json      # Export metadata
+├── model.json         # Learned patterns
+├── sessions/          # Session records
+│   └── *.json
+└── behavior/          # User behavior records
+    └── *.json
+```
 
 ### Import Data
 
@@ -434,6 +536,46 @@ Clip Editor → AutoSolve → Training Data → Reset
 ```
 
 Clears all learned data, returns to pretrained defaults.
+
+---
+
+## Behavior Learning
+
+AutoSolve learns from your corrections between solves. This is **enabled by default** via "Learn from My Edits" in the Training Data panel.
+
+### How It Works
+
+```
+1. Run AutoSolve → Solve completes (error = 1.2)
+2. User adjusts settings (search_size 71 → 100)
+3. Run AutoSolve again → Solve completes (error = 0.8)
+4. System learns: "search_size increase helped for this footage type"
+```
+
+### What is Learned
+
+| Data                        | Value                                                     |
+| --------------------------- | --------------------------------------------------------- |
+| **Settings changes**        | Which adjustments improved error for which footage types  |
+| **Track deletions**         | Regions where users consistently delete tracks            |
+| **Improvement correlation** | Only builds confidence when changes actually reduce error |
+
+### Safety Guarantees
+
+AutoSolve will **never degrade** performance:
+
+- **3+ observations required** — No adjustment applied until seen multiple times
+- **0.7+ confidence required** — Changes must have improved error in most cases
+- **Only proven adjustments** — Changes that made error worse are noted but never applied
+
+### Console Feedback
+
+```
+AutoSolve: Monitoring for user edits and behavior changes
+AutoSolve: Captured user behavior - will learn after new solve
+AutoSolve: Learned from user behavior (error improved: 1.20→0.80)
+AutoSolve: Applied learned behavior adjustments: search_size: 71.0→95.0
+```
 
 ---
 

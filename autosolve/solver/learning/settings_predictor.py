@@ -101,12 +101,12 @@ class SettingsPredictor:
         # Default empty model
         if model is None:
             model = {
-                'version': 1,
+                'version': 2,  # Bumped for HER schema
                 'footage_classes': {},
                 'region_models': {},
             }
         
-        # Migrate older models - ensure required keys exist
+        # Ensure required keys exist
         if 'global_stats' not in model:
             model['global_stats'] = {
                 'total_sessions': 0,
@@ -119,13 +119,56 @@ class SettingsPredictor:
         
         return model
 
-    
     def _save_model(self):
         """Save model to disk."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
         with open(self.model_path, 'w') as f:
             json.dump(self.model, f, indent=2)
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # HER REWARD COMPUTATION
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    @staticmethod
+    def _compute_reward_static(success: bool, solve_error: float, bundle_count: int) -> float:
+        """
+        Compute reward signal for ML training (static version for migration).
+        
+        This creates a continuous reward signal from 0.0 to 1.0 that works for
+        both successes and failures, enabling Hindsight Experience Replay.
+        
+        Reward = error_score * 0.5 + bundle_score * 0.3 + success_bonus * 0.2
+        
+        Args:
+            success: Whether the solve succeeded
+            solve_error: Reprojection error in pixels
+            bundle_count: Number of 3D bundles created
+            
+        Returns:
+            Reward value between 0.0 and 1.0
+        """
+        # Error score: 0 error = 1.0, 10+ error = 0.0
+        error_score = max(0.0, 1.0 - solve_error / 10.0)
+        
+        # Bundle score: 100+ bundles = 1.0, 0 bundles = 0.0
+        bundle_score = min(1.0, bundle_count / 100.0)
+        
+        # Success bonus
+        success_bonus = 1.0 if success else 0.0
+        
+        # Weighted combination
+        reward = error_score * 0.5 + bundle_score * 0.3 + success_bonus * 0.2
+        
+        return round(reward, 3)
+    
+    def compute_reward(self, success: bool, solve_error: float, bundle_count: int) -> float:
+        """
+        Compute reward signal for ML training.
+        
+        Instance method wrapper for _compute_reward_static.
+        """
+        return self._compute_reward_static(success, solve_error, bundle_count)
     
     def classify_footage(self, clip: bpy.types.MovieClip) -> str:
         """
@@ -190,7 +233,33 @@ class SettingsPredictor:
         motion_factor = self._estimate_motion_factor(clip)
         settings = self._adjust_for_motion(settings, motion_factor)
         
+        # Apply learned behavior adjustments (cautious: only when confident)
+        settings = self._apply_behavior_adjustments(settings, footage_class)
+        
         return settings
+    
+    def _apply_behavior_adjustments(self, settings: Dict, footage_class: str) -> Dict:
+        """
+        Apply learned adjustments from user behavior.
+        
+        Only applies if:
+        - 3+ similar behaviors observed
+        - 0.7+ confidence (improvements were consistent)
+        """
+        adjusted = settings.copy()
+        applied = []
+        
+        for setting_name in ['pattern_size', 'search_size', 'correlation', 'threshold']:
+            delta = self.get_behavior_adjustment(footage_class, setting_name)
+            if delta is not None and setting_name in adjusted:
+                old_val = adjusted[setting_name]
+                adjusted[setting_name] = old_val + delta
+                applied.append(f"{setting_name}: {old_val:.1f}→{adjusted[setting_name]:.1f}")
+        
+        if applied:
+            print(f"AutoSolve: Applied learned behavior adjustments: {', '.join(applied)}")
+        
+        return adjusted
     
     def _apply_footage_type_adjustment(self, settings: Dict, footage_type: str) -> Dict:
         """Apply adjustments based on footage type (DRONE, INDOOR, etc.)."""
@@ -269,18 +338,76 @@ class SettingsPredictor:
     
     def _predict_from_history(self, class_data: Dict, robust_mode: bool) -> Dict:
         """
-        Predict settings from historical data using success-weighted averaging.
+        Predict settings from historical data using HER reward-weighted averaging.
         
-        Sessions with lower solve error get more weight in determining optimal settings.
-        This is more robust than just using the single best session.
+        HER Approach:
+        - High reward experiences → positive weight → pull settings toward them
+        - Low reward experiences → used to compute "settings to avoid"
+        - Net effect: settings converge to optimal while avoiding known failures
         """
+        # Prefer new experiences array, fall back to legacy settings_history
+        experiences = class_data.get('experiences', [])
         settings_history = class_data.get('settings_history', [])
         
-        if not settings_history:
+        if not experiences and not settings_history:
             # No history, use defaults
             settings = self.DEFAULT_SETTINGS.copy()
+        elif experiences:
+            # ═══════════════════════════════════════════════════════════════════
+            # HER REWARD-WEIGHTED PREDICTION
+            # ═══════════════════════════════════════════════════════════════════
+            weighted_settings = {}
+            total_weight = 0
+            
+            # Compute settings to avoid from low-reward experiences
+            avoid_settings = self._compute_settings_to_avoid(experiences)
+            
+            for exp in experiences:
+                reward = exp.get('reward', 0.5)
+                
+                # Only use experiences with reward > 0.3 for positive contribution
+                # Lower reward experiences contribute via avoid_settings
+                if reward <= 0.3:
+                    continue
+                
+                # Weight by reward (higher reward = more influence)
+                weight = reward ** 2  # Squared to emphasize high-reward experiences
+                total_weight += weight
+                
+                exp_settings = exp.get('settings', {})
+                for key in ['pattern_size', 'search_size', 'correlation', 'threshold']:
+                    if key in exp_settings:
+                        if key not in weighted_settings:
+                            weighted_settings[key] = 0
+                        weighted_settings[key] += exp_settings[key] * weight
+            
+            # Normalize by total weight
+            if total_weight > 0:
+                for key in weighted_settings:
+                    weighted_settings[key] /= total_weight
+            
+            # Build final settings
+            settings = self.DEFAULT_SETTINGS.copy()
+            for key, value in weighted_settings.items():
+                if key in ['pattern_size', 'search_size']:
+                    # Round to odd integer
+                    settings[key] = int(value) | 1  # Ensure odd
+                else:
+                    settings[key] = round(value, 2)
+            
+            # ═══════════════════════════════════════════════════════════════════
+            # FAILURE AVOIDANCE: Adjust settings AWAY from known-bad values
+            # ═══════════════════════════════════════════════════════════════════
+            if avoid_settings:
+                settings = self._apply_failure_avoidance(settings, avoid_settings)
+                print(f"AutoSolve: Applied failure avoidance from {len(avoid_settings)} bad experiences")
+            
+            # Keep motion_model from highest reward experience
+            best_exp = max(experiences, key=lambda x: x.get('reward', 0))
+            if 'motion_model' in best_exp.get('settings', {}):
+                settings['motion_model'] = best_exp['settings']['motion_model']
         else:
-            # Success-weighted averaging: lower error = higher weight
+            # Legacy path: use old settings_history format
             weighted_settings = {}
             total_weight = 0
             
@@ -308,8 +435,7 @@ class SettingsPredictor:
             settings = self.DEFAULT_SETTINGS.copy()
             for key, value in weighted_settings.items():
                 if key in ['pattern_size', 'search_size']:
-                    # Round to odd integer
-                    settings[key] = int(value) | 1  # Ensure odd
+                    settings[key] = int(value) | 1
                 else:
                     settings[key] = round(value, 2)
             
@@ -326,6 +452,53 @@ class SettingsPredictor:
             settings['motion_model'] = 'Affine'
         
         return settings
+    
+    def _compute_settings_to_avoid(self, experiences: List[Dict]) -> List[Dict]:
+        """
+        Extract settings from low-reward experiences that should be avoided.
+        
+        Returns list of settings dicts that led to failures.
+        """
+        avoid = []
+        for exp in experiences:
+            if exp.get('reward', 1.0) < 0.3:  # Threshold for "failure"
+                avoid.append(exp.get('settings', {}))
+        return avoid
+    
+    def _apply_failure_avoidance(self, settings: Dict, avoid_settings: List[Dict]) -> Dict:
+        """
+        Adjust settings to move AWAY from known-bad configurations.
+        
+        For each setting that matches a failure, nudge it in the opposite direction.
+        """
+        adjusted = settings.copy()
+        
+        for bad in avoid_settings:
+            # Check if current settings are too similar to failed settings
+            for key in ['search_size', 'pattern_size']:
+                if key in bad and key in adjusted:
+                    bad_val = bad[key]
+                    current_val = adjusted[key]
+                    
+                    # If within 20% of bad value, increase by 30%
+                    if abs(current_val - bad_val) / max(bad_val, 1) < 0.2:
+                        adjusted[key] = int(current_val * 1.3) | 1  # Increase and ensure odd
+            
+            # For correlation, move opposite direction
+            if 'correlation' in bad and 'correlation' in adjusted:
+                bad_corr = bad['correlation']
+                current_corr = adjusted['correlation']
+                
+                # If correlation is similar to failed, adjust
+                if abs(current_corr - bad_corr) < 0.1:
+                    # If failure had high correlation, try lower (more lenient)
+                    # If failure had low correlation, try higher (stricter)
+                    if bad_corr > 0.6:
+                        adjusted['correlation'] = max(0.45, current_corr - 0.1)
+                    else:
+                        adjusted['correlation'] = min(0.85, current_corr + 0.1)
+        
+        return adjusted
     
     def _predict_heuristic(self, clip: bpy.types.MovieClip, 
                            robust_mode: bool) -> Dict:
@@ -354,7 +527,11 @@ class SettingsPredictor:
     
     def update_model(self, session_data: Dict):
         """
-        Update model with new session data.
+        Update model with new session data using Hindsight Experience Replay.
+        
+        HER Approach: ALL sessions are valuable training data.
+        - Successes: High reward, directly inform optimal settings
+        - Failures: Low reward, inform what settings to AVOID
         
         Called after each tracking session completes.
         """
@@ -383,34 +560,73 @@ class SettingsPredictor:
         
         footage_class = f"{res_class}_{fps_class}"
         
-        # Update footage class data
+        # Ensure footage class exists with new schema
         if footage_class not in self.model['footage_classes']:
             self.model['footage_classes'][footage_class] = {
                 'sample_count': 0,
                 'success_count': 0,
                 'avg_success_rate': 0.0,
-                'settings_history': [],
+                'settings_history': [],  # Legacy, kept for backward compat
+                'experiences': [],       # NEW: HER unified experience storage
                 'best_settings': {},
             }
         
         class_data = self.model['footage_classes'][footage_class]
+        
+        # Ensure experiences array exists (migration)
+        if 'experiences' not in class_data:
+            class_data['experiences'] = []
+        
         class_data['sample_count'] += 1
         
-        if session_data.get('success'):
+        # Extract metrics
+        success = session_data.get('success', False)
+        solve_error = session_data.get('solve_error', 999.0)
+        bundle_count = session_data.get('bundle_count', 0)
+        settings = session_data.get('settings', {})
+        failure_type = session_data.get('failure_type', None)
+        
+        # Compute HER reward (works for both success and failure)
+        reward = self.compute_reward(success, solve_error, bundle_count)
+        
+        # Determine outcome category
+        if success:
+            outcome = 'SUCCESS'
             class_data['success_count'] += 1
-            
-            # Record successful settings
+        elif reward > 0.3:
+            outcome = 'PARTIAL'  # Got some progress but didn't fully succeed
+        else:
+            outcome = 'FAILURE'
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # HER: Store ALL sessions as experiences (not just successes!)
+        # ═══════════════════════════════════════════════════════════════════
+        experience = {
+            'settings': settings,
+            'outcome': outcome,
+            'reward': reward,
+            'solve_error': solve_error,
+            'bundle_count': bundle_count,
+            'failure_type': failure_type,
+            'success_rate': session_data.get('successful_tracks', 0) / 
+                           max(session_data.get('total_tracks', 1), 1),
+        }
+        
+        class_data['experiences'].append(experience)
+        
+        # Keep only last 50 experiences (more than before to capture failures)
+        class_data['experiences'] = class_data['experiences'][-50:]
+        
+        # Also update legacy settings_history for backward compatibility
+        if success:
             class_data['settings_history'].append({
-                'settings': session_data.get('settings', {}),
-                'solve_error': session_data.get('solve_error', 999),
-                'success_rate': session_data.get('successful_tracks', 0) / 
-                               max(session_data.get('total_tracks', 1), 1),
+                'settings': settings,
+                'solve_error': solve_error,
+                'success_rate': experience['success_rate'],
             })
-            
-            # Keep only last 20 successful sessions
             class_data['settings_history'] = class_data['settings_history'][-20:]
             
-            # Calculate best settings (lowest error)
+            # Update best settings
             if class_data['settings_history']:
                 best = min(class_data['settings_history'], 
                           key=lambda x: x.get('solve_error', 999))
@@ -421,14 +637,14 @@ class SettingsPredictor:
             class_data['success_count'] / class_data['sample_count']
         )
         
-        # Update global stats (ensure exists for older model formats)
+        # Update global stats
         if 'global_stats' not in self.model:
             self.model['global_stats'] = {
                 'total_sessions': 0,
                 'successful_sessions': 0,
             }
         self.model['global_stats']['total_sessions'] += 1
-        if session_data.get('success'):
+        if success:
             self.model['global_stats']['successful_sessions'] += 1
         
         # Update region models
@@ -637,7 +853,8 @@ class SettingsPredictor:
         self._save_model()
     
     def update_from_session(self, footage_class: str, success: bool, settings: Dict, 
-                            error: float = 999.0, region_stats: Dict = None):
+                            error: float = 999.0, region_stats: Dict = None,
+                            bundle_count: int = 0, failure_type: str = None):
         """Update from session data (LocalLearningModel compat)."""
         session_data = {
             'footage_class': footage_class,
@@ -645,9 +862,150 @@ class SettingsPredictor:
             'settings': settings,
             'solve_error': error,
             'region_stats': region_stats or {},
+            'bundle_count': bundle_count,
+            'failure_type': failure_type,
         }
         self.update_model(session_data)
     
     def save(self):
         """Save model (LocalLearningModel compat)."""
         self._save_model()
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # BEHAVIOR LEARNING
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def learn_from_behavior(self, footage_class: str, behavior_data: Dict):
+        """
+        Learn from user behavior patterns.
+        
+        Captures what settings users adjust, which tracks they delete,
+        and uses this to improve future predictions.
+        
+        Only applies adjustments when:
+        - 3+ similar behaviors observed
+        - Confidence >= 0.7 (improvements were consistent)
+        
+        Args:
+            footage_class: Footage classification (e.g., 'HD_30fps')
+            behavior_data: BehaviorData dict from BehaviorRecorder
+        """
+        if not behavior_data:
+            return
+        
+        # Ensure behavior_patterns exists in model
+        if 'behavior_patterns' not in self.model:
+            self.model['behavior_patterns'] = {}
+        
+        # Learn from settings adjustments
+        settings_adj = behavior_data.get('settings_adjustments', {})
+        re_solve = behavior_data.get('re_solve', {})
+        
+        for setting_name, adjustment in settings_adj.items():
+            # Key: footage_class:setting_name:direction
+            direction = 'increase' if adjustment.get('delta', 0) > 0 else 'decrease'
+            key = f"{footage_class}:{setting_name}_{direction}"
+            
+            if key not in self.model['behavior_patterns']:
+                self.model['behavior_patterns'][key] = {
+                    'count': 0,
+                    'improvements': [],
+                    'avg_improvement': 0.0,
+                    'confidence': 0.0,
+                    'avg_delta': 0.0,
+                }
+            
+            pattern = self.model['behavior_patterns'][key]
+            pattern['count'] += 1
+            
+            # Track if this adjustment helped
+            if re_solve.get('attempted') and re_solve.get('improved'):
+                improvement = re_solve.get('improvement', 0)
+                pattern['improvements'].append(improvement)
+                pattern['improvements'] = pattern['improvements'][-10:]  # Keep last 10
+                pattern['avg_improvement'] = sum(pattern['improvements']) / len(pattern['improvements'])
+            
+            # Update average delta
+            delta = adjustment.get('delta', 0)
+            old_avg = pattern['avg_delta']
+            pattern['avg_delta'] = (old_avg * (pattern['count'] - 1) + delta) / pattern['count']
+            
+            # Compute confidence (% of times this adjustment helped)
+            if pattern['improvements']:
+                positive = sum(1 for i in pattern['improvements'] if i > 0)
+                pattern['confidence'] = positive / len(pattern['improvements'])
+            
+            print(f"AutoSolve: Learned behavior pattern {key} "
+                  f"(count={pattern['count']}, confidence={pattern['confidence']:.2f})")
+        
+        # Learn from deletions (reduce region confidence)
+        deletions = behavior_data.get('track_deletions', [])
+        for deletion in deletions:
+            region = deletion.get('region', 'unknown')
+            key = f"{footage_class}:region_{region}_penalty"
+            
+            if key not in self.model['behavior_patterns']:
+                self.model['behavior_patterns'][key] = {
+                    'count': 0,
+                    'reasons': {},
+                }
+            
+            pattern = self.model['behavior_patterns'][key]
+            pattern['count'] += 1
+            
+            reason = deletion.get('inferred_reason', 'unknown')
+            pattern['reasons'][reason] = pattern['reasons'].get(reason, 0) + 1
+        
+        self._save_model()
+    
+    def get_behavior_adjustment(self, footage_class: str, setting_name: str) -> Optional[float]:
+        """
+        Get learned adjustment for a setting based on user behavior.
+        
+        Only returns adjustment if confidence threshold is met.
+        
+        Returns:
+            Delta to apply to setting, or None if no confident adjustment
+        """
+        if 'behavior_patterns' not in self.model:
+            return None
+        
+        # Check for increase pattern
+        inc_key = f"{footage_class}:{setting_name}_increase"
+        dec_key = f"{footage_class}:{setting_name}_decrease"
+        
+        inc_pattern = self.model['behavior_patterns'].get(inc_key, {})
+        dec_pattern = self.model['behavior_patterns'].get(dec_key, {})
+        
+        # Need 3+ observations and 0.7+ confidence
+        if inc_pattern.get('count', 0) >= 3 and inc_pattern.get('confidence', 0) >= 0.7:
+            print(f"AutoSolve: Applying learned adjustment for {setting_name} (increase)")
+            return inc_pattern.get('avg_delta', 0)
+        
+        if dec_pattern.get('count', 0) >= 3 and dec_pattern.get('confidence', 0) >= 0.7:
+            print(f"AutoSolve: Applying learned adjustment for {setting_name} (decrease)")
+            return dec_pattern.get('avg_delta', 0)
+        
+        return None
+    
+    def get_region_penalty(self, footage_class: str, region: str) -> float:
+        """
+        Get penalty factor for a region based on user deletion patterns.
+        
+        Returns:
+            Penalty factor 0.0-1.0 (lower = more deletions = avoid this region)
+        """
+        if 'behavior_patterns' not in self.model:
+            return 1.0
+        
+        key = f"{footage_class}:region_{region}_penalty"
+        pattern = self.model['behavior_patterns'].get(key, {})
+        
+        count = pattern.get('count', 0)
+        if count == 0:
+            return 1.0
+        
+        # More deletions = lower score
+        # 10+ deletions = 0.5 penalty
+        penalty = max(0.5, 1.0 - (count / 20))
+        return penalty
