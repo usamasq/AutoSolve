@@ -12,13 +12,14 @@ import os
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import bpy
 
 
 @dataclass
 class TrackTelemetry:
     """Telemetry for a single track."""
+    # Required fields (no defaults)
     name: str
     lifespan: int
     start_frame: int
@@ -27,6 +28,7 @@ class TrackTelemetry:
     avg_velocity: float
     jitter_score: float
     success: bool
+    # Optional fields (have defaults)
     contributed_to_solve: bool = False
     reprojection_error: float = 0.0
     # ML Enhancement: Sampled trajectory for RNN training
@@ -72,7 +74,7 @@ class SessionData:
     duration_seconds: float
     
     # Footage characteristics
-    resolution: tuple
+    resolution: Tuple[int, int]
     fps: float
     frame_count: int
     
