@@ -65,10 +65,7 @@ class CameraIntrinsics:
 @dataclass
 class SessionData:
     """Complete data for a tracking session."""
-    # Schema version for ML pipeline compatibility
-    schema_version: int = 3
-    
-    # Metadata
+    # Metadata (required fields - no defaults)
     timestamp: str
     clip_name: str
     iteration: int
@@ -88,6 +85,9 @@ class SessionData:
     total_tracks: int
     successful_tracks: int
     bundle_count: int
+    
+    # Schema version (has default, so must come after required fields)
+    schema_version: int = 3
     
     # Detailed track data
     tracks: List[Dict] = field(default_factory=list)
