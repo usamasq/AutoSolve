@@ -69,11 +69,15 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 ### Options
 
-| Option           | Purpose                                                |
-| ---------------- | ------------------------------------------------------ |
-| **Footage Type** | Hint for footage characteristics (DRONE, INDOOR, etc.) |
-| **Tripod Mode**  | For stationary camera with rotational movement only    |
-| **Robust Mode**  | More aggressive settings for difficult footage         |
+| Option           | Purpose                                                                      |
+| ---------------- | ---------------------------------------------------------------------------- |
+| **Quality**      | Controls speed vs accuracy tradeoff                                          |
+|                  | **Fast** - Fewer markers (20), faster tracking, lenient thresholds           |
+|                  | **Balanced** - Default settings (35 markers), good for most footage          |
+|                  | **Quality** - More markers (50), stricter thresholds, best accuracy          |
+| **Footage Type** | Hint for footage characteristics (DRONE, GIMBAL, VFX, etc.)                  |
+| **Tripod Mode**  | For nodal pan/tilt shots - uses rotation-only solver, simpler motion model   |
+| **Robust Mode**  | For difficult footage - larger search areas, faster monitoring, more markers |
 
 ---
 

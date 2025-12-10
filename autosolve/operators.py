@@ -76,6 +76,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
         
         robust = getattr(settings, 'robust_mode', False)
         footage_type = getattr(settings, 'footage_type', 'AUTO')
+        quality_preset = getattr(settings, 'quality_preset', 'BALANCED')
+        tripod_mode = getattr(settings, 'tripod_mode', False)
         _state.reset()
         
         # ═══════════════════════════════════════════════════════════════
@@ -128,12 +130,18 @@ class AUTOSOLVE_OT_run_solve(Operator):
         _last_solve_settings = None
         _last_solve_error = None
         
-        _state.tracker = SmartTracker(clip, robust_mode=robust, footage_type=footage_type)
+        _state.tracker = SmartTracker(
+            clip, 
+            robust_mode=robust, 
+            footage_type=footage_type,
+            quality_preset=quality_preset,
+            tripod_mode=tripod_mode
+        )
         _state.frame_start = clip.frame_start
         _state.frame_end = clip.frame_start + clip.frame_duration - 1
         _state.frame_current = clip.frame_start
         _state.segment_start = clip.frame_start
-        _state.tripod_mode = settings.tripod_mode
+        _state.tripod_mode = tripod_mode
         _state.phase = 'LOAD_LEARNING'
         _state.iteration = 0
         
@@ -232,8 +240,11 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 settings.solve_status = "Detecting features..."
                 
                 # Unified smart detection (uses cached probe, learned settings)
+                # Calculate markers_per_region from quality-based target_tracks
+                # 9 regions, so target_tracks / 9 gives markers per region
+                markers_per_region = max(2, tracker.target_tracks // 9)
                 num = tracker.detect_features_smart(
-                    markers_per_region=3,
+                    markers_per_region=markers_per_region,
                     use_cached_probe=(_state.iteration > 0)  # Cache on retry
                 )
                 
@@ -242,6 +253,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     if _state.iteration < tracker.MAX_ITERATIONS:
                         _state.phase = 'RETRY_DECISION'
                     else:
+                        # Record failure before cancelling
+                        tracker.save_session_results(success=False, solve_error=999.0)
                         return self._cancel(context)
                     return {'RUNNING_MODAL'}
                 
@@ -446,8 +459,9 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 settings.solve_progress = 0.75
                 
                 # Unified cleanup: short tracks + spikes + non-rigid
+                # Use quality-based min_lifespan from tracker
                 tracker.cleanup_tracks(
-                    min_frames=self.MIN_LIFESPAN,
+                    min_frames=tracker.min_lifespan,
                     spike_multiplier=8.0,
                     jitter_threshold=0.6,
                     coherence_threshold=0.4
@@ -456,6 +470,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 num = len(tracker.tracking.tracks)
                 if num < 8:
                     self.report({'ERROR'}, f"Only {num} tracks - footage may be too difficult")
+                    # Record failure before cancelling
+                    tracker.save_session_results(success=False, solve_error=999.0)
                     return self._cancel(context)
                 
                 # Pre-solve validation
@@ -515,13 +531,48 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 num = len(tracker.tracking.tracks)
                 if num < 8:
                     self.report({'ERROR'}, f"Only {num} tracks (removed {removed} bad)")
+                    # Record failure before cancelling
+                    tracker.save_session_results(success=False, solve_error=999.0)
                     return self._cancel(context)
                 
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
                 
                 if not success:
-                    self.report({'ERROR'}, "Solve failed - try Tripod Mode")
-                    return self._cancel(context)
+                    # Check if this was a quality failure (low bundle ratio)
+                    quality_failure = hasattr(tracker, '_solve_quality_failure') and tracker._solve_quality_failure
+                    
+                    # For quality failures, retry with robust mode (more markers + learned behavior)
+                    if quality_failure and not tracker.robust_mode and _state.iteration < tracker.MAX_ITERATIONS:
+                        print("AutoSolve: Quality failure detected - retrying with Robust Mode...")
+                        self.report({'WARNING'}, "Quality failure - retrying with more markers and learned behavior")
+                        
+                        # Enable robust mode
+                        settings.robust_mode = True
+                        tracker.robust_mode = True
+                        
+                        # Apply robust mode adjustments
+                        tracker.current_settings['pattern_size'] = int(
+                            tracker.current_settings.get('pattern_size', 15) * 1.4)
+                        tracker.current_settings['search_size'] = int(
+                            tracker.current_settings.get('search_size', 71) * 1.4)
+                        tracker.current_settings['correlation'] = max(
+                            0.45, tracker.current_settings.get('correlation', 0.7) - 0.15)
+                        tracker.current_settings['motion_model'] = 'Affine'
+                        
+                        # Reset and restart from detection with more markers
+                        _state.iteration += 1
+                        tracker.clear_tracks()
+                        _state.phase = 'DETECT'
+                        context.area.tag_redraw()
+                        return {'RUNNING_MODAL'}
+                    else:
+                        # Already tried robust mode or max iterations reached
+                        if quality_failure:
+                            self.report({'ERROR'}, "Solve failed - check camera focal length and lens distortion")
+                        else:
+                            self.report({'ERROR'}, "Solve failed - try Tripod Mode")
+                        tracker.save_session_results(success=False, solve_error=999.0)
+                        return self._cancel(context)
                 
                 # Check if we need refinement (error > 2px)
                 error = tracker.get_solve_error()
@@ -995,39 +1046,57 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
     def execute(self, context):
         import shutil
         from pathlib import Path
+        from .tracker.utils import get_sessions_dir, get_behavior_dir, get_cache_dir, get_model_path
         
         try:
             deleted_counts = {'sessions': 0, 'behaviors': 0, 'cache': 0}
+            failed_counts = {'sessions': 0, 'behaviors': 0, 'cache': 0}
             
             # 1. Clear sessions folder
-            sessions_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'sessions'
+            sessions_dir = get_sessions_dir()
+            print(f"AutoSolve: Clearing sessions from {sessions_dir}")
             if sessions_dir.exists():
                 for f in sessions_dir.glob('*.json'):
-                    f.unlink()
-                    deleted_counts['sessions'] += 1
+                    try:
+                        f.unlink()
+                        deleted_counts['sessions'] += 1
+                    except Exception as e:
+                        print(f"AutoSolve: Could not delete {f.name}: {e}")
+                        failed_counts['sessions'] += 1
                 print(f"AutoSolve: Deleted {deleted_counts['sessions']} session files")
             
             # 2. Clear behavior folder
-            behavior_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'behavior'
+            behavior_dir = get_behavior_dir()
+            print(f"AutoSolve: Clearing behaviors from {behavior_dir}")
             if behavior_dir.exists():
                 for f in behavior_dir.glob('*.json'):
-                    f.unlink()
-                    deleted_counts['behaviors'] += 1
+                    try:
+                        f.unlink()
+                        deleted_counts['behaviors'] += 1
+                    except Exception as e:
+                        print(f"AutoSolve: Could not delete {f.name}: {e}")
+                        failed_counts['behaviors'] += 1
                 print(f"AutoSolve: Deleted {deleted_counts['behaviors']} behavior files")
             
             # 3. Clear probe cache
-            cache_dir = Path(bpy.utils.user_resource('SCRIPTS')) / 'autosolve' / 'cache'
+            cache_dir = get_cache_dir()
+            print(f"AutoSolve: Clearing cache from {cache_dir}")
             if cache_dir.exists():
                 for f in cache_dir.glob('*.json'):
-                    f.unlink()
-                    deleted_counts['cache'] += 1
+                    try:
+                        f.unlink()
+                        deleted_counts['cache'] += 1
+                    except Exception as e:
+                        print(f"AutoSolve: Could not delete {f.name}: {e}")
+                        failed_counts['cache'] += 1
                 print(f"AutoSolve: Deleted {deleted_counts['cache']} cache files")
             
             # 4. Reset the model - delete first to avoid any stale data issues
             from .tracker.learning.settings_predictor import SettingsPredictor
             
             # Delete existing model.json first
-            model_path = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'model.json'
+            model_path = get_model_path()
+            print(f"AutoSolve: Deleting model at {model_path}")
             if model_path.exists():
                 model_path.unlink()
                 print("AutoSolve: Deleted model.json")
@@ -1050,7 +1119,11 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
             predictor._save_model()
             
             total = sum(deleted_counts.values())
-            self.report({'INFO'}, f"Reset complete: {total} files deleted, model cleared")
+            total_failed = sum(failed_counts.values())
+            if total_failed > 0:
+                self.report({'WARNING'}, f"Reset: {total} deleted, {total_failed} failed (check console)")
+            else:
+                self.report({'INFO'}, f"Reset complete: {total} files deleted, model cleared")
             
             # Force UI to redraw with new values
             for area in context.screen.areas:

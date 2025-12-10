@@ -155,10 +155,11 @@ FOOTAGE_TYPE_ADJUSTMENTS = {
         'motion_model': 'LocRot',
     },
     'GIMBAL': {
-        # Gimbal: smooth, predictable motion
+        # Gimbal: smooth, predictable motion, often with dolly/push-in
         'search_size_mult': 0.9,
         'correlation': 0.72,
         'threshold': 0.32,
+        'motion_model': 'LocRotScale',  # Handles zoom/dolly scale changes
     },
     'ACTION': {
         # Action: fast motion, motion blur
@@ -169,9 +170,10 @@ FOOTAGE_TYPE_ADJUSTMENTS = {
         'motion_model': 'Affine',
     },
     'VFX': {
-        # VFX plate: typically well-shot, good markers
+        # VFX plate: typically well-shot, good markers, often dolly/crane
         'correlation': 0.75,
         'threshold': 0.35,
+        'motion_model': 'LocRotScale',  # VFX plates often have camera moves
     },
 }
 
@@ -222,6 +224,43 @@ TIERED_SETTINGS = {
     },
 }
 
+# Quality preset settings - different presets for different speed/accuracy tradeoffs
+QUALITY_PRESET_SETTINGS = {
+    'FAST': {
+        'target_tracks': 20,           # Fewer markers = faster
+        'pattern_size_mult': 0.85,     # Smaller patterns = faster matching
+        'search_size_mult': 0.9,       # Smaller search area = faster
+        'correlation': 0.62,           # More lenient = fewer rejects
+        'cleanup_threshold': 3.5,      # Higher error tolerance
+        'min_lifespan': 8,             # Shorter track requirement
+        'max_iterations': 2,           # Fewer retry iterations
+        'replenish_count': 1,          # Fewer markers per replenish
+        'motion_model': 'LocRot',      # Good balance for speed
+    },
+    'BALANCED': {
+        'target_tracks': 35,
+        'pattern_size_mult': 1.0,
+        'search_size_mult': 1.0,
+        'correlation': 0.70,
+        'cleanup_threshold': 2.5,
+        'min_lifespan': 12,
+        'max_iterations': 3,
+        'replenish_count': 1,
+        'motion_model': 'LocRotScale', # Handles most camera moves
+    },
+    'QUALITY': {
+        'target_tracks': 50,           # More markers = better reconstruction
+        'pattern_size_mult': 1.25,     # Larger patterns = more accurate
+        'search_size_mult': 1.15,      # Larger search = better tracking
+        'correlation': 0.75,           # Stricter matching = cleaner tracks
+        'cleanup_threshold': 1.5,      # Low error tolerance
+        'min_lifespan': 15,            # Longer track requirement
+        'max_iterations': 4,           # More retry iterations
+        'replenish_count': 2,          # More markers per replenish
+        'motion_model': 'LocRotScale', # Best quality - handles all transforms
+    },
+}
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SMART TRACKER (Main Class)
@@ -242,12 +281,26 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     MAX_ITERATIONS = 3
     
     def __init__(self, clip: bpy.types.MovieClip, robust_mode: bool = False, 
-                 footage_type: str = 'AUTO'):
+                 footage_type: str = 'AUTO', quality_preset: str = 'BALANCED',
+                 tripod_mode: bool = False):
         self.clip = clip
         self.tracking = clip.tracking
         self.settings = clip.tracking.settings
         self.robust_mode = robust_mode
         self.footage_type = footage_type
+        self.quality_preset = quality_preset
+        self.tripod_mode = tripod_mode
+        
+        # Get quality preset configuration
+        self.quality_config = QUALITY_PRESET_SETTINGS.get(quality_preset, 
+                                                          QUALITY_PRESET_SETTINGS['BALANCED'])
+        
+        # Override class constants based on quality preset
+        self.MAX_ITERATIONS = self.quality_config.get('max_iterations', 3)
+        self.target_tracks = self.quality_config.get('target_tracks', 35)
+        self.cleanup_threshold = self.quality_config.get('cleanup_threshold', 2.5)
+        self.min_lifespan = self.quality_config.get('min_lifespan', 12)
+        self.replenish_count = self.quality_config.get('replenish_count', 1)
         
         # Learning components
         self.analyzer = TrackAnalyzer()
@@ -296,6 +349,11 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.adaptation_count: int = 0
         self.MAX_ADAPTATIONS: int = 3
         
+        # Robust mode: more aggressive monitoring
+        if self.robust_mode:
+            self.MONITOR_INTERVAL = 5  # Check every 5 frames instead of 10
+            self.replenish_count = max(2, self.replenish_count)  # At least 2 per region
+        
         # Motion probe cache (persisted for session recording)
         self.cached_motion_probe: Optional[Dict] = None
         
@@ -307,6 +365,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Load initial settings
         self._load_initial_settings()
+        
+        # Log quality configuration
+        print(f"AutoSolve: Quality={quality_preset} (targets={self.target_tracks}, "
+              f"threshold={self.cleanup_threshold}px, iterations={self.MAX_ITERATIONS})")
     
     # ─────────────────────────────────────────────────────────────────────────
     # FRAME COORDINATE CONVERSION
@@ -475,13 +537,62 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             if predicted_dead_zones:
                 print(f"AutoSolve: Predicted dead zones (will verify): {', '.join(predicted_dead_zones)}")
         
-        # Step 4: Apply robust mode (always on top)
+        # Step 5: Apply quality preset multipliers
+        quality_mult = self.quality_config
+        self.current_settings['pattern_size'] = int(
+            self.current_settings.get('pattern_size', 15) * quality_mult.get('pattern_size_mult', 1.0)
+        )
+        self.current_settings['search_size'] = int(
+            self.current_settings.get('search_size', 71) * quality_mult.get('search_size_mult', 1.0)
+        )
+        # Quality preset can override correlation
+        if 'correlation' in quality_mult:
+            # Blend with existing - use max for QUALITY, min for FAST
+            if self.quality_preset == 'QUALITY':
+                self.current_settings['correlation'] = max(
+                    self.current_settings.get('correlation', 0.7),
+                    quality_mult['correlation']
+                )
+            elif self.quality_preset == 'FAST':
+                self.current_settings['correlation'] = min(
+                    self.current_settings.get('correlation', 0.7),
+                    quality_mult['correlation']
+                )
+        
+        print(f"AutoSolve: After quality preset ({self.quality_preset}): "
+              f"pattern={self.current_settings.get('pattern_size')}px, "
+              f"search={self.current_settings.get('search_size')}px")
+        
+        # Apply motion_model from quality preset (if not already set by footage type)
+        if 'motion_model' in quality_mult and 'motion_model' not in self.current_settings:
+            self.current_settings['motion_model'] = quality_mult['motion_model']
+        elif 'motion_model' in quality_mult:
+            # Quality preset can upgrade motion model (e.g., LocRot -> LocRotScale)
+            self.current_settings['motion_model'] = quality_mult['motion_model']
+        
+
+        # Step 6: Apply robust mode (more aggressive settings)
         if self.robust_mode:
             self.current_settings['pattern_size'] = int(self.current_settings.get('pattern_size', 15) * 1.4)
             self.current_settings['search_size'] = int(self.current_settings.get('search_size', 71) * 1.4)
             self.current_settings['correlation'] = max(0.45, self.current_settings.get('correlation', 0.7) - 0.15)
             self.current_settings['threshold'] = max(0.08, self.current_settings.get('threshold', 0.3) - 0.12)
             self.current_settings['motion_model'] = 'Affine'
+            print(f"AutoSolve: Robust mode - enlarged search areas, lower thresholds")
+        
+        # Step 7: Apply tripod mode optimizations
+        if self.tripod_mode:
+            # Tripod shots: camera rotates on axis, minimal parallax
+            # Use simpler motion model (Loc only, no rotation in-plane)
+            self.current_settings['motion_model'] = 'Loc'
+            # Tighter correlation - tripod features should be very stable
+            self.current_settings['correlation'] = min(0.80, 
+                self.current_settings.get('correlation', 0.7) + 0.08)
+            # Prioritize center regions (tripod = pan/tilt from center)
+            # Edge regions less reliable for tripod shots
+            tripod_dead_zones = {'top-left', 'top-right', 'bottom-left', 'bottom-right'}
+            self.known_dead_zones.update(tripod_dead_zones)
+            print(f"AutoSolve: Tripod mode - Loc model, tighter correlation, avoiding corners")
 
     def load_learning(self, clip_name: str):
         """
@@ -895,7 +1006,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Analyze by region
         region_tracks = {r: {'total': 0, 'success': 0, 'avg_lifespan': 0, 'lifespans': []} 
-                        for r in self.analyzer.REGIONS}
+                        for r in REGIONS}
         
         for track in self.tracking.tracks:
             markers = [m for m in track.markers if not m.mute]
@@ -2975,7 +3086,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         if hasattr(self.settings, 'use_tripod_solver'):
             self.settings.use_tripod_solver = tripod_mode
         
-        # DEBUG: Log track status before solve
+        # Count tracks before solve
         track_count = len(self.tracking.tracks)
         tracks_with_markers = sum(1 for t in self.tracking.tracks if len(t.markers) > 0)
         
@@ -2995,19 +3106,60 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         try:
             self._run_ops(bpy.ops.clip.solve_camera)
             is_valid = self.tracking.reconstruction.is_valid
+            
             if is_valid:
-                print(f"AutoSolve DEBUG: Solve SUCCESS - error {self.tracking.reconstruction.average_error:.2f}")
+                # Check solve QUALITY - not just validity
+                bundle_count = self.get_bundle_count()
+                bundle_ratio = bundle_count / max(track_count, 1)
+                raw_error = self.tracking.reconstruction.average_error
+                
+                print(f"AutoSolve DEBUG: Solve returned valid - {bundle_count}/{track_count} bundles ({bundle_ratio:.0%}), error {raw_error:.2f}")
+                
+                # Quality check: less than 30% of tracks reconstructed = quality failure
+                if bundle_ratio < 0.3:
+                    print(f"AutoSolve WARNING: Low quality solve - only {bundle_count}/{track_count} tracks reconstructed")
+                    print(f"AutoSolve WARNING: This usually indicates incorrect focal length or missing lens distortion")
+                    # Mark as failed due to poor quality
+                    self._solve_quality_failure = True
+                    return False
+                elif bundle_ratio < 0.5:
+                    print(f"AutoSolve WARNING: Marginal quality - {bundle_count}/{track_count} tracks reconstructed")
+                    self._solve_quality_failure = False
+                else:
+                    self._solve_quality_failure = False
+                
+                print(f"AutoSolve DEBUG: Solve SUCCESS - error {raw_error:.2f}")
+                return True
             else:
                 print(f"AutoSolve DEBUG: Solve FAILED - reconstruction not valid")
-            return is_valid
+                return False
+                
         except RuntimeError as e:
             print(f"AutoSolve DEBUG: Solve EXCEPTION - {e}")
             return False
     
     def get_solve_error(self) -> float:
-        if self.tracking.reconstruction.is_valid:
-            return self.tracking.reconstruction.average_error
-        return 999.0
+        """Get solve error, accounting for quality issues."""
+        if not self.tracking.reconstruction.is_valid:
+            return 999.0
+        
+        # If most tracks failed to reconstruct, the error is misleading
+        track_count = len(self.tracking.tracks)
+        bundle_count = self.get_bundle_count()
+        bundle_ratio = bundle_count / max(track_count, 1)
+        
+        raw_error = self.tracking.reconstruction.average_error
+        
+        # Penalize low bundle ratio - error can't be trusted
+        if bundle_ratio < 0.3:
+            # Very low ratio - report as failure
+            return 999.0
+        elif bundle_ratio < 0.5:
+            # Low ratio - add penalty to error
+            penalty = (0.5 - bundle_ratio) * 10  # Up to 5px penalty
+            return raw_error + penalty
+        else:
+            return raw_error
     
     def get_bundle_count(self) -> int:
         return len([t for t in self.tracking.tracks if t.has_bundle])
@@ -3064,18 +3216,18 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         """Save session results for future learning."""
         bundle_count = self.get_bundle_count()
         
-        if self.last_analysis:
-            # Extract region_stats from last_analysis properly
-            region_stats = self.last_analysis.get('region_stats', {})
-            
-            self.predictor.update_from_session(
-                footage_class=self.footage_class,
-                success=success,
-                settings=self.current_settings,
-                error=solve_error,
-                region_stats=region_stats,
-                bundle_count=bundle_count  # For HER reward computation
-            )
+        # Always update model, even without full analysis (for early failures)
+        region_stats = self.last_analysis.get('region_stats', {}) if self.last_analysis else {}
+        
+        self.predictor.update_from_session(
+            footage_class=self.footage_class,
+            success=success,
+            settings=self.current_settings,
+            error=solve_error,
+            region_stats=region_stats,
+            bundle_count=bundle_count  # For HER reward computation
+        )
+        print(f"AutoSolve: Updated model - success={success}, error={solve_error:.2f}")
             
         # Record session data
         if hasattr(self, 'recorder') and self.recorder:
@@ -3102,7 +3254,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 )
                 
             except Exception as e:
+                import traceback
                 print(f"AutoSolve: Error recording session: {e}")
+                traceback.print_exc()
     
     def _get_context_override(self):
         """Get context override for operators."""
