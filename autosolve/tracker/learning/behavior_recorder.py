@@ -15,6 +15,9 @@ from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Tuple
 import bpy
 
+from ..constants import REGIONS, EDGE_REGIONS
+from ..utils import get_region, infer_deletion_reason, get_behavior_dir
+
 
 @dataclass
 class SettingsAdjustment:
@@ -92,17 +95,13 @@ class BehaviorRecorder:
         recorder.save_behavior(behavior)
     """
     
-    REGIONS = [
-        'top-left', 'top-center', 'top-right',
-        'mid-left', 'center', 'mid-right',
-        'bottom-left', 'bottom-center', 'bottom-right'
-    ]
+    # Using REGIONS from constants.py
     
     def __init__(self, data_dir: Optional[str] = None):
         if data_dir:
             self.data_dir = Path(data_dir)
         else:
-            self.data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'behavior'
+            self.data_dir = get_behavior_dir()
         
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
@@ -250,7 +249,7 @@ class BehaviorRecorder:
                 avg_y /= count
             
             tracks[track.name] = {
-                'region': self._get_region(avg_x, avg_y),
+                'region': get_region(avg_x, avg_y),
                 'lifespan': len(markers),
                 'has_bundle': track.has_bundle,
                 'error': track.average_error if track.has_bundle else 0.0,
@@ -325,29 +324,9 @@ class BehaviorRecorder:
     
     def _infer_deletion_reason(self, track_data: Dict) -> str:
         """Infer why user deleted this track."""
-        if track_data['lifespan'] < 10:
-            return "short_lifespan"
-        
-        edge_regions = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
-        if track_data['region'] in edge_regions:
-            return "edge_region"
-        
-        if track_data['error'] > 2.0:
-            return "high_error"
-        
-        return "user_manual"
+        return infer_deletion_reason(track_data)
     
-    def _get_region(self, x: float, y: float) -> str:
-        """Get region name from normalized coordinates."""
-        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
-        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
-        
-        regions = [
-            ['top-left', 'top-center', 'top-right'],
-            ['mid-left', 'center', 'mid-right'],
-            ['bottom-left', 'bottom-center', 'bottom-right']
-        ]
-        return regions[row][col]
+    # _get_region removed - use from ..utils import instead
     
     def get_behavior_count(self) -> int:
         """Get count of saved behavior files."""

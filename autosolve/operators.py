@@ -848,6 +848,8 @@ class AUTOSOLVE_OT_import_training_data(Operator):
                 self.report({'ERROR'}, "File not found")
                 return {'CANCELLED'}
             
+            print(f"AutoSolve: Importing from {filepath}")
+            
             predictor = SettingsPredictor()
             base_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
             session_count = 0
@@ -856,34 +858,41 @@ class AUTOSOLVE_OT_import_training_data(Operator):
             # Handle ZIP format
             if filepath.suffix == '.zip':
                 with zipfile.ZipFile(filepath, 'r') as zf:
+                    files_in_zip = zf.namelist()
+                    print(f"AutoSolve: ZIP contains {len(files_in_zip)} files: {files_in_zip[:10]}...")
+                    
                     # Extract sessions
                     sessions_dir = base_dir / 'sessions'
                     sessions_dir.mkdir(parents=True, exist_ok=True)
                     
-                    for name in zf.namelist():
+                    for name in files_in_zip:
                         if name.startswith('sessions/') and name.endswith('.json'):
                             data = zf.read(name)
                             out_path = sessions_dir / Path(name).name
-                            if not out_path.exists() or not self.merge:
-                                out_path.write_bytes(data)
-                                session_count += 1
+                            # Always write (merge just affects model, not raw files)
+                            out_path.write_bytes(data)
+                            session_count += 1
+                            print(f"AutoSolve: Imported session {Path(name).name}")
                     
                     # Extract behavior
                     behavior_dir = base_dir / 'behavior'
                     behavior_dir.mkdir(parents=True, exist_ok=True)
                     
-                    for name in zf.namelist():
+                    for name in files_in_zip:
                         if name.startswith('behavior/') and name.endswith('.json'):
                             data = zf.read(name)
                             out_path = behavior_dir / Path(name).name
-                            if not out_path.exists() or not self.merge:
-                                out_path.write_bytes(data)
-                                behavior_count += 1
+                            out_path.write_bytes(data)
+                            behavior_count += 1
+                            print(f"AutoSolve: Imported behavior {Path(name).name}")
                     
                     # Import model
-                    if 'model.json' in zf.namelist():
+                    if 'model.json' in files_in_zip:
                         model_data = json.loads(zf.read('model.json'))
                         self._merge_model(predictor, model_data, self.merge)
+                        print(f"AutoSolve: Merged model data")
+                    else:
+                        print(f"AutoSolve: No model.json found in ZIP")
                 
                 predictor._save_model()
                 self.report({'INFO'}, 
@@ -967,12 +976,48 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
         return context.window_manager.invoke_confirm(self, event)
     
     def execute(self, context):
+        import shutil
+        from pathlib import Path
+        
         try:
+            deleted_counts = {'sessions': 0, 'behaviors': 0, 'cache': 0}
+            
+            # 1. Clear sessions folder
+            sessions_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'sessions'
+            if sessions_dir.exists():
+                for f in sessions_dir.glob('*.json'):
+                    f.unlink()
+                    deleted_counts['sessions'] += 1
+                print(f"AutoSolve: Deleted {deleted_counts['sessions']} session files")
+            
+            # 2. Clear behavior folder
+            behavior_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'behavior'
+            if behavior_dir.exists():
+                for f in behavior_dir.glob('*.json'):
+                    f.unlink()
+                    deleted_counts['behaviors'] += 1
+                print(f"AutoSolve: Deleted {deleted_counts['behaviors']} behavior files")
+            
+            # 3. Clear probe cache
+            cache_dir = Path(bpy.utils.user_resource('SCRIPTS')) / 'autosolve' / 'cache'
+            if cache_dir.exists():
+                for f in cache_dir.glob('*.json'):
+                    f.unlink()
+                    deleted_counts['cache'] += 1
+                print(f"AutoSolve: Deleted {deleted_counts['cache']} cache files")
+            
+            # 4. Reset the model - delete first to avoid any stale data issues
             from .tracker.learning.settings_predictor import SettingsPredictor
+            
+            # Delete existing model.json first
+            model_path = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve' / 'model.json'
+            if model_path.exists():
+                model_path.unlink()
+                print("AutoSolve: Deleted model.json")
             
             predictor = SettingsPredictor()
             
-            # Reset to empty
+            # Reset to empty (predictor will have loaded pretrained, so overwrite)
             predictor.model = {
                 'version': 1,
                 'footage_classes': {},
@@ -982,14 +1027,23 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
                 'global_stats': {
                     'total_sessions': 0,
                     'successful_sessions': 0,
-                }
+                },
+                'behavior_patterns': {},  # Also clear behavior patterns
             }
             predictor._save_model()
             
-            self.report({'INFO'}, "Training data reset to defaults")
+            total = sum(deleted_counts.values())
+            self.report({'INFO'}, f"Reset complete: {total} files deleted, model cleared")
+            
+            # Force UI to redraw with new values
+            for area in context.screen.areas:
+                area.tag_redraw()
+            
             return {'FINISHED'}
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.report({'ERROR'}, f"Reset failed: {str(e)}")
             return {'CANCELLED'}
 

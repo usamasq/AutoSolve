@@ -12,6 +12,9 @@ from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional
 from datetime import datetime
 
+from ..constants import REGIONS, EDGE_REGIONS
+from ..utils import get_region
+
 
 @dataclass
 class TrackSnapshot:
@@ -79,11 +82,7 @@ class UserEditRecorder:
         edit_session = recorder.get_edit_session()
     """
     
-    REGIONS = [
-        'top-left', 'top-center', 'top-right',
-        'mid-left', 'center', 'mid-right',
-        'bottom-left', 'bottom-center', 'bottom-right'
-    ]
+    # Using REGIONS from constants.py
     
     def __init__(self, clip):
         """
@@ -178,7 +177,7 @@ class UserEditRecorder:
                 lifespan=lifespan,
                 start_frame=markers[0].frame,
                 end_frame=markers[-1].frame,
-                region=self._get_region(avg_x, avg_y),
+                region=get_region(avg_x, avg_y),
                 has_bundle=track.has_bundle,
                 error=track.average_error if track.has_bundle else 0.0,
                 is_enabled=not track.hide,
@@ -241,8 +240,7 @@ class UserEditRecorder:
             return "short_lifespan"
         
         # Edge region (often problematic due to distortion)
-        edge_regions = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
-        if track.region in edge_regions:
+        if track.region in EDGE_REGIONS:
             return "edge_region"
         
         # High reprojection error
@@ -256,14 +254,4 @@ class UserEditRecorder:
         # No obvious reason - expert judgment
         return "user_manual"
     
-    def _get_region(self, x: float, y: float) -> str:
-        """Get region name from normalized coordinates."""
-        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
-        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
-        
-        regions = [
-            ['top-left', 'top-center', 'top-right'],
-            ['mid-left', 'center', 'mid-right'],
-            ['bottom-left', 'bottom-center', 'bottom-right']
-        ]
-        return regions[row][col]
+    # _get_region removed - use from ..utils import instead

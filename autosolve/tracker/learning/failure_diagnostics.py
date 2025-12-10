@@ -12,6 +12,8 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+from ..constants import EDGE_REGIONS, CENTER_REGIONS
+
 
 class FailurePattern(Enum):
     """Types of tracking failures."""
@@ -212,7 +214,6 @@ class FailureDiagnostics:
         """Check for edge distortion: edge regions fail more."""
         region_stats = analysis.get('region_stats', {})
         
-        edge_regions = ['top-left', 'top-right', 'bottom-left', 'bottom-right']
         center_regions = ['center', 'top-center', 'mid-left', 'mid-right', 'bottom-center']
         
         def get_success_rate(regions):
@@ -220,7 +221,7 @@ class FailureDiagnostics:
             success = sum(region_stats.get(r, {}).get('successful_tracks', 0) for r in regions)
             return success / max(total, 1)
         
-        edge_rate = get_success_rate(edge_regions)
+        edge_rate = get_success_rate(EDGE_REGIONS)
         center_rate = get_success_rate(center_regions)
         
         if center_rate - edge_rate > 0.3:  # Significant difference

@@ -15,6 +15,8 @@ from dataclasses import dataclass, asdict, field
 from typing import Dict, List, Optional, Tuple
 import bpy
 
+from ..utils import get_region, calculate_jitter, get_sessions_dir
+
 
 @dataclass
 class TrackTelemetry:
@@ -349,7 +351,7 @@ class SessionRecorder:
                 # Average position for region
                 avg_x = sum(m.co.x for m in markers) / len(markers)
                 avg_y = sum(m.co.y for m in markers) / len(markers)
-                region = self._get_region(avg_x, avg_y)
+                region = get_region(avg_x, avg_y)
                 
                 # Velocity
                 from mathutils import Vector
@@ -363,7 +365,7 @@ class SessionRecorder:
                 all_motion_vectors.append((dx, dy))
                 
                 # Jitter
-                jitter = self._calculate_jitter(markers)
+                jitter = calculate_jitter(markers)
                 
                 # ML Enhancement: Sample trajectory every N frames
                 trajectory = []
@@ -739,35 +741,4 @@ class SessionRecorder:
         }
 
     
-    def _get_region(self, x: float, y: float) -> str:
-        """Get region name from normalized coordinates."""
-        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
-        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
-        
-        regions = [
-            ['top-left', 'top-center', 'top-right'],
-            ['mid-left', 'center', 'mid-right'],
-            ['bottom-left', 'bottom-center', 'bottom-right']
-        ]
-        return regions[row][col]
-    
-    def _calculate_jitter(self, markers) -> float:
-        """Calculate jitter score."""
-        if len(markers) < 3:
-            return 0.0
-        
-        from mathutils import Vector
-        velocities = []
-        for i in range(1, len(markers)):
-            v = (Vector(markers[i].co) - Vector(markers[i-1].co)).length
-            velocities.append(v)
-        
-        if not velocities:
-            return 0.0
-        
-        avg = sum(velocities) / len(velocities)
-        if avg == 0:
-            return 0.0
-        
-        variance = sum((v - avg) ** 2 for v in velocities) / len(velocities)
-        return (variance ** 0.5) / avg
+    # _get_region and _calculate_jitter removed - use from ..utils import instead

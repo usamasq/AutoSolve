@@ -78,24 +78,24 @@ PRETRAINED_DEFAULTS = {
         'motion_model': 'LocRot',
     },
     '4K_24fps': {
-        'pattern_size': 25,
-        'search_size': 111,
+        'pattern_size': 31,      # Larger for 4K (was 25)
+        'search_size': 151,      # Doubled for 4K resolution (was 111)
         'correlation': 0.65,
         'threshold': 0.25,
         'motion_model': 'Affine',
     },
     '4K_30fps': {
-        'pattern_size': 23,
-        'search_size': 91,
-        'correlation': 0.68,
-        'threshold': 0.28,
+        'pattern_size': 29,      # Larger for 4K (was 23)
+        'search_size': 141,      # ~2x HD's 71px to match relative coverage
+        'correlation': 0.65,     # Slightly lower for larger search (was 0.68)
+        'threshold': 0.25,       # Lower threshold for 4K detail (was 0.28)
         'motion_model': 'LocRot',
     },
     '4K_60fps': {
-        'pattern_size': 21,
-        'search_size': 71,
-        'correlation': 0.70,
-        'threshold': 0.30,
+        'pattern_size': 25,      # Larger for 4K (was 21)
+        'search_size': 121,      # ~2x HD's 51px (was 71)
+        'correlation': 0.68,     # (was 0.70)
+        'threshold': 0.28,       # (was 0.30)
         'motion_model': 'LocRot',
     },
     'SD_24fps': {
@@ -891,8 +891,16 @@ class SmartTracker:
         """
         Adapt settings based on current session track survival rate.
         
-        This is the KEY IMPROVEMENT - instead of only learning for next session,
-        we adapt during the current tracking run.
+        CONSERVATIVE APPROACH: Never lower correlation threshold.
+        Lowering correlation causes markers to accept worse matches and drift
+        to incorrect features, making tracking worse not better.
+        
+        Instead, we only:
+        - Increase search_size (helps find features faster)
+        - Increase pattern_size (more distinctive patterns)
+        - Tighten correlation when things are going well
+        
+        Adding new markers is handled by monitor_and_replenish(), not here.
         
         Args:
             survival_rate: Current track survival rate (0.0 to 1.0)
@@ -910,49 +918,35 @@ class SmartTracker:
         
         # Determine adaptation based on survival rate
         if survival_rate < 0.3:
-            # Critical - tracks dying fast, try blending with learned settings first
-            learned = self.predictor.get_settings_for_class(self.footage_class)
-            if learned and isinstance(learned, dict):
-                # Blend: 70% learned, 30% current (learned settings worked before)
-                blended = self._blend_settings(learned, self.current_settings, 0.7)
-                self.current_settings = blended
-                changes.append(f"Blended with learned settings (70%)")
-                adapted = True
-            else:
-                # No learned data, fall back to aggressive adjustments
-                new_search = min(151, int(self.current_settings.get('search_size', 71) * 1.4))
-                new_corr = max(0.45, self.current_settings.get('correlation', 0.7) - 0.15)
-                new_pattern = min(31, int(self.current_settings.get('pattern_size', 15) * 1.3))
-                
-                if new_search != self.current_settings.get('search_size'):
-                    self.current_settings['search_size'] = new_search
-                    changes.append(f"search_size: {old_settings.get('search_size')} → {new_search}")
-                if new_corr != self.current_settings.get('correlation'):
-                    self.current_settings['correlation'] = new_corr
-                    changes.append(f"correlation: {old_settings.get('correlation'):.2f} → {new_corr:.2f}")
-                if new_pattern != self.current_settings.get('pattern_size'):
-                    self.current_settings['pattern_size'] = new_pattern
-                    changes.append(f"pattern_size: {old_settings.get('pattern_size')} → {new_pattern}")
-                
-                self.current_settings['motion_model'] = 'Affine'
-                adapted = True
-            
-        elif survival_rate < 0.5:
-            # Poor - moderate adjustment
-            new_search = min(121, int(self.current_settings.get('search_size', 71) * 1.2))
-            new_corr = max(0.55, self.current_settings.get('correlation', 0.7) - 0.08)
+            # Critical survival - DON'T lower correlation, only increase search area
+            # and pattern size to help remaining markers stay locked
+            new_search = min(151, int(self.current_settings.get('search_size', 71) * 1.3))
+            new_pattern = min(31, int(self.current_settings.get('pattern_size', 15) * 1.2))
             
             if new_search != self.current_settings.get('search_size'):
                 self.current_settings['search_size'] = new_search
                 changes.append(f"search_size: {old_settings.get('search_size')} → {new_search}")
-            if new_corr != self.current_settings.get('correlation'):
-                self.current_settings['correlation'] = new_corr
-                changes.append(f"correlation: {old_settings.get('correlation'):.2f} → {new_corr:.2f}")
+                adapted = True
+            if new_pattern != self.current_settings.get('pattern_size'):
+                self.current_settings['pattern_size'] = new_pattern
+                changes.append(f"pattern_size: {old_settings.get('pattern_size')} → {new_pattern}")
+                adapted = True
             
-            adapted = True
+            # Note: correlation is NOT lowered - that causes drift to wrong features
+            # New markers are added by monitor_and_replenish() to compensate for losses
+            
+        elif survival_rate < 0.5:
+            # Poor survival - modest search increase only
+            new_search = min(121, int(self.current_settings.get('search_size', 71) * 1.15))
+            
+            if new_search != self.current_settings.get('search_size'):
+                self.current_settings['search_size'] = new_search
+                changes.append(f"search_size: {old_settings.get('search_size')} → {new_search}")
+                adapted = True
+            # Note: correlation is NOT lowered
             
         elif survival_rate > 0.85:
-            # Excellent - could be more selective
+            # Excellent survival - can be more selective (tighten correlation)
             new_corr = min(0.85, self.current_settings.get('correlation', 0.7) + 0.05)
             if new_corr != self.current_settings.get('correlation'):
                 self.current_settings['correlation'] = new_corr
@@ -1097,24 +1091,10 @@ class SmartTracker:
                 if added > 0:
                     result['changes'].append(f"+{added} in {region}")
             
-            # CRITICAL: Track newly added markers in the current direction
-            # so they have keyframes at the next frame when tracking continues
+            # Re-select all tracks immediately after adding new markers
+            # The main tracking loop will track both existing and new markers together
             if result['markers_added'] > 0:
-                # Find new tracks
-                new_tracks = [t for t in self.tracking.tracks if t not in existing_tracks]
-                
-                # Select only the new tracks and track them one frame
-                for track in self.tracking.tracks:
-                    track.select = track in new_tracks
-                
-                if new_tracks:
-                    try:
-                        self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
-                    except Exception as e:
-                        print(f"AutoSolve: Failed to prime new markers: {e}")
-                    
-                    # Re-select all tracks for the next main tracking step
-                    self.select_all_tracks()
+                self.select_all_tracks()
         
         # 2. Adapt settings if critical
         if result['survival_rate'] < self.CRITICAL_THRESHOLD:
@@ -2942,27 +2922,31 @@ class SmartTracker:
         Uses appropriate settings based on motion class.
         OPTIMIZED: Now uses detect_all_regions for single-pass detection.
         """
+        # Check if 4K resolution - need larger search areas
+        is_4k = self.clip.size[0] >= 3840
+        resolution_multiplier = 1.5 if is_4k else 1.0
+        
         # Settings based on motion class
         if motion_class == 'HIGH':
             settings = {
-                'pattern_size': 25,  # Larger pattern for stability
-                'search_size': 141,  # Much larger search
+                'pattern_size': int(25 * resolution_multiplier),  # Larger pattern for stability
+                'search_size': int(141 * resolution_multiplier),  # Much larger search
                 'correlation': 0.55,  # More lenient matching
                 'threshold': 0.20,
                 'motion_model': 'Affine',
             }
         elif motion_class == 'MEDIUM':
             settings = {
-                'pattern_size': 19,
-                'search_size': 101,
+                'pattern_size': int(19 * resolution_multiplier),
+                'search_size': int(101 * resolution_multiplier),
                 'correlation': 0.65,
                 'threshold': 0.25,
                 'motion_model': 'LocRot',
             }
         else:  # LOW
             settings = {
-                'pattern_size': 15,
-                'search_size': 71,
+                'pattern_size': int(15 * resolution_multiplier),
+                'search_size': int(71 * resolution_multiplier),
                 'correlation': 0.72,
                 'threshold': 0.30,
                 'motion_model': 'Loc',
@@ -2978,7 +2962,8 @@ class SmartTracker:
         self.configure_settings()
         
         print(f"AutoSolve: Quality settings - Pattern:{settings['pattern_size']}, "
-              f"Search:{settings['search_size']}, Corr:{settings['correlation']:.2f}")
+              f"Search:{settings['search_size']}, Corr:{settings['correlation']:.2f}"
+              f"{' (4K scaled)' if is_4k else ''}")
         
         # OPTIMIZED: Use single-pass detection for all regions
         # Priority regions get +1 marker handled via per-region counts
@@ -3628,8 +3613,15 @@ class SmartTracker:
         frame = bpy.context.scene.frame_current
         clip_frame = self.scene_to_clip_frame(frame)  # Convert to clip-relative
         selected_count = sum(1 for t in self.tracking.tracks if t.select)
-        markers_at_frame_before = sum(1 for t in self.tracking.tracks 
-                                      if t.markers.find_frame(clip_frame) is not None)
+        
+        # Get detailed marker status before tracking
+        active_before = []
+        for t in self.tracking.tracks:
+            marker = t.markers.find_frame(clip_frame)
+            if marker and not marker.mute:
+                active_before.append(t.name)
+        
+        markers_at_frame_before = len(active_before)
         
         # ALWAYS log first few frames to confirm tracking runs
         if frame <= 190 or frame % 50 == 0:
@@ -3641,15 +3633,50 @@ class SmartTracker:
                         print(f"  - Track {track.name} has {len(track.markers)} markers at frames: {[m.frame for m in track.markers]}")
                         break
         
+        # DEBUG: Check clip_user frame vs scene frame before tracking
+        clip_user_frame = None
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'CLIP_EDITOR':
+                    for space in area.spaces:
+                        if space.type == 'CLIP_EDITOR':
+                            clip_user_frame = space.clip_user.frame_current
+                            break
+        
+        if frame <= 125:
+            print(f"AutoSolve DEBUG: Before track_markers: scene_frame={frame}, clip_user_frame={clip_user_frame}, clip.frame_start={self.clip.frame_start}")
+        
         self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
         
         # Count markers AFTER tracking at next frame
         next_frame = frame - 1 if backwards else frame + 1
         next_clip_frame = self.scene_to_clip_frame(next_frame)
-        markers_at_next = sum(1 for t in self.tracking.tracks 
-                              if t.markers.find_frame(next_clip_frame) is not None)
         
-        # Log if tracking failed
+        # Get detailed marker status after tracking
+        active_after = []
+        muted_markers = []
+        for t in self.tracking.tracks:
+            marker = t.markers.find_frame(next_clip_frame)
+            if marker:
+                if marker.mute:
+                    muted_markers.append(t.name)
+                else:
+                    active_after.append(t.name)
+        
+        markers_at_next = len(active_after)
+        
+        # Log if we lost markers this frame
+        lost_count = markers_at_frame_before - markers_at_next
+        if lost_count > 0 and frame <= 130:
+            lost = set(active_before) - set(active_after)
+            print(f"AutoSolve DEBUG: Frame {frame}→{next_frame} LOST {lost_count} markers: {list(lost)[:5]}")
+            # Show settings of first lost track
+            for t in self.tracking.tracks:
+                if t.name in lost:
+                    print(f"  - {t.name}: correlation_min={t.correlation_min:.2f}")
+                    break
+        
+        # Log if tracking completely failed
         if markers_at_next == 0 and markers_at_frame_before > 0:
             print(f"AutoSolve DEBUG: TRACKING FAILED at frame {frame} → {next_frame}")
             print(f"  - Had {markers_at_frame_before} markers, now {markers_at_next}")
@@ -4255,7 +4282,8 @@ class SmartTracker:
                                 if space.type == 'CLIP_EDITOR':
                                     # Set clip space frame to match scene frame
                                     # This ensures detect_features places markers at the correct frame
-                                    space.clip_user.frame_current = bpy.context.scene.frame_current
+                                    scene_frame = bpy.context.scene.frame_current
+                                    space.clip_user.frame_current = scene_frame
                                     break
                             
                             return {

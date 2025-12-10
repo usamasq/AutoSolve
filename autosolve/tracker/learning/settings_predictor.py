@@ -14,6 +14,9 @@ from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 import bpy
 
+from ..constants import TIERED_SETTINGS, DEFAULT_SETTINGS
+from ..utils import classify_footage as classify_footage_util, get_autosolve_data_dir, get_model_path
+
 
 class SettingsPredictor:
     """
@@ -25,54 +28,24 @@ class SettingsPredictor:
     3. Similarity matching for footage characteristics
     """
     
-    # Default settings for cold start
-    DEFAULT_SETTINGS = {
-        'pattern_size': 15,
-        'search_size': 71,
-        'correlation': 0.70,
-        'threshold': 0.30,
-        'motion_model': 'LocRot',
-    }
+    # Using DEFAULT_SETTINGS and TIERED_SETTINGS from constants.py
     
-    # Bucketed settings for different success rates
-    TIERED_SETTINGS = {
-        'aggressive': {
-            'pattern_size': 27,
-            'search_size': 130,
-            'correlation': 0.50,
-            'threshold': 0.10,
-            'motion_model': 'Affine',
-        },
-        'moderate': {
-            'pattern_size': 21,
-            'search_size': 100,
-            'correlation': 0.65,
-            'threshold': 0.25,
-            'motion_model': 'Affine',
-        },
-        'balanced': {
-            'pattern_size': 15,
-            'search_size': 71,
-            'correlation': 0.70,
-            'threshold': 0.30,
-            'motion_model': 'LocRot',
-        },
-        'selective': {
-            'pattern_size': 13,
-            'search_size': 61,
-            'correlation': 0.75,
-            'threshold': 0.40,
-            'motion_model': 'LocRot',
-        },
-    }
+    # Method-level access for compatibility
+    @property
+    def DEFAULT_SETTINGS(self):
+        return DEFAULT_SETTINGS
+    
+    @property 
+    def TIERED_SETTINGS(self):
+        return TIERED_SETTINGS
     
     def __init__(self, data_dir: Optional[str] = None):
         if data_dir:
             self.data_dir = Path(data_dir)
         else:
-            self.data_dir = Path(bpy.utils.user_resource('DATAFILES')) / 'autosolve'
+            self.data_dir = get_autosolve_data_dir()
         
-        self.model_path = self.data_dir / 'model.json'
+        self.model_path = get_model_path()
         self.model: Dict = self._load_model()
     
     def _load_model(self) -> Dict:
@@ -176,26 +149,7 @@ class SettingsPredictor:
         
         Returns a string key like "HD_30fps" or "4K_24fps".
         """
-        width = clip.size[0]
-        fps = clip.fps if clip.fps > 0 else 24
-        
-        # Resolution class
-        if width >= 3840:
-            res_class = '4K'
-        elif width >= 1920:
-            res_class = 'HD'
-        else:
-            res_class = 'SD'
-        
-        # FPS class
-        if fps >= 50:
-            fps_class = '60fps'
-        elif fps >= 28:
-            fps_class = '30fps'
-        else:
-            fps_class = '24fps'
-        
-        return f"{res_class}_{fps_class}"
+        return classify_footage_util(clip)
     
     def predict_settings(self, clip: bpy.types.MovieClip, 
                          robust_mode: bool = False,
