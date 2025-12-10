@@ -39,6 +39,7 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **Quality Prediction**     | Estimates solve quality before running solver             |
 | **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes    |
 | **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.      |
+| **Smoothing**              | Reduces jitter with track and camera motion smoothing     |
 
 ---
 
@@ -69,15 +70,17 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 ### Options
 
-| Option           | Purpose                                                                      |
-| ---------------- | ---------------------------------------------------------------------------- |
-| **Quality**      | Controls speed vs accuracy tradeoff                                          |
-|                  | **Fast** - Fewer markers (20), faster tracking, lenient thresholds           |
-|                  | **Balanced** - Default settings (35 markers), good for most footage          |
-|                  | **Quality** - More markers (50), stricter thresholds, best accuracy          |
-| **Footage Type** | Hint for footage characteristics (DRONE, GIMBAL, VFX, etc.)                  |
-| **Tripod Mode**  | For nodal pan/tilt shots - uses rotation-only solver, simpler motion model   |
-| **Robust Mode**  | For difficult footage - larger search areas, faster monitoring, more markers |
+| Option            | Purpose                                                                      |
+| ----------------- | ---------------------------------------------------------------------------- |
+| **Quality**       | Controls speed vs accuracy tradeoff                                          |
+|                   | **Fast** - Fewer markers (20), faster tracking, lenient thresholds           |
+|                   | **Balanced** - Default settings (35 markers), good for most footage          |
+|                   | **Quality** - More markers (50), stricter thresholds, best accuracy          |
+| **Footage Type**  | Hint for footage characteristics (DRONE, GIMBAL, VFX, etc.)                  |
+| **Tripod Mode**   | For nodal pan/tilt shots - uses rotation-only solver, simpler motion model   |
+| **Robust Mode**   | For difficult footage - larger search areas, faster monitoring, more markers |
+| **Smooth Tracks** | Pre-solve smoothing - reduces marker jitter with Gaussian weighted average   |
+| **Smooth Camera** | Post-solve smoothing - Butterworth filter removes camera jitter              |
 
 ---
 
@@ -136,6 +139,7 @@ autosolve/
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── validation.py         # ValidationMixin - pre-solve validation
     ├── filtering.py          # FilteringMixin - track cleanup methods
+    ├── smoothing.py          # Track and camera smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
     └── learning/             # Learning components

@@ -27,6 +27,7 @@ autosolve/
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── validation.py         # ValidationMixin - pre-solve validation
     ├── filtering.py          # FilteringMixin - track cleanup methods
+    ├── smoothing.py          # Track and camera smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
     └── learning/             # Learning components
@@ -163,6 +164,21 @@ def get_region_bounds(region) -> tuple  # Get bounds for region
 def calculate_jitter(markers) -> float  # Compute track jitter score
 ```
 
+#### `tracker/smoothing.py`
+
+**Purpose:** Track and camera smoothing to reduce jitter.
+
+```python
+def smooth_track_markers(tracking, strength)  # Gaussian weighted-average smoothing
+def smooth_camera_fcurves(camera, cutoff)     # Butterworth filter on F-curves
+def smooth_solved_camera(strength)            # Find and smooth solved camera
+```
+
+**Algorithms:**
+
+- **Track Smoothing:** Gaussian weighted moving average. Window size 3-7 based on strength. Preserves endpoints.
+- **Camera Smoothing:** Butterworth filter (Blender 3.4+) or fallback weighted-average for older versions.
+
 ---
 
 ### 3. Learning System (`tracker/learning/`)
@@ -237,6 +253,11 @@ SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL → REFINE → COMPLETE
 - `AUTOSOLVE_OT_reset_training_data` - Reset to defaults
 - `AUTOSOLVE_OT_view_training_stats` - View statistics
 
+**Smoothing Operators:**
+
+- `AUTOSOLVE_OT_smooth_tracks` - Manual track marker smoothing
+- `AUTOSOLVE_OT_smooth_camera` - Manual camera F-curve smoothing
+
 **Scene Setup:**
 
 - `AUTOSOLVE_OT_setup_scene` - Calls `bpy.ops.clip.setup_tracking_scene`
@@ -253,6 +274,12 @@ class AutoSolveSettings(PropertyGroup):
     robust_mode: BoolProperty        # Extra iterations for difficult footage
     tripod_mode: BoolProperty        # Rotation-only camera model
     footage_type: EnumProperty       # AUTO, INDOOR, OUTDOOR, DRONE, etc.
+
+    # Smoothing Settings
+    smooth_tracks: BoolProperty      # Enable pre-solve track smoothing
+    track_smooth_factor: FloatProperty  # Track smoothing strength (0-1)
+    smooth_camera: BoolProperty      # Enable post-solve camera smoothing
+    camera_smooth_factor: FloatProperty  # Camera smoothing strength (0.1-1)
 
     # Runtime State
     is_solving: BoolProperty         # Currently solving

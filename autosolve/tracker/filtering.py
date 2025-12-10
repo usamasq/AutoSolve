@@ -286,15 +286,21 @@ class FilteringMixin:
                 data['coherence'] = max(0.0, coherence)
         
         # Identify non-rigid tracks
+        # Require BOTH jitter AND incoherence to avoid over-aggressive filtering
         non_rigid = []
         for name, data in track_data.items():
             is_jittery = data['jitter'] > jitter_threshold
             is_incoherent = data['coherence'] < coherence_threshold
             
-            if is_jittery or is_incoherent:
+            # Changed from OR to AND - only remove truly non-rigid tracks
+            if is_jittery and is_incoherent:
                 non_rigid.append((name, data['jitter'], data['coherence']))
         
-        max_can_delete = current - self.ABSOLUTE_MIN_TRACKS
+        # Cap removal at 30% of tracks AND ensure we keep at least SAFE_MIN_TRACKS
+        max_can_delete = min(
+            current - self.SAFE_MIN_TRACKS,  # Floor: keep 20 tracks minimum
+            int(current * 0.30)               # Cap: max 30% removal per pass
+        )
         if len(non_rigid) > max_can_delete:
             non_rigid.sort(key=lambda x: (x[1] - x[2]), reverse=True)
             non_rigid = non_rigid[:max_can_delete]

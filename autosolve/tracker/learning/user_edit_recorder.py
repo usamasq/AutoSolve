@@ -123,6 +123,9 @@ class UserEditRecorder:
         
         # Take final snapshot
         final_snapshot = self._take_snapshot()
+        if final_snapshot is None:
+            print("AutoSolve: Edit recording aborted - MovieClip invalidated")
+            return None
         
         # Calculate time spent
         time_spent = 0.0
@@ -156,32 +159,47 @@ class UserEditRecorder:
         
         return session
     
-    def _take_snapshot(self) -> List[TrackSnapshot]:
+    def _take_snapshot(self) -> Optional[List[TrackSnapshot]]:
         """Capture current state of all tracks."""
         snapshots = []
         
-        for track in self.clip.tracking.tracks:
-            markers = [m for m in track.markers if not m.mute]
-            if len(markers) < 2:
-                continue
+        try:
+            # Check for ReferenceError explicitly on access
+            if not self.clip:
+                return None
             
-            markers.sort(key=lambda x: x.frame)
-            lifespan = markers[-1].frame - markers[0].frame
+            # This access can raise ReferenceError if clip is freed
+            tracks = self.clip.tracking.tracks
             
-            # Calculate average position for region
-            avg_x = sum(m.co.x for m in markers) / len(markers)
-            avg_y = sum(m.co.y for m in markers) / len(markers)
-            
-            snapshots.append(TrackSnapshot(
-                name=track.name,
-                lifespan=lifespan,
-                start_frame=markers[0].frame,
-                end_frame=markers[-1].frame,
-                region=get_region(avg_x, avg_y),
-                has_bundle=track.has_bundle,
-                error=track.average_error if track.has_bundle else 0.0,
-                is_enabled=not track.hide,
-            ))
+            for track in tracks:
+                markers = [m for m in track.markers if not m.mute]
+                if len(markers) < 2:
+                    continue
+                
+                markers.sort(key=lambda x: x.frame)
+                lifespan = markers[-1].frame - markers[0].frame
+                
+                # Calculate average position for region
+                avg_x = sum(m.co.x for m in markers) / len(markers)
+                avg_y = sum(m.co.y for m in markers) / len(markers)
+                
+                snapshots.append(TrackSnapshot(
+                    name=track.name,
+                    lifespan=lifespan,
+                    start_frame=markers[0].frame,
+                    end_frame=markers[-1].frame,
+                    region=get_region(avg_x, avg_y),
+                    has_bundle=track.has_bundle,
+                    error=track.average_error if track.has_bundle else 0.0,
+                    is_enabled=not track.hide,
+                ))
+                
+        except ReferenceError:
+            print("AutoSolve: MovieClip removed while monitoring")
+            return None
+        except Exception as e:
+            print(f"AutoSolve: Error taking snapshot: {e}")
+            return None
         
         return snapshots
     

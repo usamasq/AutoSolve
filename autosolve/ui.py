@@ -1,11 +1,15 @@
 # SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""AutoSolve UI panels."""
+"""AutoSolve UI panels - Professional layout with phase-based workflow."""
 
 import bpy
 from bpy.types import Panel
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN PANEL
+# ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_PT_main_panel(Panel):
     """Main AutoSolve panel in the Movie Clip Editor."""
@@ -22,47 +26,117 @@ class AUTOSOLVE_PT_main_panel(Panel):
     
     def draw(self, context):
         layout = self.layout
-        settings = context.scene.autosolve
         clip = context.edit_movieclip
         
-        # Clip info
+        # Clip info header
         box = layout.box()
         row = box.row()
         row.label(text=clip.name, icon='SEQUENCE')
         row.label(text=f"{clip.frame_duration} frames")
-        
-        layout.separator()
-        
-        # Main action - button or progress
-        if settings.is_solving:
-            # Progress display
-            box = layout.box()
-            col = box.column(align=True)
-            
-            # Status text
-            col.label(text=settings.solve_status, icon='TIME')
-            
-            # Progress bar
-            col.prop(settings, "solve_progress", text="")
-            
-            # Cancel hint
-            col.label(text="Press ESC to cancel", icon='INFO')
-        else:
-            # Solve button
-            row = layout.row(align=True)
-            row.scale_y = 1.5
-            row.operator("autosolve.run_solve", text="Analyze & Solve", icon='PLAY')
 
 
-class AUTOSOLVE_PT_options_panel(Panel):
-    """Solver options subpanel."""
+# ═══════════════════════════════════════════════════════════════════════════
+# RESEARCH DATA (Top, collapsed) - Beta research participation
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AUTOSOLVE_PT_research_panel(Panel):
+    """Research data management panel."""
     
-    bl_label = "Options"
-    bl_idname = "AUTOSOLVE_PT_options_panel"
+    bl_label = "Research Data"
+    bl_idname = "AUTOSOLVE_PT_research_panel"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw_header(self, context):
+        self.layout.label(text="", icon='EXPERIMENTAL')
+    
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.autosolve
+        
+        # Participation toggle
+        box = layout.box()
+        row = box.row()
+        row.prop(settings, "record_edits", text="Contribute to Research", icon='REC')
+        
+        # Stats summary
+        try:
+            from .tracker.learning.settings_predictor import SettingsPredictor
+            predictor = SettingsPredictor()
+            stats = predictor.get_stats()
+            
+            col = box.column(align=True)
+            col.scale_y = 0.8
+            col.label(text=f"Sessions: {stats.get('total_sessions', 0)} | Success: {stats.get('success_rate', 0):.0%}")
+        except:
+            box.label(text="No data collected yet", icon='INFO')
+        
+        # Actions
+        layout.separator()
+        row = layout.row(align=True)
+        row.operator("autosolve.export_training_data", text="Export", icon='EXPORT')
+        row.operator("autosolve.contribute_data", text="Share", icon='URL')
+        row.operator("autosolve.reset_training_data", text="Reset", icon='LOOP_BACK')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 1: TRACKING
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AUTOSOLVE_PT_phase1_tracking(Panel):
+    """Phase 1: Tracking configuration and execution."""
+    
+    bl_label = "1. Track"
+    bl_idname = "AUTOSOLVE_PT_phase1_tracking"
+    bl_space_type = 'CLIP_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "AutoSolve"
+    bl_parent_id = "AUTOSOLVE_PT_main_panel"
+    
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.autosolve
+        
+        # Everything in a box for visual distinction
+        box = layout.box()
+        
+        # Main solve button (prominent)
+        if settings.is_solving:
+            # Progress display
+            col = box.column(align=True)
+            col.label(text=settings.solve_status, icon='TIME')
+            col.prop(settings, "solve_progress", text="")
+            col.label(text="Press ESC to cancel", icon='INFO')
+        else:
+            row = box.row()
+            row.scale_y = 1.6
+            row.operator("autosolve.run_solve", text="Analyze & Solve", icon='PLAY')
+        
+        # Quick settings section
+        box.separator()
+        
+        col = box.column(align=True)
+        row = col.row(align=True)
+        row.prop(settings, "quality_preset", text="")
+        row.prop(settings, "footage_type", text="")
+        
+        row = col.row(align=True)
+        row.prop(settings, "tripod_mode", toggle=True)
+        row.prop(settings, "robust_mode", toggle=True)
+
+
+class AUTOSOLVE_PT_phase1_advanced(Panel):
+    """Advanced tracking options."""
+    
+    bl_label = "Advanced"
+    bl_idname = "AUTOSOLVE_PT_phase1_advanced"
+    bl_space_type = 'CLIP_EDITOR'
+    bl_region_type = 'UI'
+    bl_category = "AutoSolve"
+    bl_parent_id = "AUTOSOLVE_PT_phase1_tracking"
     bl_options = {'DEFAULT_CLOSED'}
     
     def draw(self, context):
@@ -73,18 +147,21 @@ class AUTOSOLVE_PT_options_panel(Panel):
         settings = context.scene.autosolve
         
         col = layout.column(align=True)
-        col.prop(settings, "quality_preset")
-        col.prop(settings, "footage_type")
-        col.separator()
-        col.prop(settings, "tripod_mode")
-        col.prop(settings, "robust_mode")
+        col.prop(settings, "batch_tracking")
+        col.prop(settings, "smooth_tracks")
+        if settings.smooth_tracks:
+            col.prop(settings, "track_smooth_factor", slider=True)
 
 
-class AUTOSOLVE_PT_result_panel(Panel):
-    """Solve result display."""
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 2: SCENE SETUP (only if solved)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AUTOSOLVE_PT_phase2_scene(Panel):
+    """Phase 2: Scene setup after successful solve."""
     
-    bl_label = "Result"
-    bl_idname = "AUTOSOLVE_PT_result_panel"
+    bl_label = "2. Setup Scene"
+    bl_idname = "AUTOSOLVE_PT_phase2_scene"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
     bl_category = "AutoSolve"
@@ -100,110 +177,89 @@ class AUTOSOLVE_PT_result_panel(Panel):
         layout = self.layout
         clip = context.edit_movieclip
         recon = clip.tracking.reconstruction
+        settings = context.scene.autosolve
         
-        col = layout.column(align=True)
+        # Everything in a box
+        box = layout.box()
         
-        # Track count
-        num_tracks = len([t for t in clip.tracking.tracks if t.has_bundle])
-        col.label(text=f"Tracks: {num_tracks}", icon='TRACKER')
-        
-        # Solve error with quality indicator
+        # Solve quality indicator
         error = recon.average_error
+        num_tracks = len([t for t in clip.tracking.tracks if t.has_bundle])
+        
         if error < 0.5:
             icon = 'CHECKMARK'
+            quality = "Excellent"
         elif error < 1.0:
             icon = 'INFO'
+            quality = "Good"
         else:
             icon = 'ERROR'
-        col.label(text=f"Error: {error:.2f} px", icon=icon)
+            quality = "Review tracks"
         
-        layout.separator()
+        row = box.row()
+        row.label(text=f"{num_tracks} tracks • {error:.2f}px", icon='TRACKER')
+        row.label(text=quality, icon=icon)
         
-        # Action buttons
-        col = layout.column(align=True)
-        row = col.row()
-        row.enabled = False  # Not fully implemented yet
+        box.separator()
+        
+        # Camera smoothing option
+        col = box.column(align=True)
+        col.prop(settings, "smooth_camera", text="Smooth Camera Motion")
+        if settings.smooth_camera:
+            col.prop(settings, "camera_smooth_factor", slider=True)
+        
+        # Main setup button
+        row = box.row()
+        row.scale_y = 1.4
         row.operator("autosolve.setup_scene", text="Setup Tracking Scene", icon='SCENE_DATA')
 
 
-class AUTOSOLVE_PT_training_panel(Panel):
-    """Training data management panel."""
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 3: REFINE (only if camera exists)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AUTOSOLVE_PT_phase3_refine(Panel):
+    """Phase 3: Refinement tools after scene setup."""
     
-    bl_label = "Training Data"
-    bl_idname = "AUTOSOLVE_PT_training_panel"
+    bl_label = "3. Refine"
+    bl_idname = "AUTOSOLVE_PT_phase3_refine"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
-    bl_options = {'DEFAULT_CLOSED'}
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show if camera with animation exists
+        return (context.scene.camera and 
+                context.scene.camera.animation_data and 
+                context.scene.camera.animation_data.action)
     
     def draw(self, context):
         layout = self.layout
         
-        # Statistics
+        # Everything in a box
         box = layout.box()
-        box.label(text="Learning Model", icon='EXPERIMENTAL')
         
-        try:
-            from .tracker.learning.settings_predictor import SettingsPredictor
-            from .tracker.learning.behavior_recorder import BehaviorRecorder
-            
-            predictor = SettingsPredictor()
-            stats = predictor.get_stats()
-            
-            col = box.column(align=True)
-            col.label(text=f"Sessions: {stats.get('total_sessions', 0)}")
-            
-            # Show behavior count
-            try:
-                behavior_recorder = BehaviorRecorder()
-                behavior_count = behavior_recorder.get_behavior_count()
-                col.label(text=f"Behaviors: {behavior_count}")
-            except:
-                pass
-            
-            col.label(text=f"Footage classes: {stats.get('footage_classes_known', 0)}")
-            col.label(text=f"Success rate: {stats.get('success_rate', 0):.0%}")
-            
-            # Show behavior patterns if any
-            behavior_patterns = len(predictor.model.get('behavior_patterns', {}))
-            if behavior_patterns > 0:
-                col.label(text=f"Learned patterns: {behavior_patterns}")
-                
-        except Exception as e:
-            box.label(text="No training data yet")
+        col = box.column(align=True)
+        col.label(text="Re-apply Smoothing", icon='MOD_SMOOTH')
         
-        layout.separator()
-        
-        # Record edits toggle (prominent placement)
-        settings = context.scene.autosolve
-        box = layout.box()
-        row = box.row()
-        row.prop(settings, "record_edits", icon='REC')
-        row = box.row()
-        row.scale_y = 0.7
-        row.label(text="Helps AutoSolve learn from your corrections", icon='INFO')
-        
-        layout.separator()
-        
-        # Actions
-        col = layout.column(align=True)
-        col.operator("autosolve.export_training_data", text="Export Data", icon='EXPORT')
-        col.operator("autosolve.contribute_data", text="Contribute Data", icon='URL')
-        col.operator("autosolve.import_training_data", text="Import Data", icon='IMPORT')
-        
-        layout.separator()
-        
-        row = layout.row()
-        row.operator("autosolve.reset_training_data", text="Reset", icon='LOOP_BACK')
+        row = col.row(align=True)
+        row.operator("autosolve.smooth_tracks", text="Tracks", icon='CURVE_PATH')
+        row.operator("autosolve.smooth_camera", text="Camera", icon='FCURVE_SNAPSHOT')
 
 
-# Registration
+# ═══════════════════════════════════════════════════════════════════════════
+# REGISTRATION
+# ═══════════════════════════════════════════════════════════════════════════
+
 classes = (
     AUTOSOLVE_PT_main_panel,
-    AUTOSOLVE_PT_options_panel,
-    AUTOSOLVE_PT_result_panel,
-    AUTOSOLVE_PT_training_panel,
+    AUTOSOLVE_PT_research_panel,
+    AUTOSOLVE_PT_phase1_tracking,
+    AUTOSOLVE_PT_phase1_advanced,
+    AUTOSOLVE_PT_phase2_scene,
+    AUTOSOLVE_PT_phase3_refine,
 )
 
 
@@ -215,4 +271,3 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-

@@ -490,6 +490,19 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 settings.solve_status = "Draft solve..."
                 settings.solve_progress = 0.78
                 
+                # Apply pre-solve track smoothing if enabled
+                if settings.smooth_tracks:
+                    try:
+                        from .tracker.smoothing import smooth_track_markers
+                        smoothed = smooth_track_markers(
+                            tracker.tracking, 
+                            settings.track_smooth_factor
+                        )
+                        if smoothed > 0:
+                            print(f"AutoSolve: Pre-solve track smoothing - {smoothed} markers smoothed")
+                    except Exception as e:
+                        print(f"AutoSolve: Track smoothing failed: {e}")
+                
                 # Compute pre-solve confidence for ML training
                 pre_confidence = tracker.compute_pre_solve_confidence()
                 if pre_confidence.get('confidence', 1.0) < 0.4:
@@ -500,7 +513,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if success:
                     _state.phase = 'FILTER_ERROR'
                 else:
-                    _state.phase = 'SOLVE_FINAL'
+                    # Solve failed - retry with adjusted settings if iterations remaining
+                    if _state.iteration < tracker.MAX_ITERATIONS:
+                        print("AutoSolve: Draft solve failed - retrying with adjusted settings")
+                        _state.phase = 'RETRY_DECISION'
+                    else:
+                        _state.phase = 'SOLVE_FINAL'
                 
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
@@ -570,7 +588,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         if quality_failure:
                             self.report({'ERROR'}, "Solve failed - check camera focal length and lens distortion")
                         else:
-                            self.report({'ERROR'}, "Solve failed - try Tripod Mode")
+                            self.report({'ERROR'}, "Solve failed - footage may be too difficult (try Robust Mode or adjust settings)")
                         tracker.save_session_results(success=False, solve_error=999.0)
                         return self._cancel(context)
                 
@@ -622,6 +640,11 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if hasattr(_state, 'user_learned') and _state.user_learned:
                     final_learned = tracker.learn_from_user_templates()
                     tracker.save_user_learning(final_learned)
+                
+                # NOTE: Camera smoothing is NOT applied here because AutoSolve
+                # only computes reconstruction data, not the actual camera object.
+                # Camera smoothing must be applied AFTER "Setup Tracking Scene"
+                # creates the camera with F-curves.
                 
                 settings.solve_status = "Complete!"
                 settings.solve_progress = 1.0
@@ -739,11 +762,21 @@ class AUTOSOLVE_OT_run_solve(Operator):
 
 
 class AUTOSOLVE_OT_setup_scene(Operator):
-    """Set up scene from tracking."""
+    """Smart scene setup with auto floor detection."""
     
     bl_idname = "autosolve.setup_scene"
     bl_label = "Setup Tracking Scene"
     bl_options = {'REGISTER', 'UNDO'}
+    
+    # Floor setup mode
+    floor_mode: bpy.props.EnumProperty(
+        name="Floor Detection",
+        items=[
+            ('AUTO', "Auto-detect", "Let AutoSolve find floor tracks automatically"),
+            ('MANUAL', "I'll select tracks", "Close this and select 3+ floor tracks first"),
+        ],
+        default='AUTO',
+    )
     
     @classmethod
     def poll(cls, context):
@@ -751,10 +784,156 @@ class AUTOSOLVE_OT_setup_scene(Operator):
             return False
         return context.edit_movieclip.tracking.reconstruction.is_valid
     
+    def invoke(self, context, event):
+        clip = context.edit_movieclip
+        tracking = clip.tracking
+        
+        # Count selected tracks with bundles
+        selected_with_bundle = [t for t in tracking.tracks 
+                                if t.select and t.has_bundle]
+        
+        # If 3+ tracks selected, use them directly (skip popup)
+        if len(selected_with_bundle) >= 3:
+            return self._setup_with_floor(context, selected_with_bundle)
+        
+        # Otherwise show popup dialog
+        return context.window_manager.invoke_props_dialog(self, width=320)
+    
+    def draw(self, context):
+        layout = self.layout
+        
+        # Clear header
+        box = layout.box()
+        box.label(text="How should the floor be set?", icon='ORIENTATION_NORMAL')
+        
+        # Radio buttons with descriptions
+        col = layout.column(align=True)
+        col.prop(self, "floor_mode", expand=True)
+        
+        # Hint
+        layout.separator()
+        if self.floor_mode == 'MANUAL':
+            layout.label(text="Tip: Select 3 tracks on a flat surface", icon='INFO')
+    
     def execute(self, context):
-        bpy.ops.clip.setup_tracking_scene(action='BACKGROUND_AND_CAMERA')
-        self.report({'INFO'}, "Scene set up successfully")
+        if self.floor_mode == 'MANUAL':
+            # User wants to select tracks manually - just cancel
+            self.report({'INFO'}, "Select 3+ floor tracks, then click Setup again")
+            return {'CANCELLED'}
+        
+        # Auto mode
+        clip = context.edit_movieclip
+        tracking = clip.tracking
+        
+        # Auto-detect floor tracks
+        floor_tracks = self._auto_detect_floor(tracking)
+        if len(floor_tracks) >= 3:
+            return self._setup_with_floor(context, floor_tracks)
+        else:
+            # Not enough tracks for floor, just setup without
+            bpy.ops.clip.setup_tracking_scene()
+            self._apply_smoothing(context)
+            self.report({'WARNING'}, "Scene set up (couldn't detect floor)")
+            return {'FINISHED'}
+    
+    def _setup_with_floor(self, context, floor_tracks):
+        """Setup scene with floor alignment using given tracks."""
+        clip = context.edit_movieclip
+        tracking = clip.tracking
+        
+        # Step 1: Select floor tracks and set plane BEFORE creating camera
+        for track in tracking.tracks:
+            track.select = False
+        for track in floor_tracks[:3]:
+            track.select = True
+        
+        try:
+            # Set floor plane first - this affects the reconstruction
+            bpy.ops.clip.set_plane(plane='FLOOR')
+            print(f"AutoSolve: Floor set using {len(floor_tracks)} tracks")
+        except Exception as e:
+            print(f"AutoSolve: set_plane failed: {e}")
+        
+        # Step 2: Now setup scene - camera will be created with correct orientation
+        bpy.ops.clip.setup_tracking_scene()
+        
+        # Step 3: Apply smoothing
+        self._apply_smoothing(context)
+        
+        self.report({'INFO'}, "Scene set up with floor alignment")
         return {'FINISHED'}
+    
+    def _apply_smoothing(self, context):
+        """Apply camera smoothing if enabled."""
+        settings = context.scene.autosolve
+        
+        if settings.smooth_camera and context.scene.camera:
+            try:
+                from .tracker.smoothing import smooth_camera_fcurves
+                
+                camera = context.scene.camera
+                if camera.animation_data and camera.animation_data.action:
+                    strength = settings.camera_smooth_factor
+                    cutoff = 2.0 - (strength * 1.5)
+                    cutoff = max(0.1, min(2.0, cutoff))
+                    
+                    if smooth_camera_fcurves(camera, cutoff):
+                        print(f"AutoSolve: Camera smoothed (strength={strength:.2f})")
+            except Exception as e:
+                print(f"AutoSolve: Camera smoothing failed: {e}")
+    
+    def _auto_detect_floor(self, tracking):
+        """
+        Auto-detect tracks most likely to be on the floor.
+        
+        Heuristics:
+        1. Tracks with lowest Z coordinate (assuming Z-up)
+        2. Tracks in the lower portion of the screen
+        3. Tracks with similar Z values (coplanar)
+        """
+        candidates = []
+        
+        for track in tracking.tracks:
+            if not track.has_bundle:
+                continue
+            
+            bundle = track.bundle
+            z = bundle[2]
+            
+            # Get average screen Y position
+            marker_count = 0
+            screen_y_sum = 0.0
+            for marker in track.markers:
+                if not marker.mute:
+                    screen_y_sum += marker.co[1]
+                    marker_count += 1
+            
+            avg_screen_y = screen_y_sum / marker_count if marker_count > 0 else 0.5
+            
+            # Score: lower Z and lower screen position = more likely floor
+            # Invert screen_y because lower on screen = lower Y value
+            score = z - (avg_screen_y * 2.0)  # Weight screen position
+            
+            candidates.append((track, score, z))
+        
+        # Sort by score (lowest = best floor candidate)
+        candidates.sort(key=lambda x: x[1])
+        
+        # Return tracks, filtering for similar Z values (coplanar)
+        if not candidates:
+            return []
+        
+        floor_tracks = [candidates[0][0]]
+        reference_z = candidates[0][2]
+        
+        for track, score, z in candidates[1:]:
+            # Accept tracks within 0.5 units of reference (reasonably coplanar)
+            if abs(z - reference_z) < 0.5:
+                floor_tracks.append(track)
+            if len(floor_tracks) >= 5:  # Get up to 5 floor tracks
+                break
+        
+        return floor_tracks
 
 
 
@@ -1166,6 +1345,89 @@ class AUTOSOLVE_OT_view_training_stats(Operator):
             return {'CANCELLED'}
 
 
+class AUTOSOLVE_OT_smooth_tracks(Operator):
+    """Smooth track markers to reduce jitter."""
+    
+    bl_idname = "autosolve.smooth_tracks"
+    bl_label = "Smooth Tracks"
+    bl_description = "Apply smoothing to track marker positions"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        if context.edit_movieclip is None:
+            return False
+        return len(context.edit_movieclip.tracking.tracks) > 0
+    
+    def execute(self, context):
+        clip = context.edit_movieclip
+        settings = context.scene.autosolve
+        
+        try:
+            from .tracker.smoothing import smooth_track_markers
+            
+            strength = settings.track_smooth_factor
+            count = smooth_track_markers(clip.tracking, strength)
+            
+            if count > 0:
+                self.report({'INFO'}, f"Smoothed {count} markers")
+            else:
+                self.report({'WARNING'}, "No markers were smoothed (tracks too short)")
+            
+            return {'FINISHED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"Smoothing failed: {str(e)}")
+            return {'CANCELLED'}
+
+
+class AUTOSOLVE_OT_smooth_camera(Operator):
+    """Smooth solved camera motion."""
+    
+    bl_idname = "autosolve.smooth_camera"
+    bl_label = "Smooth Camera"
+    bl_description = "Apply Butterworth filter to camera animation curves"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        # Check for valid solve and scene camera with animation
+        if context.edit_movieclip is None:
+            return False
+        if not context.edit_movieclip.tracking.reconstruction.is_valid:
+            return False
+        # Check if scene camera has animation
+        if context.scene.camera and context.scene.camera.animation_data:
+            return True
+        # Or check for any animated cameras
+        for obj in bpy.data.objects:
+            if obj.type == 'CAMERA' and obj.animation_data and obj.animation_data.action:
+                return True
+        return False
+    
+    def execute(self, context):
+        settings = context.scene.autosolve
+        
+        try:
+            from .tracker.smoothing import smooth_solved_camera
+            
+            strength = settings.camera_smooth_factor
+            success = smooth_solved_camera(strength)
+            
+            if success:
+                self.report({'INFO'}, f"Camera motion smoothed (strength={strength:.2f})")
+            else:
+                self.report({'WARNING'}, "Could not find camera animation to smooth")
+            
+            return {'FINISHED'}
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.report({'ERROR'}, f"Smoothing failed: {str(e)}")
+            return {'CANCELLED'}
+
+
 # Registration
 classes = (
     AUTOSOLVE_OT_run_solve,
@@ -1175,6 +1437,8 @@ classes = (
     AUTOSOLVE_OT_import_training_data,
     AUTOSOLVE_OT_reset_training_data,
     AUTOSOLVE_OT_view_training_stats,
+    AUTOSOLVE_OT_smooth_tracks,
+    AUTOSOLVE_OT_smooth_camera,
 )
 
 

@@ -88,24 +88,24 @@ PRETRAINED_DEFAULTS = {
         'motion_model': 'LocRot',
     },
     '4K_24fps': {
-        'pattern_size': 31,      # Larger for 4K (was 25)
-        'search_size': 151,      # Doubled for 4K resolution (was 111)
-        'correlation': 0.65,
-        'threshold': 0.25,
+        'pattern_size': 41,      # Larger for 4K (increased from 31)
+        'search_size': 181,      # Larger search for 4K (increased from 151)
+        'correlation': 0.62,     # Slightly lower for larger patterns
+        'threshold': 0.22,
         'motion_model': 'Affine',
     },
     '4K_30fps': {
-        'pattern_size': 29,      # Larger for 4K (was 23)
-        'search_size': 141,      # ~2x HD's 71px to match relative coverage
-        'correlation': 0.65,     # Slightly lower for larger search (was 0.68)
-        'threshold': 0.25,       # Lower threshold for 4K detail (was 0.28)
+        'pattern_size': 37,      # Larger for 4K (increased from 29)
+        'search_size': 171,      # Larger search (increased from 141)
+        'correlation': 0.62,     # Slightly lower for larger patterns
+        'threshold': 0.22,
         'motion_model': 'LocRot',
     },
     '4K_60fps': {
-        'pattern_size': 25,      # Larger for 4K (was 21)
-        'search_size': 121,      # ~2x HD's 51px (was 71)
-        'correlation': 0.68,     # (was 0.70)
-        'threshold': 0.28,       # (was 0.30)
+        'pattern_size': 33,      # Larger for 4K (increased from 25)
+        'search_size': 151,      # Larger search (increased from 121)
+        'correlation': 0.65,
+        'threshold': 0.25,
         'motion_model': 'LocRot',
     },
     'SD_24fps': {

@@ -97,6 +97,42 @@ class AutoSolveSettings(PropertyGroup):
     )
     
     # ═══════════════════════════════════════════════════════════
+    # SMOOTHING OPTIONS
+    # ═══════════════════════════════════════════════════════════
+    
+    smooth_tracks: BoolProperty(
+        name="Smooth Tracks",
+        description="Apply smoothing to track markers before solving. "
+                    "Reduces jitter but may reduce accuracy on sharp movements",
+        default=False,
+    )
+    
+    track_smooth_factor: FloatProperty(
+        name="Track Smoothing",
+        description="Strength of track smoothing (0=none, 1=heavy)",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+        subtype='FACTOR',
+    )
+    
+    smooth_camera: BoolProperty(
+        name="Smooth Camera",
+        description="Apply Butterworth filter to camera motion after solving. "
+                    "Removes high-frequency jitter while preserving overall motion",
+        default=False,
+    )
+    
+    camera_smooth_factor: FloatProperty(
+        name="Camera Smoothing",
+        description="Smoothing strength (0.1=subtle, 1.0=heavy smoothing)",
+        default=0.5,
+        min=0.1,
+        max=1.0,
+        subtype='FACTOR',
+    )
+    
+    # ═══════════════════════════════════════════════════════════
     # TRAINING DATA OPTIONS
     # ═══════════════════════════════════════════════════════════
     
