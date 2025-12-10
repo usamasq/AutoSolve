@@ -180,7 +180,7 @@ This helps AutoSolve learn expert-level track cleanup patterns.
 
 ## Contact & Community
 
-**Discord:** [Join our community](https://discord.gg/kkAmxKsS)  
+**Discord:** [Join our community](https://discord.gg/qUvrXHP9PU)  
 **Email:** [usamasq@gmail.com](mailto:usamasq@gmail.com)
 
 Your contributions make AutoSolve better for everyone! 🙏

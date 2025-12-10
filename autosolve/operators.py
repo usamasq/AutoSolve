@@ -706,6 +706,23 @@ class AUTOSOLVE_OT_setup_scene(Operator):
         return {'FINISHED'}
 
 
+
+class AUTOSOLVE_OT_contribute_data(Operator):
+    """Open the contribution page/Discord."""
+    
+    bl_idname = "autosolve.contribute_data"
+    bl_label = "Contribute Data"
+    bl_description = "Open the community page to share your training data"
+    bl_options = {'REGISTER'}
+    
+    def execute(self, context):
+        import webbrowser
+        # Using Discord URL as primary contribution point for now
+        webbrowser.open("https://discord.gg/qUvrXHP9PU")
+        self.report({'INFO'}, "Opened Discord community page")
+        return {'FINISHED'}
+
+
 class AUTOSOLVE_OT_export_training_data(Operator):
     """Export training data as ZIP for ML training."""
     
@@ -1080,6 +1097,7 @@ class AUTOSOLVE_OT_view_training_stats(Operator):
 classes = (
     AUTOSOLVE_OT_run_solve,
     AUTOSOLVE_OT_setup_scene,
+    AUTOSOLVE_OT_contribute_data,
     AUTOSOLVE_OT_export_training_data,
     AUTOSOLVE_OT_import_training_data,
     AUTOSOLVE_OT_reset_training_data,

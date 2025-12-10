@@ -23,13 +23,16 @@ autosolve/
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
 └── tracker/             # Core tracking engine
-    ├── smart_tracker.py      # Adaptive tracking with learning
-    ├── blender_tracker.py    # Low-level Blender API wrapper
-    ├── settings_manager.py   # Centralized settings management
+    ├── smart_tracker.py      # Main tracking orchestrator with learning
+    ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
+    ├── validation.py         # ValidationMixin - pre-solve validation
+    ├── filtering.py          # FilteringMixin - track cleanup methods
+    ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
+    ├── utils.py              # Utility functions (get_region, etc.)
     └── learning/             # ML & learning components
         ├── session_recorder.py        # Session telemetry collection
         ├── settings_predictor.py      # Optimal settings prediction
-        ├── track_quality_predictor.py # Track quality estimation
+        ├── behavior_recorder.py       # User behavior recording
         ├── failure_diagnostics.py     # Failure analysis & fixes
         └── pretrained_model.json      # Bundled community defaults
 ```
@@ -42,6 +45,12 @@ autosolve/
 
 **Purpose:** Intelligent tracking orchestrator with adaptive learning.
 
+**Architecture:** Uses mixin pattern for modularity:
+
+- Inherits from `ValidationMixin` (pre-solve validation methods)
+- Inherits from `FilteringMixin` (track cleanup methods)
+- Uses `TrackAnalyzer` and `CoverageAnalyzer` for analysis
+
 **Key Features:**
 
 - **Phased Detection** - Motion probe → Quality placement → Reinforcement
@@ -50,18 +59,22 @@ autosolve/
 - **Quality over Quantity** - 1-2 markers per region, not carpet-bombing
 - **Adaptive Learning** - Settings adjust based on measured motion characteristics
 
-**Main Class: `SmartTracker`**
+**Main Class: `SmartTracker(ValidationMixin, FilteringMixin)`**
 
 ```python
-class SmartTracker:
+class SmartTracker(ValidationMixin, FilteringMixin):
     def __init__(self, clip, robust_mode=False, footage_type='AUTO')
     def detect_features_smart()        # Unified smart detection
     def _run_motion_probe()            # Motion analysis (can skip for low motion)
     def _estimate_motion_quick()       # Instant motion classification
     def track_frame()                  # Track one frame
     def track_sequence()               # Batch tracking (optional)
-    def cleanup_tracks()               # Unified filtering (spikes, non-rigid)
     def solve_camera()                 # Bundle adjustment
+    def analyze_and_learn()            # Post-tracking analysis
+    # Inherited from ValidationMixin:
+    # - validate_pre_tracking(), validate_pre_solve(), etc.
+    # Inherited from FilteringMixin:
+    # - cleanup_tracks(), filter_short_tracks(), filter_spikes(), etc.
 ```
 
 **Detection Flow:**
@@ -82,24 +95,72 @@ Phase 3: REINFORCEMENT (if <8 markers)
 
 ---
 
-### 2. Blender Tracker (`tracker/blender_tracker.py`)
+### 2. Supporting Modules
 
-**Purpose:** Low-level wrapper for Blender's tracking operators.
+#### `tracker/analyzers.py`
 
-**Responsibilities:**
+**Purpose:** Analysis classes for tracking patterns and coverage.
 
-- Safe operator execution with context overrides
-- Marker selection and filtering
-- Error handling for tracking operations
+| Class              | Purpose                                           |
+| ------------------ | ------------------------------------------------- |
+| `TrackStats`       | Dataclass - statistics for a single track         |
+| `RegionStats`      | Dataclass - statistics for a screen region        |
+| `CoverageData`     | Dataclass - coverage data for region-time segment |
+| `TrackAnalyzer`    | Analyzes tracking patterns, identifies dead zones |
+| `CoverageAnalyzer` | Tracks spatial/temporal marker distribution       |
 
-**Key Methods:**
+**Key Constants:**
+
+- `REGIONS` - List of 9 screen regions (imported from `constants.py`)
+- `MAX_TRACKS_PER_REGION_PERCENT = 0.30` - Clustering threshold
+
+#### `tracker/validation.py`
+
+**Purpose:** ValidationMixin providing pre-solve validation methods.
 
 ```python
-def detect_features(threshold, distance)
-def track_markers(backwards, sequence)
-def clean_tracks(frames, error)
-def filter_tracks_by_error(max_error)
-def solve_camera(tripod_mode)
+class ValidationMixin:
+    def validate_pre_tracking()       # Check clip loaded, duration
+    def validate_track_quality()      # Per-frame quality validation
+    def validate_pre_solve()          # Track count, coverage, lifespan
+    def compute_pre_solve_confidence() # Estimate solve success probability
+    def sanitize_tracks_before_solve() # Remove problematic tracks
+```
+
+#### `tracker/filtering.py`
+
+**Purpose:** FilteringMixin providing track cleanup methods.
+
+```python
+class FilteringMixin:
+    def cleanup_tracks()              # Unified cleanup pipeline
+    def filter_short_tracks()         # Remove short-lived tracks
+    def filter_spikes()               # Remove velocity outliers
+    def deduplicate_tracks()          # Coverage-aware deduplication
+    def filter_non_rigid_motion()     # Remove waves/water/foliage tracks
+    def filter_high_error()           # Remove high reprojection error
+    def _get_region_for_pos()         # Region lookup helper
+```
+
+#### `tracker/constants.py`
+
+**Purpose:** Shared configuration constants.
+
+| Constant                   | Description                                     |
+| -------------------------- | ----------------------------------------------- |
+| `REGIONS`                  | List of 9 screen regions                        |
+| `TIERED_SETTINGS`          | Settings tiers (balanced, moderate, aggressive) |
+| `PRETRAINED_DEFAULTS`      | Default settings per footage class              |
+| `FOOTAGE_TYPE_ADJUSTMENTS` | Footage-specific overrides                      |
+
+#### `tracker/utils.py`
+
+**Purpose:** Utility functions.
+
+```python
+def get_region(x, y) -> str          # Get region name for normalized coords
+def get_region_bounds(region) -> tuple  # Get bounds for region
+def calculate_jitter(markers) -> float  # Compute track jitter score
 ```
 
 ---
@@ -268,7 +329,7 @@ Location: Movie Clip Editor → Sidebar (N) → AutoSolve tab
        │
        ▼
 ┌──────────────────────────────────────────┐
-│ SmartTracker.detect_strategic_features()│
+│ SmartTracker.detect_features_smart()   │
 ├──────────────────────────────────────────┤
 │ • Divide frame into 9 regions           │
 │ • Detect ~3 markers per region          │
@@ -338,14 +399,14 @@ def classify_footage(clip):
     return f"{res_class}_{fps_class}"  # e.g., "HD_30fps"
 ```
 
-### 2. Strategic Feature Detection
+### 2. Smart Feature Detection
 
 **Purpose:** Ensure balanced spatial coverage for robust solving.
 
 ```python
-def detect_strategic_features(markers_per_region=3):
+def detect_features_smart(markers_per_region=2):
     # Divide frame into 9 regions (3x3 grid)
-    regions = create_grid(3, 3)
+    regions = REGIONS  # From constants.py
 
     for region in regions:
         # Detect in this specific region
@@ -355,7 +416,7 @@ def detect_strategic_features(markers_per_region=3):
             threshold=current_settings['threshold']
         )
 
-    # Result: ~27 evenly distributed markers
+    # Result: ~18 quality markers across frame
 ```
 
 ### 3. Adaptive Learning
@@ -385,7 +446,7 @@ def update_model(footage_class, session_data):
 
 ### Pretrained Defaults
 
-Located in `smart_tracker.py::PRETRAINED_DEFAULTS`:
+Located in `tracker/constants.py::PRETRAINED_DEFAULTS`:
 
 ```python
 PRETRAINED_DEFAULTS = {
@@ -477,7 +538,7 @@ if should_retry(analysis):
 
 ### Adding New Footage Types
 
-1. Add to `FOOTAGE_TYPE_ADJUSTMENTS` in `smart_tracker.py`
+1. Add to `FOOTAGE_TYPE_ADJUSTMENTS` in `tracker/constants.py`
 2. Define setting overrides
 3. Update UI enum in `properties.py`
 

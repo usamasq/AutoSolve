@@ -3,7 +3,7 @@
 > **How AutoSolve learns and improves from your tracking sessions**
 
 > [!IMPORTANT] > **🧪 Research Beta** - Your data contributions directly improve AutoSolve for everyone.
-> By sharing anonymized tracking data, you help train the ML model that predicts optimal settings.
+> By sharing anonymized tracking data, you help train the model that predicts optimal settings.
 > **[How to contribute](#contributing-your-data)**
 
 ---

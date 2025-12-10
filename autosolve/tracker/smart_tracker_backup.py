@@ -21,12 +21,6 @@ from pathlib import Path
 # Mixins containing extracted methods
 from .validation import ValidationMixin
 from .filtering import FilteringMixin
-# Analyzer classes extracted to analyzers.py
-from .analyzers import TrackStats, RegionStats, CoverageData, TrackAnalyzer, CoverageAnalyzer
-# Constants needed for regions
-from .constants import REGIONS, TIERED_SETTINGS
-# Utility functions
-from .utils import get_region, get_region_bounds
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -224,6 +218,391 @@ TIERED_SETTINGS = {
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# TRACK ANALYZER (Learning Component)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class TrackStats:
+    """Statistics for a single track."""
+    name: str
+    lifespan: int
+    start_frame: int
+    end_frame: int
+    region: str
+    avg_velocity: float
+    jitter_score: float
+    success: bool
+    contributed_to_solve: bool = False
+    reprojection_error: float = 0.0
+
+
+@dataclass
+class RegionStats:
+    """Statistics for a screen region."""
+    name: str
+    total_tracks: int = 0
+    successful_tracks: int = 0
+    avg_lifespan: float = 0.0
+    success_rate: float = 0.0
+
+
+class TrackAnalyzer:
+    """Analyzes tracking patterns and learns from them."""
+    
+    REGIONS = [
+        'top-left', 'top-center', 'top-right',
+        'mid-left', 'center', 'mid-right',
+        'bottom-left', 'bottom-center', 'bottom-right'
+    ]
+    
+    def __init__(self):
+        self.track_stats: List[TrackStats] = []
+        self.region_stats: Dict[str, RegionStats] = {
+            r: RegionStats(name=r) for r in self.REGIONS
+        }
+        self.dead_zones: Set[str] = set()
+        self.sweet_spots: Set[str] = set()
+        self.iteration: int = 0
+    
+    def get_region(self, x: float, y: float) -> str:
+        """Get region name from normalized coordinates (0-1)."""
+        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
+        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
+        
+        region_map = [
+            ['top-left', 'top-center', 'top-right'],
+            ['mid-left', 'center', 'mid-right'],
+            ['bottom-left', 'bottom-center', 'bottom-right']
+        ]
+        return region_map[row][col]
+    
+    def analyze_tracks(self, tracking, min_lifespan: int = 5) -> Dict:
+        """Analyze all tracks and calculate statistics."""
+        self.track_stats.clear()
+        
+        for region in self.region_stats.values():
+            region.total_tracks = 0
+            region.successful_tracks = 0
+            region.avg_lifespan = 0.0
+        
+        region_lifespans = {r: [] for r in self.REGIONS}
+        
+        for track in tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            
+            markers.sort(key=lambda x: x.frame)
+            
+            lifespan = markers[-1].frame - markers[0].frame
+            
+            avg_x = sum(m.co.x for m in markers) / len(markers)
+            avg_y = sum(m.co.y for m in markers) / len(markers)
+            region = self.get_region(avg_x, avg_y)
+            
+            displacement = (Vector(markers[-1].co) - Vector(markers[0].co)).length
+            avg_velocity = displacement / max(lifespan, 1)
+            
+            jitter = self._calculate_jitter(markers)
+            success = lifespan >= min_lifespan
+            
+            stats = TrackStats(
+                name=track.name,
+                lifespan=lifespan,
+                start_frame=markers[0].frame,
+                end_frame=markers[-1].frame,
+                region=region,
+                avg_velocity=avg_velocity,
+                jitter_score=jitter,
+                success=success,
+                contributed_to_solve=track.has_bundle,
+                reprojection_error=track.average_error if track.has_bundle else 0.0,
+            )
+            self.track_stats.append(stats)
+            
+            self.region_stats[region].total_tracks += 1
+            if success:
+                self.region_stats[region].successful_tracks += 1
+            region_lifespans[region].append(lifespan)
+        
+        for region, stats in self.region_stats.items():
+            if stats.total_tracks > 0:
+                stats.success_rate = stats.successful_tracks / stats.total_tracks
+                if region_lifespans[region]:
+                    stats.avg_lifespan = sum(region_lifespans[region]) / len(region_lifespans[region])
+        
+        self._identify_zones()
+        return self._get_summary()
+    
+    def _calculate_jitter(self, markers) -> float:
+        """Calculate jitter score (variance in velocity)."""
+        if len(markers) < 3:
+            return 0.0
+        
+        velocities = []
+        for i in range(1, len(markers)):
+            v = (Vector(markers[i].co) - Vector(markers[i-1].co)).length
+            velocities.append(v)
+        
+        if not velocities:
+            return 0.0
+        
+        avg_v = sum(velocities) / len(velocities)
+        if avg_v == 0:
+            return 0.0
+        
+        variance = sum((v - avg_v) ** 2 for v in velocities) / len(velocities)
+        return (variance ** 0.5) / avg_v
+    
+    def _identify_zones(self):
+        """Identify dead zones and sweet spots."""
+        self.dead_zones.clear()
+        self.sweet_spots.clear()
+        
+        for region, stats in self.region_stats.items():
+            if stats.total_tracks < 3:
+                continue
+            
+            if stats.success_rate < 0.3:
+                self.dead_zones.add(region)
+            elif stats.success_rate > 0.7:
+                self.sweet_spots.add(region)
+    
+    def _get_summary(self) -> Dict:
+        """Get analysis summary."""
+        total = len(self.track_stats)
+        successful = sum(1 for t in self.track_stats if t.success)
+        
+        return {
+            'total_tracks': total,
+            'successful_tracks': successful,
+            'success_rate': successful / max(total, 1),
+            'dead_zones': list(self.dead_zones),
+            'sweet_spots': list(self.sweet_spots),
+            'region_stats': {r: asdict(s) for r, s in self.region_stats.items()},
+            'avg_lifespan': sum(t.lifespan for t in self.track_stats) / max(total, 1),
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# COVERAGE ANALYZER (Industry-Standard Distribution Tracking)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class CoverageData:
+    """Coverage data for a region-time segment."""
+    region: str
+    segment: Tuple[int, int]
+    track_count: int = 0
+    successful_tracks: int = 0
+    avg_lifespan: float = 0.0
+    needs_more: bool = False
+
+
+class CoverageAnalyzer:
+    """
+    Tracks spatial and temporal distribution of markers.
+    
+    Industry standard: Good camera solves require:
+    - Tracks distributed across the frame (not clustered)
+    - Tracks spanning the full timeline (not just parts)
+    - Minimum parallax requirements met
+    """
+    
+    REGIONS = [
+        'top-left', 'top-center', 'top-right',
+        'mid-left', 'center', 'mid-right',
+        'bottom-left', 'bottom-center', 'bottom-right'
+    ]
+    
+    # Industry thresholds
+    MIN_TRACKS_PER_REGION = 3
+    MIN_REGIONS_WITH_TRACKS = 6  # At least 6/9 regions
+    MAX_TRACKS_PER_REGION_PERCENT = 0.30  # No region > 30%
+    MIN_TEMPORAL_COVERAGE = 0.80  # Tracks should span 80% of frames
+    
+    def __init__(self, clip_frame_start: int, clip_frame_end: int, segment_size: int = 50):
+        self.frame_start = clip_frame_start
+        self.frame_end = clip_frame_end
+        self.segment_size = segment_size
+        
+        # Coverage grid: region -> segment -> CoverageData
+        self.coverage: Dict[str, Dict[Tuple[int, int], CoverageData]] = {}
+        self._init_coverage_grid()
+    
+    def _init_coverage_grid(self):
+        """Initialize empty coverage grid."""
+        for region in self.REGIONS:
+            self.coverage[region] = {}
+            for frame in range(self.frame_start, self.frame_end + 1, self.segment_size):
+                segment = self._get_segment(frame)
+                self.coverage[region][segment] = CoverageData(
+                    region=region,
+                    segment=segment
+                )
+    
+    def _get_segment(self, frame: int) -> Tuple[int, int]:
+        """Get segment tuple for a frame."""
+        seg_start = ((frame - self.frame_start) // self.segment_size) * self.segment_size + self.frame_start
+        seg_end = min(seg_start + self.segment_size, self.frame_end)
+        return (seg_start, seg_end)
+    
+    def get_region(self, x: float, y: float) -> str:
+        """Get region name from normalized coordinates (0-1)."""
+        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
+        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
+        
+        region_map = [
+            ['top-left', 'top-center', 'top-right'],
+            ['mid-left', 'center', 'mid-right'],
+            ['bottom-left', 'bottom-center', 'bottom-right']
+        ]
+        return region_map[row][col]
+    
+    def get_region_bounds(self, region: str) -> Tuple[float, float, float, float]:
+        """Get (x_min, y_min, x_max, y_max) for a region in normalized coords."""
+        region_bounds = {
+            'top-left': (0.0, 0.66, 0.33, 1.0),
+            'top-center': (0.33, 0.66, 0.66, 1.0),
+            'top-right': (0.66, 0.66, 1.0, 1.0),
+            'mid-left': (0.0, 0.33, 0.33, 0.66),
+            'center': (0.33, 0.33, 0.66, 0.66),
+            'mid-right': (0.66, 0.33, 1.0, 0.66),
+            'bottom-left': (0.0, 0.0, 0.33, 0.33),
+            'bottom-center': (0.33, 0.0, 0.66, 0.33),
+            'bottom-right': (0.66, 0.0, 1.0, 0.33),
+        }
+        return region_bounds.get(region, (0.0, 0.0, 1.0, 1.0))
+    
+    def analyze_tracking(self, tracking, min_lifespan: int = 5):
+        """
+        Analyze current tracking data for coverage.
+        
+        Updates the coverage grid with actual track distribution.
+        """
+        # Reset counts
+        self._init_coverage_grid()
+        
+        region_lifespans: Dict[str, Dict[Tuple, List[int]]] = {
+            r: {s: [] for s in self.coverage[r].keys()} for r in self.REGIONS
+        }
+        
+        for track in tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            
+            # Get region from average position
+            avg_x = sum(m.co.x for m in markers) / len(markers)
+            avg_y = sum(m.co.y for m in markers) / len(markers)
+            region = self.get_region(avg_x, avg_y)
+            
+            # Update coverage for each segment this track spans
+            for marker in markers:
+                segment = self._get_segment(marker.frame)
+                if segment in self.coverage[region]:
+                    self.coverage[region][segment].track_count += 1
+                    if lifespan >= min_lifespan:
+                        self.coverage[region][segment].successful_tracks += 1
+                    if segment in region_lifespans[region]:
+                        region_lifespans[region][segment].append(lifespan)
+        
+        # Calculate averages and mark gaps
+        for region in self.REGIONS:
+            for segment, data in self.coverage[region].items():
+                lifespans = region_lifespans[region].get(segment, [])
+                if lifespans:
+                    data.avg_lifespan = sum(lifespans) / len(lifespans)
+                data.needs_more = data.successful_tracks < self.MIN_TRACKS_PER_REGION
+    
+    def get_coverage_summary(self) -> Dict:
+        """
+        Get comprehensive coverage analysis.
+        
+        Returns industry-standard metrics for solve quality prediction.
+        """
+        total_tracks = 0
+        regions_with_tracks = 0
+        region_counts = {}
+        temporal_coverage = set()
+        gaps = []
+        
+        for region in self.REGIONS:
+            region_total = 0
+            for segment, data in self.coverage[region].items():
+                region_total += data.successful_tracks
+                if data.successful_tracks > 0:
+                    temporal_coverage.add(segment)
+                if data.needs_more:
+                    gaps.append((region, segment))
+            
+            region_counts[region] = region_total
+            total_tracks += region_total
+            if region_total >= self.MIN_TRACKS_PER_REGION:
+                regions_with_tracks += 1
+        
+        # Calculate balance score
+        max_region = max(region_counts.values()) if region_counts else 0
+        balance_score = 1.0 - (max_region / max(total_tracks, 1))
+        
+        # Calculate temporal coverage
+        total_segments = len(list(self.coverage[self.REGIONS[0]].keys()))
+        temporal_percent = len(temporal_coverage) / max(total_segments, 1)
+        
+        return {
+            'total_tracks': total_tracks,
+            'regions_with_tracks': regions_with_tracks,
+            'region_counts': region_counts,
+            'balance_score': balance_score,  # 1.0 = perfectly balanced
+            'temporal_coverage': temporal_percent,
+            'gaps': gaps,  # List of (region, segment) needing more tracks
+            'is_balanced': (
+                regions_with_tracks >= self.MIN_REGIONS_WITH_TRACKS and
+                balance_score >= (1.0 - self.MAX_TRACKS_PER_REGION_PERCENT) and
+                temporal_percent >= self.MIN_TEMPORAL_COVERAGE
+            ),
+        }
+    
+    def get_weak_zones(self) -> List[Tuple[str, Tuple[int, int]]]:
+        """
+        Get regions and time segments that need more tracks.
+        
+        Returns list of (region, segment) tuples sorted by priority.
+        """
+        weak = []
+        for region in self.REGIONS:
+            for segment, data in self.coverage[region].items():
+                if data.needs_more:
+                    weak.append((region, segment, data.successful_tracks))
+        
+        # Sort by track count (lowest first = highest priority)
+        weak.sort(key=lambda x: x[2])
+        return [(r, s) for r, s, _ in weak]
+    
+    def get_clustered_regions(self) -> List[str]:
+        """
+        Get regions with too many tracks (clustering).
+        
+        These should be deprioritized for new marker placement.
+        """
+        summary = self.get_coverage_summary()
+        total = summary['total_tracks']
+        if total == 0:
+            return []
+        
+        clustered = []
+        for region, count in summary['region_counts'].items():
+            if count / total > self.MAX_TRACKS_PER_REGION_PERCENT:
+                clustered.append(region)
+        
+        return clustered
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SMART TRACKER (Main Class)
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -300,7 +679,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.cached_motion_probe: Optional[Dict] = None
         
         # Region confidence scores (probabilistic dead zones)
-        self.region_confidence: Dict[str, float] = {r: 0.5 for r in REGIONS}
+        self.region_confidence: Dict[str, float] = {r: 0.5 for r in TrackAnalyzer.REGIONS}
         
         # Try to load cached probe from disk
         self._try_load_cached_probe()
@@ -855,7 +1234,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         for region, data in region_models.items():
             # Validate region name
-            if region not in REGIONS:
+            if region not in TrackAnalyzer.REGIONS:
                 continue
             
             total = data.get('total_tracks', 0)
@@ -868,6 +1247,383 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     
         return skip
     
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # VALIDATION METHODS
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def validate_pre_tracking(self) -> Tuple[bool, List[str]]:
+        """
+        Validate conditions before tracking begins.
+        
+        Checks:
+        - Clip has sufficient frames
+        - Markers have valid initial positions
+        - No NaN/Inf values in existing markers
+        
+        Returns:
+            Tuple of (is_valid, list of issues found)
+        """
+        issues = []
+        
+        # Check clip duration
+        if self.clip.frame_duration < 10:
+            issues.append(f"Clip too short: {self.clip.frame_duration} frames (need 10+)")
+        
+        # Check existing markers for NaN/Inf
+        nan_tracks = []
+        for track in self.tracking.tracks:
+            for marker in track.markers:
+                if marker.mute:
+                    continue
+                # Check for invalid coordinates
+                import math
+                if math.isnan(marker.co.x) or math.isnan(marker.co.y):
+                    nan_tracks.append(track.name)
+                    break
+                if math.isinf(marker.co.x) or math.isinf(marker.co.y):
+                    nan_tracks.append(track.name)
+                    break
+                # Check bounds (normalized 0-1)
+                if not (0 <= marker.co.x <= 1) or not (0 <= marker.co.y <= 1):
+                    nan_tracks.append(track.name)
+                    break
+        
+        if nan_tracks:
+            issues.append(f"Invalid marker data in {len(nan_tracks)} tracks: {', '.join(nan_tracks[:5])}")
+        
+        is_valid = len(issues) == 0
+        if is_valid:
+            print("AutoSolve: Pre-tracking validation passed")
+        else:
+            print(f"AutoSolve: Pre-tracking validation failed: {'; '.join(issues)}")
+        
+        return is_valid, issues
+    
+    def validate_track_quality(self, frame: int) -> Dict:
+        """
+        Validate track quality at a specific frame during tracking.
+        
+        Checks for:
+        - Out-of-bounds markers
+        - Velocity spikes (sudden jumps)
+        - Tracks that should be muted
+        
+        Returns:
+            Dict with validation results and tracks to mute
+        """
+        import math
+        
+        result = {
+            'frame': frame,
+            'active_tracks': 0,
+            'out_of_bounds': [],
+            'velocity_spikes': [],
+            'tracks_to_mute': [],
+        }
+        
+        for track in self.tracking.tracks:
+            marker = track.markers.find_frame(frame)
+            if not marker or marker.mute:
+                continue
+            
+            result['active_tracks'] += 1
+            
+            # Check bounds
+            if not (0 <= marker.co.x <= 1) or not (0 <= marker.co.y <= 1):
+                result['out_of_bounds'].append(track.name)
+                result['tracks_to_mute'].append(track.name)
+                continue
+            
+            # Check for NaN
+            if math.isnan(marker.co.x) or math.isnan(marker.co.y):
+                result['tracks_to_mute'].append(track.name)
+                continue
+            
+            # Check velocity spike (compare to previous frame)
+            prev_marker = track.markers.find_frame(frame - 1)
+            if prev_marker and not prev_marker.mute:
+                dx = abs(marker.co.x - prev_marker.co.x)
+                dy = abs(marker.co.y - prev_marker.co.y)
+                displacement = (dx**2 + dy**2) ** 0.5
+                
+                # If displacement > 10% of frame in one step, likely a spike
+                if displacement > 0.1:
+                    result['velocity_spikes'].append(track.name)
+                    result['tracks_to_mute'].append(track.name)
+        
+        # Mute problematic tracks
+        for track in self.tracking.tracks:
+            if track.name in result['tracks_to_mute']:
+                marker = track.markers.find_frame(frame)
+                if marker:
+                    marker.mute = True
+        
+        if result['tracks_to_mute']:
+            print(f"AutoSolve: Frame {frame} - Muted {len(result['tracks_to_mute'])} bad tracks")
+        
+        return result
+    
+    def validate_pre_solve(self) -> Tuple[bool, List[str]]:
+        """
+        Validate track data before camera solve.
+        
+        Ensures:
+        - Sufficient valid tracks
+        - No NaN/Inf in marker data
+        - Adequate track coverage
+        - Minimum lifespan requirements
+        
+        Returns:
+            Tuple of (is_valid, list of issues)
+        """
+        import math
+        issues = []
+        
+        # Count valid tracks
+        valid_tracks = 0
+        total_markers = 0
+        nan_count = 0
+        short_tracks = 0
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            
+            # Check for NaN/Inf
+            has_nan = False
+            for m in markers:
+                if math.isnan(m.co.x) or math.isnan(m.co.y):
+                    has_nan = True
+                    nan_count += 1
+                    break
+                if math.isinf(m.co.x) or math.isinf(m.co.y):
+                    has_nan = True
+                    nan_count += 1
+                    break
+            
+            if has_nan:
+                continue
+            
+            # Check lifespan
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            if lifespan < 5:
+                short_tracks += 1
+                continue
+            
+            valid_tracks += 1
+            total_markers += len(markers)
+        
+        # Validation checks
+        if valid_tracks < self.ABSOLUTE_MIN_TRACKS:
+            issues.append(f"Too few valid tracks: {valid_tracks} (need {self.ABSOLUTE_MIN_TRACKS}+)")
+        
+        if nan_count > 0:
+            issues.append(f"Found {nan_count} tracks with NaN/Inf values")
+        
+        if short_tracks > valid_tracks:
+            issues.append(f"Too many short-lived tracks: {short_tracks}")
+        
+        # Check frame coverage
+        frame_coverage = {}
+        for track in self.tracking.tracks:
+            for marker in track.markers:
+                if not marker.mute:
+                    frame_coverage[marker.frame] = frame_coverage.get(marker.frame, 0) + 1
+        
+        if frame_coverage:
+            avg_tracks_per_frame = sum(frame_coverage.values()) / len(frame_coverage)
+            if avg_tracks_per_frame < 8:
+                issues.append(f"Low average track coverage: {avg_tracks_per_frame:.1f} tracks/frame")
+        
+        is_valid = len(issues) == 0
+        if is_valid:
+            print(f"AutoSolve: Pre-solve validation passed ({valid_tracks} valid tracks)")
+        else:
+            print(f"AutoSolve: Pre-solve validation failed: {'; '.join(issues)}")
+        
+        return is_valid, issues
+    
+    def compute_pre_solve_confidence(self) -> Dict:
+        """
+        Estimate solve quality before running the solver.
+        
+        Uses track features to predict likelihood of successful solve.
+        Records result for ML training correlation with actual solve error.
+        
+        Returns:
+            Dict with:
+                - confidence: 0-1 overall estimate (1 = likely good solve)
+                - parallax_score: 0-1 depth variation detected
+                - track_distribution_score: 0-1 how well tracks cover the frame
+                - warnings: List of potential issues
+        """
+        confidence = 1.0
+        warnings = []
+        
+        # 1. Check track count
+        track_count = len(self.tracking.tracks)
+        if track_count < 15:
+            confidence *= 0.6
+            warnings.append(f"Low track count ({track_count})")
+        elif track_count < 25:
+            confidence *= 0.85
+        
+        # 2. Compute parallax score from motion vectors
+        motion_vectors = []
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            markers.sort(key=lambda x: x.frame)
+            dx = markers[-1].co.x - markers[0].co.x
+            dy = markers[-1].co.y - markers[0].co.y
+            motion_vectors.append((dx, dy))
+        
+        parallax_score = 0.0
+        if len(motion_vectors) >= 3:
+            # Compute variance in motion directions
+            avg_dx = sum(v[0] for v in motion_vectors) / len(motion_vectors)
+            avg_dy = sum(v[1] for v in motion_vectors) / len(motion_vectors)
+            
+            variance = sum(
+                ((v[0] - avg_dx)**2 + (v[1] - avg_dy)**2) 
+                for v in motion_vectors
+            ) / len(motion_vectors)
+            
+            avg_magnitude = (avg_dx**2 + avg_dy**2)**0.5
+            if avg_magnitude > 0.0001:
+                parallax_score = min(1.0, (variance**0.5) / avg_magnitude)
+        
+        if parallax_score < 0.05:
+            confidence *= 0.5
+            warnings.append("Very low parallax - consider tripod mode")
+        elif parallax_score < 0.15:
+            confidence *= 0.75
+            warnings.append("Low parallax - perspective solve may struggle")
+        
+        # 3. Check track distribution (coverage of 9 regions)
+        regions_covered = set()
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if markers:
+                avg_x = sum(m.co.x for m in markers) / len(markers)
+                avg_y = sum(m.co.y for m in markers) / len(markers)
+                col = 0 if avg_x < 0.33 else (1 if avg_x < 0.66 else 2)
+                row = 2 if avg_y < 0.33 else (1 if avg_y < 0.66 else 0)
+                regions_covered.add((row, col))
+        
+        distribution_score = len(regions_covered) / 9.0
+        
+        if distribution_score < 0.5:
+            confidence *= 0.7
+            warnings.append(f"Poor track distribution ({len(regions_covered)}/9 regions)")
+        elif distribution_score < 0.7:
+            confidence *= 0.9
+        
+        # 4. Check track lifespan consistency
+        lifespans = []
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) >= 2:
+                markers.sort(key=lambda x: x.frame)
+                lifespans.append(markers[-1].frame - markers[0].frame)
+        
+        if lifespans:
+            avg_lifespan = sum(lifespans) / len(lifespans)
+            if avg_lifespan < 30:
+                confidence *= 0.8
+                warnings.append(f"Short average track lifespan ({avg_lifespan:.0f} frames)")
+        
+        result = {
+            'confidence': round(confidence, 3),
+            'parallax_score': round(parallax_score, 3),
+            'track_distribution_score': round(distribution_score, 3),
+            'track_count': track_count,
+            'warnings': warnings,
+        }
+        
+        # Log and record for ML training
+        print(f"AutoSolve: Pre-solve confidence: {confidence:.0%} "
+              f"(parallax: {parallax_score:.2f}, distribution: {distribution_score:.2f})")
+        if warnings:
+            print(f"  Warnings: {', '.join(warnings)}")
+        
+        # Record to session for correlation with actual solve error
+        if hasattr(self, 'recorder') and self.recorder and self.recorder.current_session:
+            self.recorder.record_pre_solve_confidence(result)
+        
+        return result
+    
+    def sanitize_tracks_before_solve(self) -> int:
+        """
+        Actively clean up problematic tracks before camera solve.
+        
+        This method REMOVES tracks that would cause Ceres solver errors:
+        - Tracks with NaN/Inf values
+        - Tracks with out-of-bounds markers
+        - Tracks with too few markers
+        - Tracks with impossible velocity spikes
+        
+        Returns:
+            Number of tracks removed
+        """
+        import math
+        
+        tracks_to_remove = []
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            
+            # Remove tracks with too few markers
+            if len(markers) < 3:
+                tracks_to_remove.append(track.name)
+                continue
+            
+            # Check for bad data
+            is_bad = False
+            prev_pos = None
+            
+            for marker in markers:
+                x, y = marker.co.x, marker.co.y
+                
+                # Check NaN/Inf
+                if math.isnan(x) or math.isnan(y) or math.isinf(x) or math.isinf(y):
+                    is_bad = True
+                    break
+                
+                # Check out of bounds (with margin)
+                if x < -0.1 or x > 1.1 or y < -0.1 or y > 1.1:
+                    is_bad = True
+                    break
+                
+                # Check velocity spike
+                if prev_pos is not None:
+                    dx = abs(x - prev_pos[0])
+                    dy = abs(y - prev_pos[1])
+                    if dx > 0.2 or dy > 0.2:  # 20% of frame in one step
+                        is_bad = True
+                        break
+                
+                prev_pos = (x, y)
+            
+            if is_bad:
+                tracks_to_remove.append(track.name)
+        
+        # Remove bad tracks
+        if tracks_to_remove:
+            for track in self.tracking.tracks:
+                track.select = track.name in tracks_to_remove
+            
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+                print(f"AutoSolve: Sanitized {len(tracks_to_remove)} bad tracks before solve")
+            except:
+                pass
+        
+        return len(tracks_to_remove)
     
     def extract_training_data(self) -> Dict:
         """
@@ -905,7 +1661,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Get region from average position
             avg_x = sum(m.co.x for m in markers) / len(markers)
             avg_y = sum(m.co.y for m in markers) / len(markers)
-            region = get_region(avg_x, avg_y)
+            region = self.analyzer.get_region(avg_x, avg_y)
             
             markers_sorted = sorted(markers, key=lambda m: m.frame)
             lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
@@ -975,7 +1731,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 continue
             
             # Get region from first marker position
-            region = get_region(
+            region = self.coverage_analyzer.get_region(
                 markers[0].co.x, markers[0].co.y
             )
             
@@ -1055,7 +1811,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 'motion_model': motion_model,
                 'use_brute': getattr(track, 'use_brute', False),
                 'use_normalization': getattr(track, 'use_normalization', False),
-                'region': get_region(markers[0].co.x, markers[0].co.y),
+                'region': self.coverage_analyzer.get_region(markers[0].co.x, markers[0].co.y),
                 'is_tracked': len(markers) > 2,
             }
             
@@ -1304,7 +2060,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             stacklevel=2
         )
         total_detected = 0
-        regions = REGIONS.copy()
+        regions = CoverageAnalyzer.REGIONS.copy()
         
         # Get user priority regions
         priority = self.get_user_priority_regions()
@@ -1427,7 +2183,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             print(f"AutoSolve: Skipping {region} - likely non-rigid (water/waves)")
             return 0
         
-        bounds = get_region_bounds(region)
+        bounds = self.coverage_analyzer.get_region_bounds(region)
         x_min, y_min, x_max, y_max = bounds
         
         initial_count = len(self.tracking.tracks)
@@ -1519,7 +2275,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         skip_regions = skip_regions or set()
         
         # Add non-rigid regions to skip list
-        for region in REGIONS:
+        for region in CoverageAnalyzer.REGIONS:
             if self._is_non_rigid_region(region):
                 skip_regions.add(region)
         
@@ -1553,7 +2309,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             )
         except Exception as e:
             print(f"AutoSolve: detect_features failed: {e}")
-            return {r: 0 for r in REGIONS}
+            return {r: 0 for r in CoverageAnalyzer.REGIONS}
         
         new_tracks = list(self.tracking.tracks)[initial_count:]
         
@@ -1565,12 +2321,12 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         if not new_tracks:
             print("AutoSolve: No features detected")
-            return {r: 0 for r in REGIONS}
+            return {r: 0 for r in CoverageAnalyzer.REGIONS}
         
         print(f"AutoSolve: Global detection found {len(new_tracks)} candidates")
         
         # Categorize all tracks by region WITH QUALITY SCORE
-        tracks_by_region: Dict[str, List[Tuple[Any, float]]] = {r: [] for r in REGIONS}
+        tracks_by_region: Dict[str, List[Tuple[Any, float]]] = {r: [] for r in CoverageAnalyzer.REGIONS}
         no_marker_tracks = []
         
         current_frame = bpy.context.scene.frame_current
@@ -1588,14 +2344,14 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Score the feature based on position quality
             quality = self._score_feature_quality(marker, track)
             
-            region = get_region(marker.co.x, marker.co.y)
+            region = self.coverage_analyzer.get_region(marker.co.x, marker.co.y)
             tracks_by_region[region].append((track, quality))
         
         # Process each region: SORT BY QUALITY, keep top N
         result: Dict[str, int] = {}
         to_delete = list(no_marker_tracks)  # Always delete tracks without markers
         
-        for region in REGIONS:
+        for region in CoverageAnalyzer.REGIONS:
             region_tracks = tracks_by_region[region]
             
             if region in skip_regions:
@@ -1736,7 +2492,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     def detect_features_smart(self, markers_per_region: int = 3, use_cached_probe: bool = True) -> int:
         """
-        SMART DETECTION
+        UNIFIED SMART DETECTION
         
         Single entry point that combines the best of exploratory and strategic detection.
         Always uses motion-aware settings and leverages any learned region data.
@@ -2036,7 +2792,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         }
         
         # Place 1 probe marker per region
-        regions = REGIONS.copy()
+        regions = CoverageAnalyzer.REGIONS.copy()
         import random
         random.shuffle(regions)
         
@@ -2107,7 +2863,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Track region success
             avg_x = sum(m.co.x for m in markers_sorted) / len(markers_sorted)
             avg_y = sum(m.co.y for m in markers_sorted) / len(markers_sorted)
-            region = get_region(avg_x, avg_y)
+            region = self.analyzer.get_region(avg_x, avg_y)
             
             lifespan = len(markers_sorted)
             if region not in region_success:
@@ -2534,7 +3290,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 
                 avg_x = sum(m.co.x for m in markers) / len(markers)
                 avg_y = sum(m.co.y for m in markers) / len(markers)
-                if get_region(avg_x, avg_y) == region:
+                if self.coverage_analyzer.get_region(avg_x, avg_y) == region:
                     # Prioritize removing shorter tracks
                     lifespan = len(markers)
                     tracks_in_region.append((track.name, lifespan))
@@ -2596,7 +3352,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Get average position (region)
             avg_x = sum(m.co.x for m in markers) / len(markers)
             avg_y = sum(m.co.y for m in markers) / len(markers)
-            region = get_region(avg_x, avg_y)
+            region = self.analyzer.get_region(avg_x, avg_y)
             
             # Get frame range as segments
             markers_sorted = sorted(markers, key=lambda m: m.frame)
@@ -2650,7 +3406,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         if segment not in self.temporal_dead_zones:
             return False
         
-        region = get_region(x, y)
+        region = self.analyzer.get_region(x, y)
         failure_count = self.temporal_dead_zones[segment].get(region, 0)
         
         return failure_count >= 3
@@ -2969,48 +3725,56 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     # Footage types that benefit from non-rigid motion filtering
     NON_RIGID_FOOTAGE_TYPES = {'DRONE', 'OUTDOOR', 'ACTION', 'HANDHELD'}
     
-    
-    def solve_camera(self, tripod_mode: bool = False) -> bool:
-        """Solve camera."""
-        if hasattr(self.settings, 'use_tripod_solver'):
-            self.settings.use_tripod_solver = tripod_mode
+    def cleanup_tracks(self, min_frames: int = 5, spike_multiplier: float = 8.0,
+                       jitter_threshold: float = 0.6, coherence_threshold: float = 0.4) -> int:
+        """
+        Unified track cleanup - all filters in one pass.
         
-        # DEBUG: Log track status before solve
-        track_count = len(self.tracking.tracks)
-        tracks_with_markers = sum(1 for t in self.tracking.tracks if len(t.markers) > 0)
+        Combines:
+        1. Short track filtering
+        2. Velocity spike removal
+        3. Non-rigid motion filtering (ONLY for outdoor/drone footage)
         
-        # Check marker distribution across frame range
-        frame_coverage = {}
-        for t in self.tracking.tracks:
-            for m in t.markers:
-                if not m.mute:
-                    frame_coverage[m.frame] = frame_coverage.get(m.frame, 0) + 1
+        Args:
+            min_frames: Minimum frames for a track to survive
+            spike_multiplier: Velocity spike threshold multiplier
+            jitter_threshold: Jitter score for non-rigid detection
+            coherence_threshold: Motion coherence for non-rigid detection
+            
+        Returns:
+            Total number of tracks removed
+        """
+        initial = len(self.tracking.tracks)
         
-        min_markers = min(frame_coverage.values()) if frame_coverage else 0
-        max_markers = max(frame_coverage.values()) if frame_coverage else 0
+        # 1. Short tracks (using Blender's built-in)
+        self.filter_short_tracks(min_frames=min_frames)
+        after_short = len(self.tracking.tracks)
         
-        print(f"AutoSolve DEBUG: solve_camera - {track_count} tracks, {tracks_with_markers} with markers")
-        print(f"AutoSolve DEBUG: Frame coverage - min {min_markers} markers, max {max_markers} markers")
+        # 2. Velocity spikes
+        self.filter_spikes(limit_multiplier=spike_multiplier)
+        after_spikes = len(self.tracking.tracks)
         
-        try:
-            self._run_ops(bpy.ops.clip.solve_camera)
-            is_valid = self.tracking.reconstruction.is_valid
-            if is_valid:
-                print(f"AutoSolve DEBUG: Solve SUCCESS - error {self.tracking.reconstruction.average_error:.2f}")
-            else:
-                print(f"AutoSolve DEBUG: Solve FAILED - reconstruction not valid")
-            return is_valid
-        except RuntimeError as e:
-            print(f"AutoSolve DEBUG: Solve EXCEPTION - {e}")
-            return False
-    
-    def get_solve_error(self) -> float:
-        if self.tracking.reconstruction.is_valid:
-            return self.tracking.reconstruction.average_error
-        return 999.0
-    
-    def get_bundle_count(self) -> int:
-        return len([t for t in self.tracking.tracks if t.has_bundle])
+        # 3. Non-rigid motion - ONLY for footage types that may have waves/water/foliage
+        non_rigid_removed = 0
+        if self.footage_type in self.NON_RIGID_FOOTAGE_TYPES:
+            self.filter_non_rigid_motion(jitter_threshold, coherence_threshold)
+            non_rigid_removed = after_spikes - len(self.tracking.tracks)
+        
+        after_non_rigid = len(self.tracking.tracks)
+        
+        # 4. Coverage-aware deduplication (removes close tracks only in saturated regions)
+        self.deduplicate_tracks(min_distance_px=30)
+        duplicates_removed = after_non_rigid - len(self.tracking.tracks)
+        
+        final = len(self.tracking.tracks)
+        
+        removed = initial - final
+        non_rigid_msg = f", non-rigid:{non_rigid_removed}" if non_rigid_removed > 0 else ""
+        dedup_msg = f", duplicates:{duplicates_removed}" if duplicates_removed > 0 else ""
+        print(f"AutoSolve: Cleanup removed {removed} tracks "
+              f"(short:{initial-after_short}, spikes:{after_short-after_spikes}{non_rigid_msg}{dedup_msg}) → {final} remaining")
+        
+        return removed
     
     def analyze_and_learn(self) -> Dict:
         """Analyze tracks and learn from results."""
@@ -3074,10 +3838,12 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 settings=self.current_settings,
                 error=solve_error,
                 region_stats=region_stats,
-                bundle_count=bundle_count  # For HER reward computation
+                bundle_count=bundle_count  # NEW: For HER reward computation
             )
             
-        # Record session data
+        # ═══════════════════════════════════════════════════════════════
+        # RECORD SESSION DATA
+        # ═══════════════════════════════════════════════════════════════
         if hasattr(self, 'recorder') and self.recorder:
             try:
                 # 1. Start Session (if not already aligned)
@@ -3090,6 +3856,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     
                 # 3. Record Adaptation History
                 if hasattr(self, 'adaptation_history') and self.adaptation_history:
+                    # Summarize adaptation history
                     summary = self.get_adaptation_summary()
                     self.recorder.record_adaptation_history(summary)
                 
@@ -3101,8 +3868,409 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     bundle_count=self.get_bundle_count()
                 )
                 
+                # 5. Record Failure Diagnostics (stored in analyzer)
+                # We need to extract this from the last failure analysis ideally
+                # For now, we'll rely on the recorder picking up what it can or wait for v2
+                
             except Exception as e:
                 print(f"AutoSolve: Error recording session: {e}")
+    
+    def filter_short_tracks(self, min_frames: int = 5):
+        """Filter short tracks with safeguards."""
+        current = len(self.tracking.tracks)
+        
+        survivors = sum(1 for t in self.tracking.tracks
+                       if len([m for m in t.markers if not m.mute]) >= min_frames)
+        
+        if survivors < self.SAFE_MIN_TRACKS:
+            print(f"AutoSolve: Skipping filter (would leave {survivors})")
+            return
+        
+        self.select_all_tracks()
+        try:
+            self._run_ops(bpy.ops.clip.clean_tracks, frames=min_frames, error=999, action='DELETE_TRACK')
+        except TypeError:
+            self._run_ops(bpy.ops.clip.clean_tracks, frames=min_frames, error=999, action='DELETE')
+        
+        print(f"AutoSolve: After filter: {len(self.tracking.tracks)} tracks")
+    
+    def filter_spikes(self, limit_multiplier: float = 8.0):
+        """Filter velocity outliers."""
+        current = len(self.tracking.tracks)
+        
+        if current < self.SAFE_MIN_TRACKS:
+            return
+        
+        track_speeds = {}
+        total_speed = 0.0
+        count = 0
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 2:
+                continue
+            
+            markers.sort(key=lambda x: x.frame)
+            displacement = (Vector(markers[-1].co) - Vector(markers[0].co)).length
+            duration = abs(markers[-1].frame - markers[0].frame)
+            
+            if duration > 0:
+                speed = displacement / duration
+                track_speeds[track.name] = speed
+                total_speed += speed
+                count += 1
+        
+        if count == 0:
+            return
+        
+        avg = max(total_speed / count, 0.001)
+        limit = avg * limit_multiplier
+        
+        to_delete = [n for n, s in track_speeds.items() if s > limit]
+        max_del = min(len(to_delete), current - self.ABSOLUTE_MIN_TRACKS)
+        
+        if max_del <= 0:
+            return
+        
+        sorted_tracks = sorted(track_speeds.items(), key=lambda x: x[1], reverse=True)
+        to_delete = set(n for n, _ in sorted_tracks[:max_del] if track_speeds[n] > limit)
+        
+        for track in self.tracking.tracks:
+            track.select = track.name in to_delete
+        
+        if to_delete:
+            print(f"AutoSolve: Removing {len(to_delete)} outliers")
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except:
+                pass
+            self.select_all_tracks()
+    
+    def deduplicate_tracks(self, min_distance_px: int = 30):
+        """
+        Coverage-aware track deduplication.
+        
+        Only removes close tracks when overall coverage is good.
+        Keeps duplicates in sparse regions to maintain solve quality.
+        
+        Args:
+            min_distance_px: Minimum pixel distance between tracks (in normalized coords)
+        """
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return
+        
+        # Get current coverage assessment
+        self.coverage_analyzer.analyze_tracking(self.tracking)
+        summary = self.coverage_analyzer.get_coverage_summary()
+        regions_with_tracks = summary.get('regions_with_tracks', 0)
+        region_counts = summary.get('region_counts', {})
+        
+        # Only deduplicate if we have good coverage (6+ of 9 regions)
+        if regions_with_tracks < 6:
+            print(f"AutoSolve: Skipping dedup (only {regions_with_tracks}/9 regions have tracks)")
+            return
+        
+        # Find saturated regions (> 35% of total tracks - very conservative)
+        total = max(sum(region_counts.values()), 1)
+        saturated_regions = {r for r, c in region_counts.items() if c / total > 0.35}
+        
+        if not saturated_regions:
+            return
+        
+        print(f"AutoSolve: Deduplicating in saturated regions: {saturated_regions}")
+        
+        # Convert min_distance to normalized coords - very conservative (15px in HD)
+        width = self.clip.size[0]
+        min_dist_norm = 15 / width  # Only remove truly overlapping tracks
+        
+        # Collect track positions (first marker position)
+        track_positions = {}
+        current_frame = bpy.context.scene.frame_current
+        clip_frame = self.scene_to_clip_frame(current_frame)
+        
+        for track in self.tracking.tracks:
+            marker = track.markers.find_frame(clip_frame)
+            if not marker:
+                markers = [m for m in track.markers if not m.mute]
+                if markers:
+                    marker = markers[0]
+            
+            if marker:
+                track_positions[track.name] = (marker.co.x, marker.co.y)
+        
+        # Find duplicates to remove (within min_dist in saturated regions)
+        to_delete = set()
+        track_list = list(track_positions.items())
+        
+        for i, (name1, pos1) in enumerate(track_list):
+            if name1 in to_delete:
+                continue
+            
+            # Check region of this track
+            region1 = self._get_region_for_pos(pos1[0], pos1[1])
+            if region1 not in saturated_regions:
+                continue
+            
+            for j, (name2, pos2) in enumerate(track_list[i+1:], i+1):
+                if name2 in to_delete:
+                    continue
+                
+                # Check if same region
+                region2 = self._get_region_for_pos(pos2[0], pos2[1])
+                if region2 != region1:
+                    continue
+                
+                # Check distance
+                dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+                if dist < min_dist_norm:
+                    # Keep track with longer lifespan
+                    track1 = self.tracking.tracks.get(name1)
+                    track2 = self.tracking.tracks.get(name2)
+                    
+                    if track1 and track2:
+                        len1 = len([m for m in track1.markers if not m.mute])
+                        len2 = len([m for m in track2.markers if not m.mute])
+                        
+                        # Delete shorter track
+                        to_delete.add(name1 if len1 < len2 else name2)
+        
+        # Safety check - very conservative: max 10% of tracks or keep SAFE_MIN
+        max_delete = min(len(to_delete), current // 10, current - self.SAFE_MIN_TRACKS)
+        if max_delete <= 0:
+            return
+        to_delete = set(list(to_delete)[:max_delete])
+        
+        if not to_delete:
+            return
+        
+        # Select and delete
+        for track in self.tracking.tracks:
+            track.select = track.name in to_delete
+        
+        print(f"AutoSolve: Removing {len(to_delete)} duplicate tracks")
+        try:
+            self._run_ops(bpy.ops.clip.delete_track)
+        except:
+            pass
+        self.select_all_tracks()
+    
+    def _get_region_for_pos(self, x: float, y: float) -> str:
+        """Get region name for normalized coordinates."""
+        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
+        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)
+        regions = [
+            ['top-left', 'top-center', 'top-right'],
+            ['mid-left', 'center', 'mid-right'],
+            ['bottom-left', 'bottom-center', 'bottom-right']
+        ]
+        return regions[row][col]
+    
+    def filter_non_rigid_motion(self, jitter_threshold: float = 0.6, coherence_threshold: float = 0.4):
+        """
+        Filter tracks on non-rigid moving objects like waves, water, foliage.
+        
+        This filter detects tracks that:
+        1. Have high jitter (erratic motion, not smooth camera movement)
+        2. Move differently from the global camera motion pattern
+        
+        Non-rigid objects like waves create tracks that oscillate randomly,
+        while camera motion produces coherent, parallel track movements.
+        
+        Args:
+            jitter_threshold: Normalized jitter score above which tracks are suspect (default 0.6)
+            coherence_threshold: Motion coherence below which tracks are filtered (default 0.4)
+        """
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return
+        
+        # Step 1: Compute per-track motion vectors and jitter scores
+        track_data = {}
+        motion_vectors = []  # For computing median camera motion
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            if len(markers) < 5:  # Need enough markers to analyze motion
+                continue
+            
+            markers.sort(key=lambda x: x.frame)
+            
+            # Compute frame-to-frame velocities
+            velocities = []
+            for i in range(1, len(markers)):
+                dx = markers[i].co.x - markers[i-1].co.x
+                dy = markers[i].co.y - markers[i-1].co.y
+                velocities.append((dx, dy))
+            
+            if not velocities:
+                continue
+            
+            # Average motion vector (overall direction)
+            avg_dx = sum(v[0] for v in velocities) / len(velocities)
+            avg_dy = sum(v[1] for v in velocities) / len(velocities)
+            motion_vec = (avg_dx, avg_dy)
+            motion_vectors.append(motion_vec)
+            
+            # Jitter: how much does velocity change frame to frame?
+            # High jitter = erratic motion (waves, leaves moving)
+            jitter = 0.0
+            if len(velocities) >= 2:
+                vel_changes = []
+                for i in range(1, len(velocities)):
+                    change_x = abs(velocities[i][0] - velocities[i-1][0])
+                    change_y = abs(velocities[i][1] - velocities[i-1][1])
+                    vel_changes.append((change_x**2 + change_y**2)**0.5)
+                
+                if vel_changes:
+                    avg_mag = (avg_dx**2 + avg_dy**2)**0.5
+                    if avg_mag > 0.0001:
+                        jitter = (sum(vel_changes) / len(vel_changes)) / avg_mag
+                    else:
+                        jitter = sum(vel_changes) / len(vel_changes) * 100  # Scale for near-static
+            
+            track_data[track.name] = {
+                'motion_vec': motion_vec,
+                'jitter': jitter,
+                'coherence': 0.0,  # Will be computed below
+            }
+        
+        if len(motion_vectors) < 5:
+            print("AutoSolve: Not enough tracks for non-rigid filter")
+            return
+        
+        # Step 2: Compute median camera motion direction
+        # Sort by angle to find the dominant motion direction
+        import math
+        angles = [math.atan2(v[1], v[0]) for v in motion_vectors]
+        angles.sort()
+        median_angle = angles[len(angles) // 2]
+        
+        # Compute median magnitude
+        magnitudes = [(v[0]**2 + v[1]**2)**0.5 for v in motion_vectors]
+        magnitudes.sort()
+        median_mag = magnitudes[len(magnitudes) // 2]
+        
+        # Median motion vector (represents camera motion)
+        camera_motion = (math.cos(median_angle) * median_mag, math.sin(median_angle) * median_mag)
+        camera_mag = (camera_motion[0]**2 + camera_motion[1]**2)**0.5
+        
+        # Step 3: Compute coherence for each track (how well it matches camera motion)
+        for name, data in track_data.items():
+            mv = data['motion_vec']
+            mv_mag = (mv[0]**2 + mv[1]**2)**0.5
+            
+            if camera_mag < 0.0001 or mv_mag < 0.0001:
+                # Very low motion - assume coherent
+                data['coherence'] = 1.0
+            else:
+                # Dot product normalized = cosine similarity
+                dot = mv[0] * camera_motion[0] + mv[1] * camera_motion[1]
+                coherence = dot / (mv_mag * camera_mag)
+                # Clamp to [0, 1] (negative = opposite direction, still incoherent)
+                data['coherence'] = max(0.0, coherence)
+        
+        # Step 4: Identify non-rigid tracks (high jitter OR low coherence)
+        non_rigid = []
+        for name, data in track_data.items():
+            is_jittery = data['jitter'] > jitter_threshold
+            is_incoherent = data['coherence'] < coherence_threshold
+            
+            if is_jittery or is_incoherent:
+                non_rigid.append((name, data['jitter'], data['coherence']))
+        
+        # Safety: don't delete too many
+        max_can_delete = current - self.ABSOLUTE_MIN_TRACKS
+        if len(non_rigid) > max_can_delete:
+            # Prioritize removing the most jittery/incoherent
+            non_rigid.sort(key=lambda x: (x[1] - x[2]), reverse=True)
+            non_rigid = non_rigid[:max_can_delete]
+        
+        to_delete = set(n for n, _, _ in non_rigid)
+        
+        for track in self.tracking.tracks:
+            track.select = track.name in to_delete
+        
+        if to_delete:
+            print(f"AutoSolve: Removing {len(to_delete)} non-rigid tracks (waves/water/foliage)")
+            for name, jitter, coherence in non_rigid[:5]:  # Log first 5
+                print(f"  → {name}: jitter={jitter:.2f}, coherence={coherence:.2f}")
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except:
+                pass
+            self.select_all_tracks()
+
+    
+    def filter_high_error(self, max_error: float = 3.0):
+        """Filter high error tracks."""
+        if not self.tracking.reconstruction.is_valid:
+            return
+        
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return
+        
+        to_delete = [t.name for t in self.tracking.tracks
+                    if t.has_bundle and t.average_error > max_error]
+        
+        max_can = current - self.ABSOLUTE_MIN_TRACKS
+        if len(to_delete) > max_can:
+            errors = [(t.name, t.average_error) for t in self.tracking.tracks if t.has_bundle]
+            errors.sort(key=lambda x: x[1], reverse=True)
+            to_delete = [n for n, _ in errors[:max_can]]
+        
+        for track in self.tracking.tracks:
+            track.select = track.name in to_delete
+        
+        if to_delete:
+            print(f"AutoSolve: Removing {len(to_delete)} high-error tracks")
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except:
+                pass
+    
+    def solve_camera(self, tripod_mode: bool = False) -> bool:
+        """Solve camera."""
+        if hasattr(self.settings, 'use_tripod_solver'):
+            self.settings.use_tripod_solver = tripod_mode
+        
+        # DEBUG: Log track status before solve
+        track_count = len(self.tracking.tracks)
+        tracks_with_markers = sum(1 for t in self.tracking.tracks if len(t.markers) > 0)
+        
+        # Check marker distribution across frame range
+        frame_coverage = {}
+        for t in self.tracking.tracks:
+            for m in t.markers:
+                if not m.mute:
+                    frame_coverage[m.frame] = frame_coverage.get(m.frame, 0) + 1
+        
+        min_markers = min(frame_coverage.values()) if frame_coverage else 0
+        max_markers = max(frame_coverage.values()) if frame_coverage else 0
+        
+        print(f"AutoSolve DEBUG: solve_camera - {track_count} tracks, {tracks_with_markers} with markers")
+        print(f"AutoSolve DEBUG: Frame coverage - min {min_markers} markers, max {max_markers} markers")
+        
+        try:
+            self._run_ops(bpy.ops.clip.solve_camera)
+            is_valid = self.tracking.reconstruction.is_valid
+            if is_valid:
+                print(f"AutoSolve DEBUG: Solve SUCCESS - error {self.tracking.reconstruction.average_error:.2f}")
+            else:
+                print(f"AutoSolve DEBUG: Solve FAILED - reconstruction not valid")
+            return is_valid
+        except RuntimeError as e:
+            print(f"AutoSolve DEBUG: Solve EXCEPTION - {e}")
+            return False
+    
+    def get_solve_error(self) -> float:
+        if self.tracking.reconstruction.is_valid:
+            return self.tracking.reconstruction.average_error
+        return 999.0
+    
+    def get_bundle_count(self) -> int:
+        return len([t for t in self.tracking.tracks if t.has_bundle])
     
     def _get_context_override(self):
         """Get context override for operators."""

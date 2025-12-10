@@ -1,11 +1,16 @@
 # AutoSolve - Automatic Camera Tracking for Blender
 
 > **A personal project by Usama Bin Shahid**  
-> _Dedicated to my students, with ❤️ from Pakistan_
+> _Dedicated to my students, with ❤️ from Pakistan 🇵🇰_
 
-> [!IMPORTANT] > **🧪 Research Beta** - This addon is in active development and learns from usage data.
-> Your tracking sessions help train the ML model that improves settings for everyone.
-> **[Contribute your data](#contribute-training-data)** to make AutoSolve smarter for the community!
+> [!IMPORTANT] > **🧪 Research Beta** - This addon is in active development and features a **learning system** that improves tracking quality over time.
+>
+> **How it works:**
+>
+> 1.  **Learns Locally:** It learns from your tracking sessions to improve its own settings on your machine.
+> 2.  **Community Driven:** You can **optionally share your data** to help train the community model.
+>
+> **[Contribute your data](#contribute-training-data)** to help build the best open-source tracking algorithm!
 
 AutoSolve is a Blender addon that **automates the entire camera tracking workflow** - from feature detection to camera solve. It uses **adaptive learning** to improve tracking quality over time by learning from each session.
 
@@ -196,6 +201,8 @@ Notes: Required 2 retries, edges struggled
 ### Submit Data
 
 ### Submit Data
+
+**Discord:** [Join our community](https://discord.gg/qUvrXHP9PU)
 
 Please refer to **[CONTRIBUTING_DATA.md](CONTRIBUTING_DATA.md)** for:
 

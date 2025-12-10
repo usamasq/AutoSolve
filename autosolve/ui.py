@@ -189,6 +189,7 @@ class AUTOSOLVE_PT_training_panel(Panel):
         # Actions
         col = layout.column(align=True)
         col.operator("autosolve.export_training_data", text="Export Data", icon='EXPORT')
+        col.operator("autosolve.contribute_data", text="Contribute Data", icon='URL')
         col.operator("autosolve.import_training_data", text="Import Data", icon='IMPORT')
         
         layout.separator()
