@@ -29,7 +29,7 @@ autosolve/
     ├── filtering.py          # FilteringMixin - track cleanup methods
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
-    └── learning/             # ML & learning components
+    └── learning/             # Learning components
         ├── session_recorder.py        # Session telemetry collection
         ├── settings_predictor.py      # Optimal settings prediction
         ├── behavior_recorder.py       # User behavior recording

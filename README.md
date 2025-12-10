@@ -81,12 +81,12 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 I'm a solo developer making professional camera tracking accessible to everyone.
 
-**Join the community:** [Discord](https://discord.gg/kkAmxKsS)
+**Join the community:** [Discord](https://discord.gg/qUvrXHP9PU)
 
 ### 1. Test and Report Issues
 
 - **Found a bug?** Open an [issue on GitHub](https://github.com/yourusername/AutoSolve/issues)
-- **Feature request?** Share on [Discord](https://discord.gg/kkAmxKsS)
+- **Feature request?** Share on [Discord](https://discord.gg/qUvrXHP9PU)
 
 ### 2. Contribute Training Data
 
@@ -95,7 +95,7 @@ AutoSolve gets smarter through community data. Your anonymized tracking sessions
 **How to share your data:**
 
 1. In Blender: `Movie Clip Editor → AutoSolve → Training Data → Export`
-2. Share on [Discord](https://discord.gg/kkAmxKsS) or email: `usamasq@gmail.com`
+2. Share on [Discord](https://discord.gg/qUvrXHP9PU) or email: `usamasq@gmail.com`
 
 **What's collected:**
 
@@ -122,23 +122,24 @@ cd AutoSolve
 ### Project Structure
 
 ```
-AutoSolve/
-├── __init__.py              # Addon registration
-├── blender_manifest.toml    # Extension manifest
-├── autosolve/
-│   ├── operators.py         # Main operators (Analyze & Solve)
-│   ├── properties.py        # Scene properties
-│   ├── ui.py                # N-Panel interface
-│   └── tracker/             # Core tracking engine
-│       ├── smart_tracker.py      # Smart tracking with adaptive learning
-│       ├── blender_tracker.py    # Blender API wrapper
-│       ├── settings_manager.py   # Settings presets and management
-│       └── learning/             # ML and learning components
-│           ├── session_recorder.py      # Session telemetry
-│           ├── settings_predictor.py    # Settings prediction
-│           ├── track_quality_predictor.py # Track quality estimation
-│           ├── failure_diagnostics.py   # Failure analysis
-│           └── pretrained_model.json    # Bundled defaults
+autosolve/
+├── __init__.py          # Package registration
+├── operators.py         # Main operators (Analyze & Solve, training tools)
+├── properties.py        # Scene properties and settings
+├── ui.py               # N-Panel UI in Movie Clip Editor
+└── tracker/             # Core tracking engine
+    ├── smart_tracker.py      # Main tracking orchestrator with learning
+    ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
+    ├── validation.py         # ValidationMixin - pre-solve validation
+    ├── filtering.py          # FilteringMixin - track cleanup methods
+    ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
+    ├── utils.py              # Utility functions (get_region, etc.)
+    └── learning/             # Learning components
+        ├── session_recorder.py        # Session telemetry collection
+        ├── settings_predictor.py      # Optimal settings prediction
+        ├── behavior_recorder.py       # User behavior recording
+        ├── failure_diagnostics.py     # Failure analysis & fixes
+        └── pretrained_model.json      # Bundled community defaults
 ```
 
 ### Key Files to Understand
@@ -201,8 +202,6 @@ Notes: Required 2 retries, edges struggled
 ### Submit Data
 
 ### Submit Data
-
-**Discord:** [Join our community](https://discord.gg/qUvrXHP9PU)
 
 Please refer to **[CONTRIBUTING_DATA.md](CONTRIBUTING_DATA.md)** for:
 
