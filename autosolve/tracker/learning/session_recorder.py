@@ -235,7 +235,8 @@ class SessionRecorder:
             )
             
             return asdict(intrinsics)
-        except (AttributeError, TypeError) as e:
+            return asdict(intrinsics)
+        except (AttributeError, TypeError, ReferenceError) as e:
             print(f"AutoSolve: Error extracting camera intrinsics: {e}")
             return asdict(CameraIntrinsics())  # Return defaults
     
@@ -389,7 +390,8 @@ class SessionRecorder:
                 )
             
                 self.current_session.tracks.append(asdict(telemetry))
-            except (AttributeError, TypeError, ValueError, ZeroDivisionError) as e:
+                self.current_session.tracks.append(asdict(telemetry))
+            except (AttributeError, TypeError, ValueError, ZeroDivisionError, ReferenceError) as e:
                 # Skip tracks with invalid data
                 continue
         

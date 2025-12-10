@@ -99,15 +99,19 @@ class UserEditRecorder:
     
     def start_monitoring(self):
         """Take initial snapshot after AutoSolve completes."""
-        if not self.clip or not self.clip.tracking:
-            return
-        
-        self.initial_snapshot = self._take_snapshot()
-        self.start_time = datetime.now()
-        self.is_monitoring = True
-        self.session_id = self.start_time.strftime("%Y%m%d_%H%M%S")
-        
-        print(f"AutoSolve: Started monitoring edits ({len(self.initial_snapshot)} tracks)")
+        try:
+            if not self.clip or not self.clip.tracking:
+                return
+            
+            self.initial_snapshot = self._take_snapshot()
+            self.start_time = datetime.now()
+            self.is_monitoring = True
+            self.session_id = self.start_time.strftime("%Y%m%d_%H%M%S")
+            
+            print(f"AutoSolve: Started monitoring edits ({len(self.initial_snapshot)} tracks)")
+        except (ReferenceError, AttributeError):
+            print("AutoSolve: Failed to start edit monitoring - MovieClip invalid")
+            self.is_monitoring = False
     
     def stop_monitoring(self) -> Optional[EditSession]:
         """

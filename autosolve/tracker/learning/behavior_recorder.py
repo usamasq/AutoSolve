@@ -228,36 +228,46 @@ class BehaviorRecorder:
     
     def _snapshot_tracks(self) -> Dict[str, Dict]:
         """Capture current state of all tracks with marker positions."""
-        if not self.clip or not self.clip.tracking:
+        try:
+            # Check if clip is valid (handle deleted/invalidated pointer)
+            if not self.clip:
+                return {}
+            
+            # Accessing properties will raise ReferenceError if StructRNA is gone
+            if not self.clip.tracking:
+                return {}
+                
+            tracks = {}
+            for track in self.clip.tracking.tracks:
+                markers = {}
+                avg_x, avg_y = 0.0, 0.0
+                count = 0
+                
+                for marker in track.markers:
+                    if not marker.mute:
+                        markers[marker.frame] = (marker.co.x, marker.co.y)
+                        avg_x += marker.co.x
+                        avg_y += marker.co.y
+                        count += 1
+                
+                if count > 0:
+                    avg_x /= count
+                    avg_y /= count
+                
+                tracks[track.name] = {
+                    'region': get_region(avg_x, avg_y),
+                    'lifespan': len(markers),
+                    'has_bundle': track.has_bundle,
+                    'error': track.average_error if track.has_bundle else 0.0,
+                    'hidden': track.hide,
+                    'markers': markers
+                }
+            
+            return tracks
+            
+        except (ReferenceError, AttributeError):
+            # Clip was removed or invalidated
             return {}
-        
-        tracks = {}
-        for track in self.clip.tracking.tracks:
-            markers = {}
-            avg_x, avg_y = 0.0, 0.0
-            count = 0
-            
-            for marker in track.markers:
-                if not marker.mute:
-                    markers[marker.frame] = (marker.co.x, marker.co.y)
-                    avg_x += marker.co.x
-                    avg_y += marker.co.y
-                    count += 1
-            
-            if count > 0:
-                avg_x /= count
-                avg_y /= count
-            
-            tracks[track.name] = {
-                'region': get_region(avg_x, avg_y),
-                'lifespan': len(markers),
-                'has_bundle': track.has_bundle,
-                'error': track.average_error if track.has_bundle else 0.0,
-                'hidden': track.hide,
-                'markers': markers
-            }
-        
-        return tracks
     
     def _find_deletions(self, before: Dict, after: Dict) -> List[TrackDeletion]:
         """Find tracks that were deleted by user."""
@@ -290,37 +300,48 @@ class BehaviorRecorder:
     
     def _find_refinements(self, before: Dict, after: Dict) -> List[MarkerRefinement]:
         """Find markers that were repositioned by user."""
-        refinements = []
-        
-        for name, before_data in before.items():
-            if name not in after:
-                continue
+        try:
+            if not self.clip:
+                return []
+                
+            refinements = []
             
-            after_data = after[name]
-            before_markers = before_data['markers']
-            after_markers = after_data['markers']
+            # Cache clip size to avoid repeated potential access issues
+            width = self.clip.size[0]
+            height = self.clip.size[1]
             
-            # Check each marker that exists in both
-            for frame, (bx, by) in before_markers.items():
-                if frame in after_markers:
-                    ax, ay = after_markers[frame]
-                    
-                    # Calculate displacement in pixels
-                    dx = (ax - bx) * self.clip.size[0]
-                    dy = (ay - by) * self.clip.size[1]
-                    displacement = (dx**2 + dy**2) ** 0.5
-                    
-                    # Only record significant refinements (> 0.5 pixels)
-                    if displacement > 0.5:
-                        refinements.append(MarkerRefinement(
-                            track_name=name,
-                            frame=frame,
-                            old_position=(bx, by),
-                            new_position=(ax, ay),
-                            displacement_px=round(displacement, 2)
-                        ))
-        
-        return refinements
+            for name, before_data in before.items():
+                if name not in after:
+                    continue
+                
+                after_data = after[name]
+                before_markers = before_data['markers']
+                after_markers = after_data['markers']
+                
+                # Check each marker that exists in both
+                for frame, (bx, by) in before_markers.items():
+                    if frame in after_markers:
+                        ax, ay = after_markers[frame]
+                        
+                        # Calculate displacement in pixels
+                        dx = (ax - bx) * width
+                        dy = (ay - by) * height
+                        displacement = (dx**2 + dy**2) ** 0.5
+                        
+                        # Only record significant refinements (> 0.5 pixels)
+                        if displacement > 0.5:
+                            refinements.append(MarkerRefinement(
+                                track_name=name,
+                                frame=frame,
+                                old_position=(bx, by),
+                                new_position=(ax, ay),
+                                displacement_px=round(displacement, 2)
+                            ))
+            
+            return refinements
+            
+        except (ReferenceError, AttributeError):
+            return []
     
     def _infer_deletion_reason(self, track_data: Dict) -> str:
         """Infer why user deleted this track."""
