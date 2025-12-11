@@ -152,6 +152,23 @@ class SessionData:
         'track_distribution_score': 0.0,
         'warnings': [],
     })
+    
+    # ML Enhancement v2: Clip fingerprint for per-clip learning
+    clip_fingerprint: str = ""
+    
+    # ML Enhancement v2: Motion classification for sub-classification
+    motion_class: str = "MEDIUM"  # LOW, MEDIUM, HIGH
+    
+    # ML Enhancement v2: Visual features from feature_extractor
+    visual_features: Dict = field(default_factory=dict)
+    
+    # ML Enhancement v2: Track failure logging
+    # Format: [{"track_name": str, "frame": int, "position": [x, y], "reason": str}, ...]
+    track_failures: List[Dict] = field(default_factory=list)
+    
+    # ML Enhancement v2: Flow histograms for NN
+    flow_direction_histogram: List[float] = field(default_factory=lambda: [0.0] * 8)
+    flow_magnitude_histogram: List[float] = field(default_factory=lambda: [0.0] * 5)
 
 
 class SessionRecorder:
@@ -234,7 +251,6 @@ class SessionRecorder:
                 brown_p2=cam.brown_p2,
             )
             
-            return asdict(intrinsics)
             return asdict(intrinsics)
         except (AttributeError, TypeError, ReferenceError) as e:
             print(f"AutoSolve: Error extracting camera intrinsics: {e}")
@@ -390,7 +406,6 @@ class SessionRecorder:
                 )
             
                 self.current_session.tracks.append(asdict(telemetry))
-                self.current_session.tracks.append(asdict(telemetry))
             except (AttributeError, TypeError, ValueError, ZeroDivisionError, ReferenceError) as e:
                 # Skip tracks with invalid data
                 continue
@@ -422,6 +437,12 @@ class SessionRecorder:
             region_stats[region]['avg_lifespan'] = old_avg + (new_lifespan - old_avg) / count
         
         self.current_session.region_stats = region_stats
+        
+        # Update summary fields from recorded tracks
+        self.current_session.total_tracks = len(self.current_session.tracks)
+        self.current_session.successful_tracks = sum(
+            1 for t in self.current_session.tracks if t.get('contributed_to_solve', False)
+        )
         
         # Compute optical flow descriptors for ML
         self._compute_optical_flow(all_velocities, all_motion_vectors, tracking)
@@ -529,6 +550,88 @@ class SessionRecorder:
         self.current_session.adaptation_history = adaptation_summary.get('adaptation_history', [])
         self.current_session.region_confidence = adaptation_summary.get('region_confidence', {})
     
+    def record_track_failure(self, track_name: str, frame: int, x: float, y: float, reason: str = "LOST"):
+        """
+        Record when and where a track failed.
+        
+        Args:
+            track_name: Name of the failed track
+            frame: Frame number where track lost lock
+            x, y: Normalized position of track at failure
+            reason: Failure reason (LOST, DRIFT, BLUR, OCCLUSION)
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.track_failures.append({
+            'track_name': track_name,
+            'frame': frame,
+            'position': [round(x, 4), round(y, 4)],
+            'reason': reason,
+        })
+    
+    def record_visual_features(self, features: Dict):
+        """
+        Record visual features from FeatureExtractor.
+        
+        Args:
+            features: Dict from FeatureExtractor.to_dict()
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.visual_features = features
+        
+        # Also extract to top-level fields for easy access
+        if 'clip_fingerprint' in features:
+            self.current_session.clip_fingerprint = features['clip_fingerprint']
+        if 'motion_class' in features:
+            self.current_session.motion_class = features['motion_class']
+        if 'flow_direction_histogram' in features:
+            self.current_session.flow_direction_histogram = features['flow_direction_histogram']
+        if 'flow_magnitude_histogram' in features:
+            self.current_session.flow_magnitude_histogram = features['flow_magnitude_histogram']
+    
+    def record_clip_fingerprint(self, fingerprint: str):
+        """
+        Record clip fingerprint for per-clip learning.
+        
+        Args:
+            fingerprint: Hash string identifying this exact clip
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.clip_fingerprint = fingerprint
+    
+    def record_motion_class(self, motion_class: str):
+        """
+        Record motion classification for sub-classification.
+        
+        Args:
+            motion_class: One of LOW, MEDIUM, HIGH
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.motion_class = motion_class
+    
+    def record_flow_histograms(self, direction_histogram: List[float], magnitude_histogram: List[float]):
+        """
+        Record optical flow histograms for NN training.
+        
+        Args:
+            direction_histogram: 8-bin histogram of flow directions
+            magnitude_histogram: 5-bin histogram of flow magnitudes
+        """
+        if not self.current_session:
+            return
+        
+        if len(direction_histogram) == 8:
+            self.current_session.flow_direction_histogram = direction_histogram
+        if len(magnitude_histogram) == 5:
+            self.current_session.flow_magnitude_histogram = magnitude_histogram
+    
     def record_frame_sample(self, frame: int, tracking, prev_active_count: int = 0):
         """
         Record per-frame statistics for ML temporal analysis.
@@ -601,7 +704,7 @@ class SessionRecorder:
         Save user edit session data to JSON file.
         
         Args:
-            edit_session: EditSession dataclass from UserEditRecorder
+            edit_session: BehaviorData dataclass from BehaviorRecorder
         """
         from dataclasses import asdict
         

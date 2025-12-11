@@ -313,6 +313,16 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         from .learning.session_recorder import SessionRecorder
         self.recorder = SessionRecorder()
         
+        # Feature extractor for per-clip learning and motion classification
+        from .learning.feature_extractor import FeatureExtractor
+        self.feature_extractor = FeatureExtractor(clip)
+        
+        # Extract clip fingerprint immediately (cheap operation)
+        self.clip_fingerprint = self.feature_extractor._generate_fingerprint()
+        # Sync to feature_extractor for to_dict() export
+        self.feature_extractor.features.clip_fingerprint = self.clip_fingerprint
+        self.motion_class: Optional[str] = None  # Set after motion probe
+        
         # Current session state
         self.resolution_class = self._classify_footage()
         self.footage_class = f"{self.resolution_class}_{footage_type}"
@@ -472,72 +482,31 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     def _load_initial_settings(self):
         """
-        Load initial settings using hybrid approach with footage type.
+        Load initial settings using the unified SettingsPredictor.
         
         Priority order:
-        1. Resolution-based defaults (HD_30fps, 4K_24fps, etc.)
-        2. Footage type adjustments (DRONE, HANDHELD, etc.) - hints only
-        3. Learned settings from local model (overrides if 2+ sessions)
-        4. Learned dead zones from actual tracking data
-        5. Robust mode adjustments (always on top if enabled)
-        
-        Dead zones from footage type are just HINTS - actual dead zones
-        are learned from tracking data and override predictions.
+        1. predict_settings (handles resolution, footage type, learned HER, motion, behavior)
+        2. Quality preset multipliers (FAST/BALANCED/QUALITY)
+        3. Robust mode adjustments (if enabled)
+        4. Tripod mode adjustments (if enabled)
+        5. Learned dead zones from tracking data
         """
-        # Step 1: Start with resolution-based defaults
-        if self.resolution_class in PRETRAINED_DEFAULTS:
-            self.current_settings = PRETRAINED_DEFAULTS[self.resolution_class].copy()
-            print(f"AutoSolve: Base settings for {self.resolution_class}")
-        else:
-            self.current_settings = TIERED_SETTINGS['balanced'].copy()
-            print(f"AutoSolve: Using balanced defaults")
+        # Step 1: Use predict_settings as the PRIMARY source
+        # This handles: resolution defaults, footage type, learned HER settings, motion, behavior
+        # Also uses per-clip fingerprinting and motion sub-classification (if available)
+        self.current_settings = self.predictor.predict_settings(
+            self.clip,
+            robust_mode=False,  # We apply robust mode separately in step 3
+            footage_type=self.footage_type,
+            motion_class=self.motion_class,  # May be None on first load, set after motion probe
+            clip_fingerprint=self.clip_fingerprint
+        )
+        print(f"AutoSolve: Predicted settings for {self.footage_class}: "
+              f"pattern={self.current_settings.get('pattern_size')}px, "
+              f"search={self.current_settings.get('search_size')}px, "
+              f"corr={self.current_settings.get('correlation', 0.7):.2f}")
         
-        # Step 2: Apply footage type adjustments (HINTS, not hard rules)
-        predicted_dead_zones = set()
-        if self.footage_type != 'AUTO' and self.footage_type in FOOTAGE_TYPE_ADJUSTMENTS:
-            adjustments = FOOTAGE_TYPE_ADJUSTMENTS[self.footage_type]
-            
-            # Apply multipliers
-            if 'pattern_size_mult' in adjustments:
-                self.current_settings['pattern_size'] = int(
-                    self.current_settings.get('pattern_size', 15) * adjustments['pattern_size_mult']
-                )
-            if 'search_size_mult' in adjustments:
-                self.current_settings['search_size'] = int(
-                    self.current_settings.get('search_size', 71) * adjustments['search_size_mult']
-                )
-            
-            # Apply direct overrides
-            for key in ['correlation', 'threshold', 'motion_model']:
-                if key in adjustments:
-                    self.current_settings[key] = adjustments[key]
-            
-            # Store predicted dead zones (just hints, will be verified)
-            if 'dead_zones' in adjustments:
-                predicted_dead_zones = set(adjustments['dead_zones'])
-            
-            print(f"AutoSolve: Applied {self.footage_type} adjustments")
-        
-        # Step 3: Check for learned settings (overrides if available)
-        local_settings = self.predictor.get_settings_for_class(self.footage_class)
-        if local_settings:
-            self.current_settings = local_settings.copy()
-            print(f"AutoSolve: Using LEARNED settings for {self.footage_class}")
-        
-        # Step 4: Get LEARNED dead zones (overrides predictions if we have data)
-        learned_dead_zones = self.predictor.get_dead_zones_for_class(self.footage_class)
-        if learned_dead_zones:
-            # Use learned data, ignore predictions
-            self.known_dead_zones = learned_dead_zones
-            print(f"AutoSolve: Using LEARNED dead zones: {', '.join(learned_dead_zones)}")
-        else:
-            # No learned data yet, use predictions as hints (but don't block)
-            # Note: These are just informational, we don't block detection
-            self.known_dead_zones = set()  # Don't use predictions to block
-            if predicted_dead_zones:
-                print(f"AutoSolve: Predicted dead zones (will verify): {', '.join(predicted_dead_zones)}")
-        
-        # Step 5: Apply quality preset multipliers
+        # Step 2: Apply quality preset multipliers
         quality_mult = self.quality_config
         self.current_settings['pattern_size'] = int(
             self.current_settings.get('pattern_size', 15) * quality_mult.get('pattern_size_mult', 1.0)
@@ -559,19 +528,15 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     quality_mult['correlation']
                 )
         
+        # Apply motion_model from quality preset
+        if 'motion_model' in quality_mult:
+            self.current_settings['motion_model'] = quality_mult['motion_model']
+        
         print(f"AutoSolve: After quality preset ({self.quality_preset}): "
               f"pattern={self.current_settings.get('pattern_size')}px, "
               f"search={self.current_settings.get('search_size')}px")
         
-        # Apply motion_model from quality preset (if not already set by footage type)
-        if 'motion_model' in quality_mult and 'motion_model' not in self.current_settings:
-            self.current_settings['motion_model'] = quality_mult['motion_model']
-        elif 'motion_model' in quality_mult:
-            # Quality preset can upgrade motion model (e.g., LocRot -> LocRotScale)
-            self.current_settings['motion_model'] = quality_mult['motion_model']
-        
-
-        # Step 6: Apply robust mode (more aggressive settings)
+        # Step 3: Apply robust mode (more aggressive settings)
         if self.robust_mode:
             self.current_settings['pattern_size'] = int(self.current_settings.get('pattern_size', 15) * 1.4)
             self.current_settings['search_size'] = int(self.current_settings.get('search_size', 71) * 1.4)
@@ -580,7 +545,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self.current_settings['motion_model'] = 'Affine'
             print(f"AutoSolve: Robust mode - enlarged search areas, lower thresholds")
         
-        # Step 7: Apply tripod mode optimizations
+        # Step 4: Apply tripod mode optimizations
         if self.tripod_mode:
             # Tripod shots: camera rotates on axis, minimal parallax
             # Use simpler motion model (Loc only, no rotation in-plane)
@@ -589,10 +554,15 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self.current_settings['correlation'] = min(0.80, 
                 self.current_settings.get('correlation', 0.7) + 0.08)
             # Prioritize center regions (tripod = pan/tilt from center)
-            # Edge regions less reliable for tripod shots
             tripod_dead_zones = {'top-left', 'top-right', 'bottom-left', 'bottom-right'}
             self.known_dead_zones.update(tripod_dead_zones)
             print(f"AutoSolve: Tripod mode - Loc model, tighter correlation, avoiding corners")
+        
+        # Step 5: Get LEARNED dead zones
+        learned_dead_zones = self.predictor.get_dead_zones_for_class(self.footage_class)
+        if learned_dead_zones:
+            self.known_dead_zones = learned_dead_zones
+            print(f"AutoSolve: Using LEARNED dead zones: {', '.join(learned_dead_zones)}")
 
     def load_learning(self, clip_name: str):
         """
@@ -1873,6 +1843,17 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         if use_cached_probe and hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
             probe_results = self.cached_motion_probe
             print(f"AutoSolve: Using cached probe (motion: {probe_results.get('motion_class')})")
+            
+            # Fix: Ensure motion class is set on instance
+            self.motion_class = probe_results.get('motion_class', 'MEDIUM')
+            
+            # Fix: Extract visual features even when using cache (thumbnails aren't cached)
+            try:
+                if hasattr(self, 'feature_extractor'):
+                    self.feature_extractor.extract_all(tracking_data=probe_results)
+                    self.feature_extractor.features.motion_class = self.motion_class
+            except Exception as e:
+                print(f"AutoSolve: Error extracting features from cache: {e}")
         else:
             probe_results = self._run_motion_probe()
             self.cached_motion_probe = probe_results
@@ -2109,7 +2090,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # For low/medium motion and no robust mode, skip expensive full probe
         if quick_class != 'HIGH' and not self.robust_mode:
             print(f"AutoSolve: Quick motion estimate: {quick_class} (skipping full probe)")
-            return {
+            # Set motion_class for per-clip learning
+            self.motion_class = quick_class
+            quick_result = {
                 'success': True,
                 'motion_class': quick_class,
                 'texture_class': 'MEDIUM',
@@ -2118,6 +2101,8 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 'region_success': {},
                 'probe_type': 'quick_estimate'
             }
+            self.cached_motion_probe = quick_result.copy()
+            return quick_result
         
         print(f"AutoSolve: Running full motion probe (quick estimate: {quick_class})")
         
@@ -2264,6 +2249,21 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Cache the probe results for session recording
         self.cached_motion_probe = result.copy()
+        
+        # Set motion_class for per-clip learning and sub-classification
+        self.motion_class = result.get('motion_class', 'MEDIUM')
+        print(f"AutoSolve: Motion class set to {self.motion_class}")
+        
+        # Extract visual features for ML training data
+        try:
+            if hasattr(self, 'feature_extractor'):
+                # Use extract_all() to populate all visual features including thumbnails
+                self.feature_extractor.extract_all(tracking_data=result)
+                # Sync motion class to feature extractor
+                self.feature_extractor.features.motion_class = self.motion_class
+                print(f"AutoSolve: Visual features extracted")
+        except Exception as e:
+            print(f"AutoSolve: Visual feature extraction skipped: {e}")
         
         # Clear probe tracks
         self.clear_tracks()
@@ -3228,6 +3228,15 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             bundle_count=bundle_count  # For HER reward computation
         )
         print(f"AutoSolve: Updated model - success={success}, error={solve_error:.2f}")
+        
+        # Save clip-specific settings for per-clip learning
+        if hasattr(self, 'clip_fingerprint') and self.clip_fingerprint:
+            self.predictor.save_clip_specific_settings(
+                self.clip_fingerprint, 
+                self.current_settings, 
+                success, 
+                solve_error
+            )
             
         # Record session data
         if hasattr(self, 'recorder') and self.recorder:
@@ -3239,13 +3248,23 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 # 2. Record Motion Probe Results (if available)
                 if hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
                     self.recorder.record_motion_probe(self.cached_motion_probe)
+                
+                # 3. Record Clip fingerprint and motion class
+                if hasattr(self, 'clip_fingerprint') and self.clip_fingerprint:
+                    self.recorder.record_clip_fingerprint(self.clip_fingerprint)
+                if hasattr(self, 'motion_class') and self.motion_class:
+                    self.recorder.record_motion_class(self.motion_class)
+                
+                # 4. Record Visual Features (if extracted)
+                if hasattr(self, 'feature_extractor') and self.feature_extractor:
+                    self.recorder.record_visual_features(self.feature_extractor.to_dict())
                     
-                # 3. Record Adaptation History
+                # 5. Record Adaptation History
                 if hasattr(self, 'adaptation_history') and self.adaptation_history:
                     summary = self.get_adaptation_summary()
                     self.recorder.record_adaptation_history(summary)
                 
-                # 4. Record Tracks & Solve metrics
+                # 6. Record Tracks & Solve metrics
                 self.recorder.record_tracks(self.tracking)
                 self.recorder.finalize_session(
                     success=success,

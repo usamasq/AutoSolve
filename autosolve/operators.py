@@ -32,7 +32,6 @@ class TrackingState:
 _state = TrackingState()
 
 # Global recorders (persist between solves to capture user behavior)
-_edit_recorder = None
 _behavior_recorder = None
 _last_solve_settings = None
 _last_solve_error = None
@@ -60,7 +59,9 @@ class AUTOSOLVE_OT_run_solve(Operator):
     
     @classmethod
     def poll(cls, context):
-        if context.edit_movieclip is None:
+        # Safe access to edit_movieclip (it may not exist in some contexts)
+        clip = getattr(context, "edit_movieclip", None)
+        if clip is None:
             return False
         return not context.scene.autosolve.is_solving
     
@@ -83,22 +84,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
         # ═══════════════════════════════════════════════════════════════
         # BEHAVIOR LEARNING: Capture and learn from user edits since last solve
         # ═══════════════════════════════════════════════════════════════
-        global _edit_recorder, _behavior_recorder
+        global _behavior_recorder
         global _last_solve_settings, _last_solve_error, _last_solve_footage_class
         
         if settings.record_edits:
-            # 1. Stop edit monitoring and save
-            if _edit_recorder:
-                edit_session = _edit_recorder.stop_monitoring()
-                if edit_session:
-                    from .tracker.learning.session_recorder import SessionRecorder
-                    try:
-                        recorder = SessionRecorder()
-                        recorder._save_edit_session(edit_session)
-                    except Exception as e:
-                        print(f"AutoSolve: Failed to save edit session: {e}")
-            
-            # 2. Stop behavior monitoring and STORE for later
             #    (Don't learn yet - we need the new solve's error to compare)
             if _behavior_recorder and _last_solve_footage_class:
                 # Get current settings (user may have changed them)
@@ -126,7 +115,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
         
         # Reset recorders (but keep pending behavior)
         _behavior_recorder = None
-        _edit_recorder = None
         _last_solve_settings = None
         _last_solve_error = None
         
@@ -670,8 +658,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
         return {'RUNNING_MODAL'}
     
     def _finish(self, context, success=False):
-        # Start behavior and edit monitoring after successful solve
-        global _edit_recorder, _behavior_recorder
+        # Start behavior monitoring after successful solve
+        global _behavior_recorder
         global _last_solve_settings, _last_solve_error, _last_solve_footage_class
         global _pending_behavior, _pending_behavior_footage_class
         
@@ -728,12 +716,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
             from datetime import datetime
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Start edit recorder
-            from .tracker.learning.user_edit_recorder import UserEditRecorder
-            _edit_recorder = UserEditRecorder(clip)
-            _edit_recorder.start_monitoring()
-            
-            # Start behavior recorder
+            # Start behavior recorder (captures settings changes, track deletions, etc.)
             from .tracker.learning.behavior_recorder import BehaviorRecorder
             _behavior_recorder = BehaviorRecorder()
             _behavior_recorder.start_monitoring(
@@ -743,7 +726,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 session_id=session_id
             )
             
-            print(f"AutoSolve: Monitoring for user edits and behavior changes")
+            print(f"AutoSolve: Monitoring for user behavior changes")
         
         self._cleanup(context)
         return {'FINISHED'}
@@ -780,9 +763,11 @@ class AUTOSOLVE_OT_setup_scene(Operator):
     
     @classmethod
     def poll(cls, context):
-        if context.edit_movieclip is None:
+        # Safe access to edit_movieclip
+        clip = getattr(context, "edit_movieclip", None)
+        if clip is None:
             return False
-        return context.edit_movieclip.tracking.reconstruction.is_valid
+        return clip.tracking.reconstruction.is_valid
     
     def invoke(self, context, event):
         clip = context.edit_movieclip
@@ -821,20 +806,14 @@ class AUTOSOLVE_OT_setup_scene(Operator):
             self.report({'INFO'}, "Select 3+ floor tracks, then click Setup again")
             return {'CANCELLED'}
         
-        # Auto mode
-        clip = context.edit_movieclip
-        tracking = clip.tracking
-        
-        # Auto-detect floor tracks
-        floor_tracks = self._auto_detect_floor(tracking)
-        if len(floor_tracks) >= 3:
-            return self._setup_with_floor(context, floor_tracks)
-        else:
-            # Not enough tracks for floor, just setup without
+        # Auto mode - use standard Blender setup (robust and proven)
+        try:
             bpy.ops.clip.setup_tracking_scene()
-            self._apply_smoothing(context)
-            self.report({'WARNING'}, "Scene set up (couldn't detect floor)")
+            self.report({'INFO'}, "Scene set up successfully")
             return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Setup failed: {str(e)}")
+            return {'CANCELLED'}
     
     def _setup_with_floor(self, context, floor_tracks):
         """Setup scene with floor alignment using given tracks."""
@@ -848,93 +827,30 @@ class AUTOSOLVE_OT_setup_scene(Operator):
             track.select = True
         
         try:
-            # Set floor plane first - this affects the reconstruction
+            # Set floor plane first - this affects the reconstruction orientation
             bpy.ops.clip.set_plane(plane='FLOOR')
-            print(f"AutoSolve: Floor set using {len(floor_tracks)} tracks")
+            print(f"AutoSolve: Floor plane set using 3 tracks")
         except Exception as e:
             print(f"AutoSolve: set_plane failed: {e}")
         
-        # Step 2: Now setup scene - camera will be created with correct orientation
-        bpy.ops.clip.setup_tracking_scene()
+        # Step 2: Select ALL floor tracks and set origin at their center
+        for track in tracking.tracks:
+            track.select = False
+        for track in floor_tracks:
+            track.select = True
         
-        # Step 3: Apply smoothing
-        self._apply_smoothing(context)
+        try:
+            # set_origin places origin at median of selected bundles
+            bpy.ops.clip.set_origin()
+            print(f"AutoSolve: Origin set to center of {len(floor_tracks)} floor tracks")
+        except Exception as e:
+            print(f"AutoSolve: set_origin failed: {e}")
+        
+        # Step 3: Now setup scene - camera will be created with correct orientation
+        bpy.ops.clip.setup_tracking_scene()
         
         self.report({'INFO'}, "Scene set up with floor alignment")
         return {'FINISHED'}
-    
-    def _apply_smoothing(self, context):
-        """Apply camera smoothing if enabled."""
-        settings = context.scene.autosolve
-        
-        if settings.smooth_camera and context.scene.camera:
-            try:
-                from .tracker.smoothing import smooth_camera_fcurves
-                
-                camera = context.scene.camera
-                if camera.animation_data and camera.animation_data.action:
-                    strength = settings.camera_smooth_factor
-                    cutoff = 2.0 - (strength * 1.5)
-                    cutoff = max(0.1, min(2.0, cutoff))
-                    
-                    if smooth_camera_fcurves(camera, cutoff):
-                        print(f"AutoSolve: Camera smoothed (strength={strength:.2f})")
-            except Exception as e:
-                print(f"AutoSolve: Camera smoothing failed: {e}")
-    
-    def _auto_detect_floor(self, tracking):
-        """
-        Auto-detect tracks most likely to be on the floor.
-        
-        Heuristics:
-        1. Tracks with lowest Z coordinate (assuming Z-up)
-        2. Tracks in the lower portion of the screen
-        3. Tracks with similar Z values (coplanar)
-        """
-        candidates = []
-        
-        for track in tracking.tracks:
-            if not track.has_bundle:
-                continue
-            
-            bundle = track.bundle
-            z = bundle[2]
-            
-            # Get average screen Y position
-            marker_count = 0
-            screen_y_sum = 0.0
-            for marker in track.markers:
-                if not marker.mute:
-                    screen_y_sum += marker.co[1]
-                    marker_count += 1
-            
-            avg_screen_y = screen_y_sum / marker_count if marker_count > 0 else 0.5
-            
-            # Score: lower Z and lower screen position = more likely floor
-            # Invert screen_y because lower on screen = lower Y value
-            score = z - (avg_screen_y * 2.0)  # Weight screen position
-            
-            candidates.append((track, score, z))
-        
-        # Sort by score (lowest = best floor candidate)
-        candidates.sort(key=lambda x: x[1])
-        
-        # Return tracks, filtering for similar Z values (coplanar)
-        if not candidates:
-            return []
-        
-        floor_tracks = [candidates[0][0]]
-        reference_z = candidates[0][2]
-        
-        for track, score, z in candidates[1:]:
-            # Accept tracks within 0.5 units of reference (reasonably coplanar)
-            if abs(z - reference_z) < 0.5:
-                floor_tracks.append(track)
-            if len(floor_tracks) >= 5:  # Get up to 5 floor tracks
-                break
-        
-        return floor_tracks
-
 
 
 class AUTOSOLVE_OT_contribute_data(Operator):
@@ -1355,9 +1271,11 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
     
     @classmethod
     def poll(cls, context):
-        if context.edit_movieclip is None:
+        # Safe access to edit_movieclip
+        clip = getattr(context, "edit_movieclip", None)
+        if clip is None:
             return False
-        return len(context.edit_movieclip.tracking.tracks) > 0
+        return len(clip.tracking.tracks) > 0
     
     def execute(self, context):
         clip = context.edit_movieclip
@@ -1381,51 +1299,8 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
             return {'CANCELLED'}
 
 
-class AUTOSOLVE_OT_smooth_camera(Operator):
-    """Smooth solved camera motion."""
-    
-    bl_idname = "autosolve.smooth_camera"
-    bl_label = "Smooth Camera"
-    bl_description = "Apply Butterworth filter to camera animation curves"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    @classmethod
-    def poll(cls, context):
-        # Check for valid solve and scene camera with animation
-        if context.edit_movieclip is None:
-            return False
-        if not context.edit_movieclip.tracking.reconstruction.is_valid:
-            return False
-        # Check if scene camera has animation
-        if context.scene.camera and context.scene.camera.animation_data:
-            return True
-        # Or check for any animated cameras
-        for obj in bpy.data.objects:
-            if obj.type == 'CAMERA' and obj.animation_data and obj.animation_data.action:
-                return True
-        return False
-    
-    def execute(self, context):
-        settings = context.scene.autosolve
-        
-        try:
-            from .tracker.smoothing import smooth_solved_camera
-            
-            strength = settings.camera_smooth_factor
-            success = smooth_solved_camera(strength)
-            
-            if success:
-                self.report({'INFO'}, f"Camera motion smoothed (strength={strength:.2f})")
-            else:
-                self.report({'WARNING'}, "Could not find camera animation to smooth")
-            
-            return {'FINISHED'}
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.report({'ERROR'}, f"Smoothing failed: {str(e)}")
-            return {'CANCELLED'}
+
+
 
 
 # Registration
@@ -1438,7 +1313,8 @@ classes = (
     AUTOSOLVE_OT_reset_training_data,
     AUTOSOLVE_OT_view_training_stats,
     AUTOSOLVE_OT_smooth_tracks,
-    AUTOSOLVE_OT_smooth_camera,
+
+
 )
 
 

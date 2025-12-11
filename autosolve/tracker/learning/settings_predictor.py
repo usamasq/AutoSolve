@@ -153,21 +153,50 @@ class SettingsPredictor:
     
     def predict_settings(self, clip: bpy.types.MovieClip, 
                          robust_mode: bool = False,
-                         footage_type: str = 'AUTO') -> Dict:
+                         footage_type: str = 'AUTO',
+                         motion_class: str = None,
+                         clip_fingerprint: str = None) -> Dict:
         """
         Predict optimal settings for the given clip.
         
-        Uses historical data if available, otherwise falls back to heuristics.
-        Applies footage type adjustments for specialized scenarios.
+        Enhanced with:
+        1. Per-clip fingerprinting (exact clip reuse)
+        2. Motion-based sub-classification (LOW/MEDIUM/HIGH)
+        3. HER weighted prediction
         
         Args:
             clip: The Movie Clip to analyze
             robust_mode: Use more aggressive settings for difficult footage
             footage_type: User-specified footage type (INDOOR, DRONE, etc.)
+            motion_class: Optional motion classification (LOW, MEDIUM, HIGH)
+            clip_fingerprint: Optional clip fingerprint for per-clip lookup
         """
         footage_class = self.classify_footage(clip)
         
-        # Check if we have historical data for this footage class
+        # Priority 1: Check for per-clip learned settings (exact match)
+        if clip_fingerprint:
+            clip_settings = self._get_clip_specific_settings(clip_fingerprint)
+            if clip_settings:
+                print(f"AutoSolve: Using per-clip learned settings (fingerprint: {clip_fingerprint[:8]})")
+                return clip_settings
+        
+        # Priority 2: Check for motion-based sub-classification
+        if motion_class:
+            enhanced_class = f"{footage_class}_{motion_class}_MOTION"
+            if enhanced_class in self.model.get('footage_classes', {}):
+                class_data = self.model['footage_classes'][enhanced_class]
+                if class_data.get('sample_count', 0) >= 1:
+                    settings = self._predict_from_history(class_data, robust_mode)
+                    print(f"AutoSolve: Using motion-enhanced class: {enhanced_class}")
+                    # Apply remaining adjustments and return
+                    if footage_type != 'AUTO':
+                        settings = self._apply_footage_type_adjustment(settings, footage_type)
+                    motion_factor = self._estimate_motion_factor(clip)
+                    settings = self._adjust_for_motion(settings, motion_factor)
+                    settings = self._apply_behavior_adjustments(settings, enhanced_class)
+                    return settings
+        
+        # Priority 3: Check base footage class
         if footage_class in self.model.get('footage_classes', {}):
             class_data = self.model['footage_classes'][footage_class]
             
@@ -191,6 +220,63 @@ class SettingsPredictor:
         settings = self._apply_behavior_adjustments(settings, footage_class)
         
         return settings
+    
+    def _get_clip_specific_settings(self, clip_fingerprint: str) -> Optional[Dict]:
+        """
+        Get settings for a specific clip by fingerprint.
+        
+        Returns the best-performing settings for this exact clip if available.
+        """
+        clip_data = self.model.get('clip_specific', {}).get(clip_fingerprint)
+        if not clip_data:
+            return None
+        
+        # Return best settings if we have them
+        if clip_data.get('best_settings'):
+            return clip_data['best_settings'].copy()
+        
+        return None
+    
+    def save_clip_specific_settings(self, clip_fingerprint: str, settings: Dict, 
+                                     success: bool, solve_error: float):
+        """
+        Save settings for a specific clip by fingerprint.
+        
+        Only saves if this is better than previous attempts.
+        """
+        if 'clip_specific' not in self.model:
+            self.model['clip_specific'] = {}
+        
+        if clip_fingerprint not in self.model['clip_specific']:
+            self.model['clip_specific'][clip_fingerprint] = {
+                'attempts': 0,
+                'best_error': 999.0,
+                'best_settings': None,
+                'last_success': False,
+            }
+        
+        clip_data = self.model['clip_specific'][clip_fingerprint]
+        clip_data['attempts'] += 1
+        clip_data['last_success'] = success
+        
+        # Update best settings if this was better
+        if success and solve_error < clip_data.get('best_error', 999.0):
+            clip_data['best_error'] = solve_error
+            clip_data['best_settings'] = settings.copy()
+            print(f"AutoSolve: Saved best settings for clip (error: {solve_error:.2f}px)")
+        
+        # Limit clip-specific storage to avoid unbounded growth
+        # Keep only last 100 clips
+        if len(self.model['clip_specific']) > 100:
+            # Remove oldest entries (by lowest attempt count)
+            sorted_clips = sorted(
+                self.model['clip_specific'].items(),
+                key=lambda x: x[1].get('attempts', 0)
+            )
+            for fingerprint, _ in sorted_clips[:10]:  # Remove 10 oldest
+                del self.model['clip_specific'][fingerprint]
+        
+        self._save_model()
     
     def _apply_behavior_adjustments(self, settings: Dict, footage_class: str) -> Dict:
         """
@@ -294,9 +380,10 @@ class SettingsPredictor:
         """
         Predict settings from historical data using HER reward-weighted averaging.
         
-        HER Approach:
+        HER Approach + Recency Weighting:
         - High reward experiences → positive weight → pull settings toward them
         - Low reward experiences → used to compute "settings to avoid"
+        - Recent experiences → 2x weight (recency decay factor)
         - Net effect: settings converge to optimal while avoiding known failures
         """
         # Prefer new experiences array, fall back to legacy settings_history
@@ -308,7 +395,7 @@ class SettingsPredictor:
             settings = self.DEFAULT_SETTINGS.copy()
         elif experiences:
             # ═══════════════════════════════════════════════════════════════════
-            # HER REWARD-WEIGHTED PREDICTION
+            # HER REWARD-WEIGHTED PREDICTION WITH RECENCY WEIGHTING
             # ═══════════════════════════════════════════════════════════════════
             weighted_settings = {}
             total_weight = 0
@@ -316,7 +403,12 @@ class SettingsPredictor:
             # Compute settings to avoid from low-reward experiences
             avoid_settings = self._compute_settings_to_avoid(experiences)
             
-            for exp in experiences:
+            # Apply recency weighting: newer experiences (later in list) get higher weight
+            # Decay factor 0.85 means exp[-5] has 44% weight of exp[-1]
+            recency_decay = 0.85
+            num_exp = len(experiences)
+            
+            for idx, exp in enumerate(experiences):
                 reward = exp.get('reward', 0.5)
                 
                 # Only use experiences with reward > 0.3 for positive contribution
@@ -324,8 +416,11 @@ class SettingsPredictor:
                 if reward <= 0.3:
                     continue
                 
-                # Weight by reward (higher reward = more influence)
-                weight = reward ** 2  # Squared to emphasize high-reward experiences
+                # Recency weight: newer = higher (idx closer to num_exp = newer)
+                recency_weight = recency_decay ** (num_exp - 1 - idx)
+                
+                # Weight by reward (higher reward = more influence) AND recency
+                weight = (reward ** 2) * recency_weight
                 total_weight += weight
                 
                 exp_settings = exp.get('settings', {})
@@ -492,27 +587,30 @@ class SettingsPredictor:
         if not session_data:
             return
         
-        # Classify footage
-        res = session_data.get('resolution', (1920, 1080))
-        fps = session_data.get('fps', 24)
-        
-        width = res[0] if isinstance(res, (list, tuple)) else 1920
-        
-        if width >= 3840:
-            res_class = '4K'
-        elif width >= 1920:
-            res_class = 'HD'
-        else:
-            res_class = 'SD'
-        
-        if fps >= 50:
-            fps_class = '60fps'
-        elif fps >= 28:
-            fps_class = '30fps'
-        else:
-            fps_class = '24fps'
-        
-        footage_class = f"{res_class}_{fps_class}"
+        # BUG 1 FIX: Use passed footage_class if available, only compute if not provided
+        footage_class = session_data.get('footage_class')
+        if not footage_class:
+            # Fall back to computing from resolution/fps (for backwards compat)
+            res = session_data.get('resolution', (1920, 1080))
+            fps = session_data.get('fps', 24)
+            
+            width = res[0] if isinstance(res, (list, tuple)) else 1920
+            
+            if width >= 3840:
+                res_class = '4K'
+            elif width >= 1920:
+                res_class = 'HD'
+            else:
+                res_class = 'SD'
+            
+            if fps >= 50:
+                fps_class = '60fps'
+            elif fps >= 28:
+                fps_class = '30fps'
+            else:
+                fps_class = '24fps'
+            
+            footage_class = f"{res_class}_{fps_class}"
         
         # Ensure footage class exists with new schema
         if footage_class not in self.model['footage_classes']:
@@ -772,11 +870,22 @@ class SettingsPredictor:
     # ═══════════════════════════════════════════════════════════════════════════
     
     def get_settings_for_class(self, footage_class: str) -> Optional[Dict]:
-        """Get learned settings for a footage class (LocalLearningModel compat)."""
+        """
+        Get learned settings for a footage class.
+        
+        BUG 2 FIX: Check experiences (HER) and best_settings, not just settings_history.
+        """
         class_data = self.model.get('footage_classes', {}).get(footage_class, {})
-        if class_data.get('settings_history'):
-            # Use weighted prediction logic
+        
+        # Check for HER experiences or legacy settings_history
+        if class_data.get('experiences') or class_data.get('settings_history'):
+            # Use weighted prediction logic (handles both arrays)
             return self._predict_from_history(class_data, False)
+        
+        # Fall back to best_settings (for pretrained model - BUG 3 FIX)
+        if class_data.get('best_settings'):
+            return class_data['best_settings'].copy()
+        
         return None
     
     def get_dead_zones_for_class(self, footage_class: str) -> set:

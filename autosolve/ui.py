@@ -1,10 +1,67 @@
 # SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""AutoSolve UI panels - Professional layout with phase-based workflow."""
+"""AutoSolve UI panels - Beginner-friendly phase-based workflow."""
 
 import bpy
 from bpy.types import Panel
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HELPER: Determine current workflow phase
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_workflow_phase(context):
+    """
+    Determine current phase:
+    - 'TRACK': No valid solve yet, or currently solving/retrying
+    - 'SCENE_SETUP': Solve valid, no camera with tracking animation yet
+    - 'REFINE': Camera with tracking animation exists
+    """
+    # If currently solving, always show TRACK phase
+    settings = context.scene.autosolve
+    if settings.is_solving:
+        return 'TRACK'
+    
+    clip = context.edit_movieclip
+    if clip is None:
+        return 'TRACK'
+    
+    # Check if solve is valid
+    has_solve = clip.tracking.reconstruction.is_valid
+    
+    # Check if ANY camera in scene has animation (from tracking)
+    has_tracking_camera = _find_tracking_camera(context) is not None
+    
+    if has_tracking_camera:
+        return 'REFINE'
+    elif has_solve:
+        return 'SCENE_SETUP'
+    else:
+        return 'TRACK'
+
+
+def _find_tracking_camera(context):
+    """Find a camera with tracking-derived animation."""
+    # Check scene camera first - most common case after setup_tracking_scene
+    cam = context.scene.camera
+    if cam:
+        # Check for animation data OR constraints (tracking can use both)
+        has_animation = cam.animation_data and cam.animation_data.action
+        has_constraints = len(cam.constraints) > 0
+        
+        if has_animation or has_constraints:
+            return cam
+    
+    # Fallback: search all cameras for any with animation
+    for obj in bpy.data.objects:
+        if obj.type == 'CAMERA':
+            if obj.animation_data and obj.animation_data.action:
+                return obj
+            if len(obj.constraints) > 0:
+                return obj
+    
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -28,21 +85,20 @@ class AUTOSOLVE_PT_main_panel(Panel):
         layout = self.layout
         clip = context.edit_movieclip
         
-        # Clip info header
-        box = layout.box()
-        row = box.row()
+        # Clip info - compact header
+        row = layout.row()
         row.label(text=clip.name, icon='SEQUENCE')
-        row.label(text=f"{clip.frame_duration} frames")
+        row.label(text=f"{clip.frame_duration}f")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# RESEARCH DATA (Top, collapsed) - Beta research participation
+# RESEARCH DATA (Always on top, always collapsed)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_PT_research_panel(Panel):
-    """Research data management panel."""
+    """Research data management - beta participation."""
     
-    bl_label = "Research Data"
+    bl_label = "Research Beta"
     bl_idname = "AUTOSOLVE_PT_research_panel"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
@@ -57,25 +113,17 @@ class AUTOSOLVE_PT_research_panel(Panel):
         layout = self.layout
         settings = context.scene.autosolve
         
-        # Participation toggle
-        box = layout.box()
-        row = box.row()
-        row.prop(settings, "record_edits", text="Contribute to Research", icon='REC')
+        col = layout.column(align=True)
+        col.prop(settings, "record_edits", text="Contribute to Research", icon='REC')
         
-        # Stats summary
         try:
             from .tracker.learning.settings_predictor import SettingsPredictor
             predictor = SettingsPredictor()
             stats = predictor.get_stats()
-            
-            col = box.column(align=True)
-            col.scale_y = 0.8
             col.label(text=f"Sessions: {stats.get('total_sessions', 0)} | Success: {stats.get('success_rate', 0):.0%}")
         except:
-            box.label(text="No data collected yet", icon='INFO')
+            col.label(text="No data collected yet")
         
-        # Actions
-        layout.separator()
         row = layout.row(align=True)
         row.operator("autosolve.export_training_data", text="Export", icon='EXPORT')
         row.operator("autosolve.contribute_data", text="Share", icon='URL')
@@ -89,49 +137,93 @@ class AUTOSOLVE_PT_research_panel(Panel):
 class AUTOSOLVE_PT_phase1_tracking(Panel):
     """Phase 1: Tracking configuration and execution."""
     
-    bl_label = "1. Track"
+    bl_label = "Step 1: Track"
     bl_idname = "AUTOSOLVE_PT_phase1_tracking"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
     
+    def draw_header(self, context):
+        phase = get_workflow_phase(context)
+        if phase in ('SCENE_SETUP', 'REFINE'):
+            self.layout.label(text="", icon='CHECKMARK')
+        elif phase == 'TRACK':
+            self.layout.label(text="", icon='FORWARD')
+    
     def draw(self, context):
         layout = self.layout
         settings = context.scene.autosolve
+        phase = get_workflow_phase(context)
         
-        # Everything in a box for visual distinction
-        box = layout.box()
+        # Single outer box for the entire phase
+        outer_box = layout.box()
         
-        # Main solve button (prominent)
-        if settings.is_solving:
-            # Progress display
-            col = box.column(align=True)
-            col.label(text=settings.solve_status, icon='TIME')
-            col.prop(settings, "solve_progress", text="")
-            col.label(text="Press ESC to cancel", icon='INFO')
+        if phase == 'TRACK':
+            # ══════════════════════════════════════════════
+            # ACTIVE PHASE
+            # ══════════════════════════════════════════════
+            
+            # Guidance
+            outer_box.label(text="Click to auto-track your footage", icon='LIGHT')
+            
+            outer_box.separator()
+            
+            # Main action
+            if settings.is_solving:
+                col = outer_box.column(align=True)
+                col.label(text=settings.solve_status, icon='TIME')
+                col.prop(settings, "solve_progress", text="")
+                col.label(text="Press ESC to cancel", icon='CANCEL')
+            else:
+                row = outer_box.row()
+                row.scale_y = 2.0
+                row.operator("autosolve.run_solve", text="Analyze & Solve", icon='PLAY')
+            
+            outer_box.separator()
+            
+            # Settings
+            outer_box.label(text="Options:", icon='PREFERENCES')
+            col = outer_box.column(align=True)
+            row = col.row(align=True)
+            row.prop(settings, "quality_preset", text="")
+            row.prop(settings, "footage_type", text="")
+            
+            row = col.row(align=True)
+            row.prop(settings, "tripod_mode", toggle=True)
+            row.prop(settings, "robust_mode", toggle=True)
+        
         else:
-            row = box.row()
-            row.scale_y = 1.6
-            row.operator("autosolve.run_solve", text="Analyze & Solve", icon='PLAY')
-        
-        # Quick settings section
-        box.separator()
-        
-        col = box.column(align=True)
-        row = col.row(align=True)
-        row.prop(settings, "quality_preset", text="")
-        row.prop(settings, "footage_type", text="")
-        
-        row = col.row(align=True)
-        row.prop(settings, "tripod_mode", toggle=True)
-        row.prop(settings, "robust_mode", toggle=True)
+            # ══════════════════════════════════════════════
+            # COMPLETED
+            # ══════════════════════════════════════════════
+            
+            clip = context.edit_movieclip
+            recon = clip.tracking.reconstruction
+            num_tracks = len([t for t in clip.tracking.tracks if t.has_bundle])
+            
+            # Summary
+            row = outer_box.row()
+            row.label(text=f"{num_tracks} tracks solved", icon='CHECKMARK')
+            row.label(text=f"{recon.average_error:.2f}px")
+            
+            outer_box.separator()
+            
+            # Redo
+            outer_box.label(text="Want to try again?", icon='LOOP_BACK')
+            col = outer_box.column(align=True)
+            row = col.row(align=True)
+            row.prop(settings, "quality_preset", text="")
+            row.prop(settings, "footage_type", text="")
+            
+            row = outer_box.row()
+            row.operator("autosolve.run_solve", text="Re-track", icon='FILE_REFRESH')
 
 
 class AUTOSOLVE_PT_phase1_advanced(Panel):
     """Advanced tracking options."""
     
-    bl_label = "Advanced"
+    bl_label = "Advanced Options"
     bl_idname = "AUTOSOLVE_PT_phase1_advanced"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
@@ -139,14 +231,17 @@ class AUTOSOLVE_PT_phase1_advanced(Panel):
     bl_parent_id = "AUTOSOLVE_PT_phase1_tracking"
     bl_options = {'DEFAULT_CLOSED'}
     
+    @classmethod
+    def poll(cls, context):
+        return context.edit_movieclip is not None
+    
     def draw(self, context):
         layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False
-        
         settings = context.scene.autosolve
         
-        col = layout.column(align=True)
+        # Single outer box
+        outer_box = layout.box()
+        col = outer_box.column(align=True)
         col.prop(settings, "batch_tracking")
         col.prop(settings, "smooth_tracks")
         if settings.smooth_tracks:
@@ -154,13 +249,13 @@ class AUTOSOLVE_PT_phase1_advanced(Panel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PHASE 2: SCENE SETUP (only if solved)
+# PHASE 2: SCENE SETUP
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_PT_phase2_scene(Panel):
     """Phase 2: Scene setup after successful solve."""
     
-    bl_label = "2. Setup Scene"
+    bl_label = "Step 2: Setup Scene"
     bl_idname = "AUTOSOLVE_PT_phase2_scene"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
@@ -173,55 +268,74 @@ class AUTOSOLVE_PT_phase2_scene(Panel):
             return False
         return context.edit_movieclip.tracking.reconstruction.is_valid
     
+    def draw_header(self, context):
+        phase = get_workflow_phase(context)
+        if phase == 'REFINE':
+            self.layout.label(text="", icon='CHECKMARK')
+        elif phase == 'SCENE_SETUP':
+            self.layout.label(text="", icon='FORWARD')
+    
     def draw(self, context):
         layout = self.layout
         clip = context.edit_movieclip
         recon = clip.tracking.reconstruction
         settings = context.scene.autosolve
+        phase = get_workflow_phase(context)
         
-        # Everything in a box
-        box = layout.box()
+        # Single outer box for the entire phase
+        outer_box = layout.box()
         
-        # Solve quality indicator
-        error = recon.average_error
-        num_tracks = len([t for t in clip.tracking.tracks if t.has_bundle])
+        if phase == 'SCENE_SETUP':
+            # ══════════════════════════════════════════════
+            # ACTIVE PHASE
+            # ══════════════════════════════════════════════
+            
+            # Quality indicator
+            error = recon.average_error
+            if error < 0.5:
+                outer_box.label(text="Excellent solve quality!", icon='CHECKMARK')
+            elif error < 1.0:
+                outer_box.label(text="Good solve quality", icon='INFO')
+            else:
+                row = outer_box.row()
+                row.alert = True
+                row.label(text="High error - consider re-tracking", icon='ERROR')
+            
+            outer_box.separator()
+            
+            # Guidance
+            outer_box.label(text="Now create your 3D camera", icon='LIGHT')
+            
+            outer_box.separator()
+            
+            # Action button
+            row = outer_box.row()
+            row.scale_y = 2.0
+            row.operator("autosolve.setup_scene", text="Setup Tracking Scene", icon='SCENE_DATA')
         
-        if error < 0.5:
-            icon = 'CHECKMARK'
-            quality = "Excellent"
-        elif error < 1.0:
-            icon = 'INFO'
-            quality = "Good"
         else:
-            icon = 'ERROR'
-            quality = "Review tracks"
-        
-        row = box.row()
-        row.label(text=f"{num_tracks} tracks • {error:.2f}px", icon='TRACKER')
-        row.label(text=quality, icon=icon)
-        
-        box.separator()
-        
-        # Camera smoothing option
-        col = box.column(align=True)
-        col.prop(settings, "smooth_camera", text="Smooth Camera Motion")
-        if settings.smooth_camera:
-            col.prop(settings, "camera_smooth_factor", slider=True)
-        
-        # Main setup button
-        row = box.row()
-        row.scale_y = 1.4
-        row.operator("autosolve.setup_scene", text="Setup Tracking Scene", icon='SCENE_DATA')
+            # ══════════════════════════════════════════════
+            # COMPLETED
+            # ══════════════════════════════════════════════
+            
+            outer_box.label(text="Camera created successfully", icon='CHECKMARK')
+            
+            outer_box.separator()
+            
+            # Redo
+            outer_box.label(text="Need to redo?", icon='LOOP_BACK')
+            row = outer_box.row()
+            row.operator("autosolve.setup_scene", text="Redo Setup", icon='FILE_REFRESH')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PHASE 3: REFINE (only if camera exists)
+# PHASE 3: REFINE
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_PT_phase3_refine(Panel):
     """Phase 3: Refinement tools after scene setup."""
     
-    bl_label = "3. Refine"
+    bl_label = "Step 3: Refine"
     bl_idname = "AUTOSOLVE_PT_phase3_refine"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'UI'
@@ -230,23 +344,49 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
     
     @classmethod
     def poll(cls, context):
-        # Only show if camera with animation exists
-        return (context.scene.camera and 
-                context.scene.camera.animation_data and 
-                context.scene.camera.animation_data.action)
+        # Show if ANY camera with tracking animation exists
+        return _find_tracking_camera(context) is not None
+    
+    def draw_header(self, context):
+        self.layout.label(text="", icon='FORWARD')
     
     def draw(self, context):
         layout = self.layout
         
-        # Everything in a box
-        box = layout.box()
+        # Single outer box for the entire phase
+        outer_box = layout.box()
         
-        col = box.column(align=True)
-        col.label(text="Re-apply Smoothing", icon='MOD_SMOOTH')
+        # Guidance
+        outer_box.label(text="Fine-tune your camera motion", icon='LIGHT')
         
-        row = col.row(align=True)
+        outer_box.separator()
+        
+        # Smoothing tools
+        outer_box.label(text="Smoothing Tools:", icon='MOD_SMOOTH')
+        settings = context.scene.autosolve
+        
+        # Strength sliders
+        col = outer_box.column(align=True)
+        col.prop(settings, "track_smooth_factor", text="Track Strength", slider=True)
+
+        
+        # Buttons
+        row = outer_box.row(align=True)
+        row.scale_y = 1.4
         row.operator("autosolve.smooth_tracks", text="Tracks", icon='CURVE_PATH')
-        row.operator("autosolve.smooth_camera", text="Camera", icon='FCURVE_SNAPSHOT')
+
+        
+        outer_box.separator()
+        
+        # Start over
+        outer_box.label(text="Start Over:", icon='LOOP_BACK')
+        row = outer_box.row(align=True)
+        row.operator("autosolve.run_solve", text="Re-track", icon='TRACKING')
+        row.operator("autosolve.setup_scene", text="Redo Scene", icon='SCENE_DATA')
+        
+        
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -271,3 +411,6 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
+
+

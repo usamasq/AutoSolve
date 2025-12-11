@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "global_stats": {
+    "total_sessions": 1,
+    "successful_sessions": 1
+  },
+  "footage_classes": {
+    "SD_24fps_AUTO": {
+      "sample_count": 1,
+      "success_count": 1,
+      "avg_success_rate": 1.0,
+      "settings_history": [
+        {
+          "settings": {
+            "pattern_size": 15,
+            "search_size": 71,
+            "correlation": 0.72,
+            "threshold": 0.3,
+            "motion_model": "Loc"
+          },
+          "solve_error": 0.26440560817718506,
+          "success_rate": 0.0
+        }
+      ],
+      "experiences": [
+        {
+          "settings": {
+            "pattern_size": 15,
+            "search_size": 71,
+            "correlation": 0.72,
+            "threshold": 0.3,
+            "motion_model": "Loc"
+          },
+          "outcome": "SUCCESS",
+          "reward": 0.747,
+          "solve_error": 0.26440560817718506,
+          "bundle_count": 20,
+          "failure_type": null,
+          "success_rate": 0.0
+        }
+      ],
+      "best_settings": {
+        "pattern_size": 15,
+        "search_size": 71,
+        "correlation": 0.72,
+        "threshold": 0.3,
+        "motion_model": "Loc"
+      }
+    }
+  },
+  "region_models": {
+    "top-left": {
+      "total_tracks": 1,
+      "successful_tracks": 1,
+      "avg_lifespan": 115.0
+    },
+    "top-center": {
+      "total_tracks": 2,
+      "successful_tracks": 2,
+      "avg_lifespan": 115.0
+    },
+    "top-right": {
+      "total_tracks": 2,
+      "successful_tracks": 2,
+      "avg_lifespan": 115.0
+    },
+    "mid-left": {
+      "total_tracks": 2,
+      "successful_tracks": 2,
+      "avg_lifespan": 115.0
+    },
+    "center": {
+      "total_tracks": 2,
+      "successful_tracks": 2,
+      "avg_lifespan": 115.0
+    },
+    "mid-right": {
+      "total_tracks": 3,
+      "successful_tracks": 3,
+      "avg_lifespan": 96.33333333333333
+    },
+    "bottom-left": {
+      "total_tracks": 3,
+      "successful_tracks": 3,
+      "avg_lifespan": 115.0
+    },
+    "bottom-center": {
+      "total_tracks": 2,
+      "successful_tracks": 2,
+      "avg_lifespan": 97.0
+    },
+    "bottom-right": {
+      "total_tracks": 3,
+      "successful_tracks": 3,
+      "avg_lifespan": 62.0
+    }
+  },
+  "failure_patterns": {}
+}

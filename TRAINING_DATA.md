@@ -14,6 +14,27 @@ AutoSolve uses an **adaptive learning system** that collects anonymous telemetry
 
 ---
 
+## Current vs. Future AI
+
+It is important to understand exactly how AutoSolve learns, as it distinguishes between what happens **now** and what is being built for the **future**.
+
+### 1. Current System: Statistical Learning (Implemented)
+
+The "AI" currently running on your machine is a **statistical feedback loop**, not a deep neural network. It uses a technique called **Hindsight Experience Replay (HER)**.
+
+- **How it learns:** It records the outcome of every session. If a specific settings configuration (e.g., `Search Size: 101px`) consistently produces success for a specific footage type (e.g., `4K_24fps`), it reinforces that configuration.
+- **What it predicts:** It calculates weighted averages of the most successful settings from your history.
+- ** Privacy:** All learning happens locally on your machine.
+
+### 2. Future System: Neural Network (Research Phase)
+
+We are currently collecting rich telemetry data (optical flow patterns, trajectory shapes, error gradients) to train a **Deep Neural Network**.
+
+- **Why collect this data?** While the current statistical model is effective, a neural network can learn complex, non-linear relationships—like "shaky handheld footage with motion blur requires specific settings that differ from smooth drone shots."
+- **The Goal:** To replace the current statistical heuristics with a trained model that can "see" the motion in your footage and understand it like a human tracker would.
+
+---
+
 ## Data Storage Location
 
 | Platform    | Path                                                                   |
@@ -83,23 +104,19 @@ Each tracking session generates a JSON file with this structure:
     "distortion_model": "POLYNOMIAL",
     "k1": -0.05,
     "k2": 0.02,
-    "k3": 0.0,
-    "division_k1": 0.0,
-    "division_k2": 0.0,
-    "nuke_k1": 0.0,
-    "nuke_k2": 0.0,
-    "brown_k1": 0.0,
-    "brown_k2": 0.0,
-    "brown_k3": 0.0,
-    "brown_k4": 0.0,
-    "brown_p1": 0.0,
-    "brown_p2": 0.0
+    "k3": 0.0
   },
+
+  "clip_fingerprint": "a4f3c89b2e71d6f0",
+  "motion_class": "MEDIUM",
 
   "global_motion_vector": [0.012, -0.003],
   "motion_consistency": 0.85,
   "failure_type": "NONE",
   "frame_of_failure": null,
+
+  "flow_direction_histogram": [0.12, 0.08, 0.05, 0.15, 0.25, 0.18, 0.1, 0.07],
+  "flow_magnitude_histogram": [0.1, 0.3, 0.35, 0.2, 0.05],
 
   "tracks": [
     {
@@ -122,6 +139,15 @@ Each tracking session generates a JSON file with this structure:
     }
   ],
 
+  "track_failures": [
+    {
+      "track_name": "Track.015",
+      "frame": 87,
+      "position": [0.12, 0.85],
+      "reason": "DRIFT"
+    }
+  ],
+
   "region_stats": {
     "center": { "total_tracks": 8, "successful_tracks": 7 },
     "top-left": { "total_tracks": 4, "successful_tracks": 2 }
@@ -133,23 +159,7 @@ Each tracking session generates a JSON file with this structure:
   "motion_probe_results": {
     "motion_class": "MEDIUM",
     "texture_class": "HIGH",
-    "best_regions": ["center", "mid-left"],
-    "velocities": { "avg": 0.015, "max": 0.033 },
-    "region_success": { "center": { "total": 1, "success": 1 } }
-  },
-
-  "adaptation_history": [
-    {
-      "iteration": 1,
-      "survival_rate": 0.42,
-      "changes": ["search_size: 71 → 85", "correlation: 0.70 → 0.62"]
-    }
-  ],
-
-  "region_confidence": {
-    "center": 0.85,
-    "top-left": 0.32,
-    "top-center": 0.45
+    "best_regions": ["center", "mid-left"]
   },
 
   "optical_flow": {
@@ -159,8 +169,39 @@ Each tracking session generates a JSON file with this structure:
     "parallax_score": 0.32,
     "dominant_direction": [0.98, -0.12],
     "direction_entropy": 0.15,
-    "velocity_acceleration": 0.002,
     "track_dropout_rate": 0.18
+  },
+
+  "visual_features": {
+    "clip_fingerprint": "a4f3c89b2e71d6f0",
+    "motion_class": "MEDIUM",
+    "motion_magnitude": 0.015,
+    "motion_variance": 0.008,
+    "thumbnails": [
+      "/9j/4AAQSkZJRgABAQEASABIAAD...",
+      "/9j/4AAQSkZJRgABAQEASABIAAD...",
+      "/9j/4AAQSkZJRgABAQEASABIAAD..."
+    ],
+    "thumbnail_frames": [60, 120, 180],
+    "edge_density": {
+      "center": 0.85,
+      "top-left": 0.42,
+      "top-right": 0.38
+    },
+    "edge_density_mean": 0.55,
+    "contrast_stats": {
+      "center": {
+        "estimated_contrast": 0.85,
+        "track_count": 8,
+        "success_rate": 0.875
+      },
+      "top-left": {
+        "estimated_contrast": 0.42,
+        "track_count": 4,
+        "success_rate": 0.5
+      }
+    },
+    "temporal_motion_profile": [0.012, 0.015, 0.018, 0.02, 0.019]
   }
 }
 ```
@@ -418,6 +459,46 @@ The system runs a 20-frame motion probe to classify footage:
 2. Track forward for 20 frames
 3. Measure velocity per track: `displacement / frames`
 4. Average across all tracks → classify motion
+
+### Per-Clip Learning
+
+The system now supports exact clip recognition via fingerprinting:
+
+| Feature               | Description                                           |
+| --------------------- | ----------------------------------------------------- |
+| **Clip Fingerprint**  | MD5 hash of filepath + resolution + fps + duration    |
+| **Per-clip Settings** | Best settings stored per fingerprint                  |
+| **Priority Order**    | 1) Same clip → 2) Motion sub-class → 3) Footage class |
+
+When you re-track the same clip, AutoSolve uses the exact settings that worked before.
+
+### Motion Sub-Classification
+
+Footage classes are now subdivided by motion level:
+
+- `HD_30fps_LOW_MOTION` - Tripod/static shots
+- `HD_30fps_MEDIUM_MOTION` - Standard camera movement
+- `HD_30fps_HIGH_MOTION` - Action/fast movement
+
+This provides more specific settings than base footage class alone.
+
+### Visual Features for NN Training
+
+When "Learn from My Edits" is enabled, these features are extracted:
+
+| Feature              | Description                                       | ML Purpose                 |
+| -------------------- | ------------------------------------------------- | -------------------------- |
+| **Thumbnails**       | 3 JPEG images (64x64) at 25%, 50%, 75%            | CNN scene classification   |
+| **Edge Density**     | Track success rate per region (proxy for texture) | Region quality prediction  |
+| **Contrast Stats**   | Success/track counts per region                   | Dead zone prediction       |
+| **Flow Histograms**  | 8-bin direction + 5-bin magnitude                 | Motion pattern recognition |
+| **Temporal Profile** | Velocity at evenly-spaced frames                  | RNN/LSTM training          |
+
+**Thumbnail Extraction:**
+
+- Movies (.mp4, .mov): FFmpeg extracts frame → scales → JPEG
+- Image sequences: Blender API loads frame → scales → JPEG
+- Fallback: Hash identifier if extraction fails
 
 ---
 

@@ -46,6 +46,14 @@ Each tracking session records **anonymized numerical data** to help AutoSolve le
 | **Frame Samples** | Active tracks, tracks lost, velocity per frame  | Train RNN/LSTM for dropout prediction |
 | **Optical Flow**  | Parallax score, direction entropy, dropout rate | Motion-based settings prediction      |
 
+### Visual Features (NEW)
+
+| Category           | Fields                                         | Purpose                         |
+| ------------------ | ---------------------------------------------- | ------------------------------- |
+| **Thumbnails**     | 3 JPEG images (64x64) at 25%, 50%, 75% of clip | CNN scene classification        |
+| **Edge Density**   | Per-region texture quality proxy               | Predict trackability per region |
+| **Contrast Stats** | Min/max/mean velocity per region               | Identify motion characteristics |
+
 ---
 
 ## What's NOT Collected
@@ -156,15 +164,19 @@ See [TRAINING_DATA.md](TRAINING_DATA.md) for complete schema documentation.
 
 ---
 
-## Edit Pattern Capture
+## Behavior Pattern Capture
 
-When "Record My Edits" is enabled, we also capture how pro users refine tracking:
+When "Record My Edits" is enabled, `BehaviorRecorder` captures how users refine tracking:
 
-- Which tracks get deleted and why
-- Which tracks are excluded from solving
-- Settings adjustments made after initial solve
+| Data Type                | What's Captured                                                | Purpose                                 |
+| ------------------------ | -------------------------------------------------------------- | --------------------------------------- |
+| **Track Deletions**      | Which tracks removed, region, lifespan, error, inferred reason | Learn which auto-placed tracks to avoid |
+| **Track Disables**       | Tracks hidden/excluded from solve                              | Learn when to pre-filter                |
+| **Settings Adjustments** | Before/after values for pattern size, search size, correlation | Learn optimal settings per footage      |
+| **Marker Refinements**   | Position adjustments with frame and displacement               | Improve initial marker placement        |
+| **Re-solve Comparison**  | Error before vs after user edits                               | Validate if changes helped              |
 
-This helps AutoSolve learn expert-level track cleanup patterns.
+This helps AutoSolve learn expert-level track cleanup and settings tuning patterns.
 
 ---
 

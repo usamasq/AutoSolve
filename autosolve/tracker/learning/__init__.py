@@ -12,7 +12,9 @@ from .session_recorder import SessionRecorder
 from .settings_predictor import SettingsPredictor
 from .failure_diagnostics import FailureDiagnostics, FailurePattern, DiagnosisResult
 from .behavior_recorder import BehaviorRecorder
+from .feature_extractor import FeatureExtractor, VisualFeatures, create_enhanced_footage_class
 
 __all__ = ['SessionRecorder', 'SettingsPredictor', 'FailureDiagnostics', 
-           'FailurePattern', 'DiagnosisResult', 'BehaviorRecorder']
+           'FailurePattern', 'DiagnosisResult', 'BehaviorRecorder',
+           'FeatureExtractor', 'VisualFeatures', 'create_enhanced_footage_class']
 

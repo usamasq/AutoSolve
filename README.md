@@ -7,8 +7,8 @@
 >
 > **How it works:**
 >
-> 1.  **Learns Locally:** It learns from your tracking sessions to improve its own settings on your machine.
-> 2.  **Community Driven:** You can **optionally share your data** to help train the community model.
+> 1.  **Learns Locally:** It uses **statistical learning** to remember your successful settings and apply them to future tracking sessions.
+> 2.  **Community Driven:** You can **optionally share your data** to help us train a future **Neural Network** that will be even smarter.
 >
 > **[Contribute your data](#contribute-training-data)** to help build the best open-source tracking algorithm!
 
@@ -39,7 +39,7 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **Quality Prediction**     | Estimates solve quality before running solver             |
 | **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes    |
 | **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.      |
-| **Smoothing**              | Reduces jitter with track and camera motion smoothing     |
+| **Smoothing**              | Reduces jitter with track motion smoothing                |
 
 ---
 
@@ -80,7 +80,6 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **Tripod Mode**   | For nodal pan/tilt shots - uses rotation-only solver, simpler motion model   |
 | **Robust Mode**   | For difficult footage - larger search areas, faster monitoring, more markers |
 | **Smooth Tracks** | Pre-solve smoothing - reduces marker jitter with Gaussian weighted average   |
-| **Smooth Camera** | Post-solve smoothing - Butterworth filter removes camera jitter              |
 
 ---
 
@@ -145,6 +144,7 @@ autosolve/
     └── learning/             # Learning components
         ├── session_recorder.py        # Session telemetry collection
         ├── settings_predictor.py      # Optimal settings prediction
+        ├── feature_extractor.py       # Visual feature extraction
         ├── behavior_recorder.py       # User behavior recording
         ├── failure_diagnostics.py     # Failure analysis & fixes
         └── pretrained_model.json      # Bundled community defaults

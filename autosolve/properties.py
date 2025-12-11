@@ -116,21 +116,7 @@ class AutoSolveSettings(PropertyGroup):
         subtype='FACTOR',
     )
     
-    smooth_camera: BoolProperty(
-        name="Smooth Camera",
-        description="Apply Butterworth filter to camera motion after solving. "
-                    "Removes high-frequency jitter while preserving overall motion",
-        default=False,
-    )
-    
-    camera_smooth_factor: FloatProperty(
-        name="Camera Smoothing",
-        description="Smoothing strength (0.1=subtle, 1.0=heavy smoothing)",
-        default=0.5,
-        min=0.1,
-        max=1.0,
-        subtype='FACTOR',
-    )
+
     
     # ═══════════════════════════════════════════════════════════
     # TRAINING DATA OPTIONS
