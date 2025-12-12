@@ -91,7 +91,7 @@ I'm a solo developer making professional camera tracking accessible to everyone.
 
 ### 1. Test and Report Issues
 
-- **Found a bug?** Open an [issue on GitHub](https://github.com/yourusername/AutoSolve/issues)
+- **Found a bug?** Open an [issue on GitHub](https://github.com/usamasq/AutoSolve/issues)
 - **Feature request?** Share on [Discord](https://discord.gg/qUvrXHP9PU)
 
 ### 2. Contribute Training Data
@@ -101,7 +101,8 @@ AutoSolve gets smarter through community data. Your anonymized tracking sessions
 **How to share your data:**
 
 1. In Blender: `Movie Clip Editor → AutoSolve → Training Data → Export`
-2. Share on [Discord](https://discord.gg/qUvrXHP9PU) or email: `usamasq@gmail.com`
+2. Upload to the [HuggingFace dataset](https://huggingface.co/datasets/UsamaSQ/autosolve-telemetry)
+3. Join [Discord](https://discord.gg/qUvrXHP9PU) for community discussions
 
 **What's collected:**
 
@@ -123,7 +124,7 @@ See the [Contributing Guide](#contributing) below.
 ### Getting Started
 
 ```bash
-git clone https://github.com/yourusername/AutoSolve.git
+git clone https://github.com/usamasq/AutoSolve.git
 cd AutoSolve
 ```
 
@@ -216,7 +217,9 @@ Notes: Required 2 retries, edges struggled
 
 ### Submit Data
 
-### Submit Data
+**Primary Method:** Upload to [HuggingFace dataset](https://huggingface.co/datasets/UsamaSQ/autosolve-telemetry)
+
+**Community Support:** Join [Discord](https://discord.gg/qUvrXHP9PU) for questions and discussions
 
 Please refer to **[CONTRIBUTING_DATA.md](CONTRIBUTING_DATA.md)** for:
 

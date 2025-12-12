@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -40,6 +40,18 @@ class TrackDeletion:
 
 
 @dataclass
+class TrackAddition:
+    """Record of a track manually added by user - THE KEY LEARNING DATA."""
+    track_name: str
+    region: str
+    initial_frame: int
+    position: Tuple[float, float]  # Where user placed it
+    lifespan_achieved: int  # How many frames it successfully tracked
+    had_bundle: bool  # Did it contribute to the solve?
+    reprojection_error: float  # Quality of the track
+
+
+@dataclass
 class MarkerRefinement:
     """Record of a marker position refined by user."""
     track_name: str
@@ -66,13 +78,26 @@ class BehaviorData:
     session_id: str = ""
     timestamp: str = ""
     
+    # Session linkage - CRITICAL for multi-attempt analysis
+    clip_fingerprint: str = ""  # Links all sessions for same clip
+    previous_session_id: str = ""  # Which session this is editing
+    iteration: int = 1  # Which attempt on this clip (1, 2, 3...)
+    contributor_id: str = ""  # Anonymous ID per Blender install (distinguishes users)
+    
     editing_duration_seconds: float = 0.0
     
     settings_adjustments: Dict[str, Dict] = field(default_factory=dict)
     re_solve: Dict = field(default_factory=dict)
+    
+    # Track changes - BOTH additions and deletions for full picture
+    track_additions: List[Dict] = field(default_factory=list)  # THE KEY: what pros ADD
     track_deletions: List[Dict] = field(default_factory=list)
     track_disables: List[Dict] = field(default_factory=list)
     marker_refinements: List[Dict] = field(default_factory=list)
+    
+    # Quality metrics
+    net_track_change: int = 0  # additions - deletions
+    region_additions: Dict[str, int] = field(default_factory=dict)  # Which regions got reinforced
 
 
 class BehaviorRecorder:
@@ -114,10 +139,20 @@ class BehaviorRecorder:
         self.initial_settings: Dict = {}
         self.initial_error: float = 0.0
         self.initial_tracks: Dict[str, Dict] = {}  # name -> {region, markers: {frame: (x,y)}}
+        
+        # Session linkage
+        self.clip_fingerprint: str = ""
+        self.previous_session_id: str = ""
+        self.iteration: int = 1
+        self.contributor_id: str = ""  # Anonymous ID per Blender install
     
     def start_monitoring(self, clip: bpy.types.MovieClip, 
                          settings: Dict, solve_error: float,
-                         session_id: str = ""):
+                         session_id: str = "",
+                         clip_fingerprint: str = "",
+                         previous_session_id: str = "",
+                         iteration: int = 1,
+                         contributor_id: str = ""):
         """
         Start monitoring user behavior after AutoSolve completes.
         
@@ -126,18 +161,28 @@ class BehaviorRecorder:
             settings: Current tracker settings
             solve_error: Current solve error
             session_id: ID to link with session file
+            clip_fingerprint: Hash linking all sessions for same clip
+            previous_session_id: Session ID being edited (for linking)
+            iteration: Which attempt on this clip (1, 2, 3...)
+            contributor_id: Anonymous ID per Blender install
         """
         self.clip = clip
         self.start_time = datetime.now()
         self.is_monitoring = True
         self.session_id = session_id or self.start_time.strftime("%Y%m%d_%H%M%S")
         
+        # Session linkage
+        self.clip_fingerprint = clip_fingerprint
+        self.previous_session_id = previous_session_id
+        self.iteration = iteration
+        self.contributor_id = contributor_id
+        
         # Snapshot initial state
         self.initial_settings = settings.copy()
         self.initial_error = solve_error
         self.initial_tracks = self._snapshot_tracks()
         
-        print(f"AutoSolve: Started behavior monitoring ({len(self.initial_tracks)} tracks)")
+        print(f"AutoSolve: Started behavior monitoring (iteration {iteration}, {len(self.initial_tracks)} tracks)")
     
     def update_snapshot(self, clip: bpy.types.MovieClip, settings: Dict = None, solve_error: float = None):
         """
@@ -184,10 +229,17 @@ class BehaviorRecorder:
         # Snapshot final state
         final_tracks = self._snapshot_tracks()
         
-        # Detect changes
+        # Detect ALL changes - both additions and deletions (THE KEY)
+        additions = self._find_additions(self.initial_tracks, final_tracks)
         deletions = self._find_deletions(self.initial_tracks, final_tracks)
         disables = self._find_disables(self.initial_tracks, final_tracks)
         refinements = self._find_refinements(self.initial_tracks, final_tracks)
+        
+        # Calculate net change and region stats
+        net_change = len(additions) - len(deletions)
+        region_adds = {}
+        for add in additions:
+            region_adds[add.region] = region_adds.get(add.region, 0) + 1
         
         # Settings adjustments
         settings_adj = {}
@@ -222,13 +274,21 @@ class BehaviorRecorder:
             editing_duration_seconds=duration,
             settings_adjustments=settings_adj,
             re_solve=re_solve,
+            track_additions=[asdict(a) for a in additions],
             track_deletions=[asdict(d) for d in deletions],
             track_disables=[{'track_name': name, 'region': region} 
                            for name, region in disables],
             marker_refinements=[asdict(r) for r in refinements],
+            net_track_change=net_change,
+            region_additions=region_adds,
+            clip_fingerprint=self.clip_fingerprint,
+            previous_session_id=self.previous_session_id,
+            iteration=self.iteration,
+            contributor_id=self.contributor_id,
         )
         
-        print(f"AutoSolve: Behavior recorded - {len(deletions)} deletions, "
+        print(f"AutoSolve: Behavior recorded - "
+              f"{len(additions)} additions, {len(deletions)} deletions, "
               f"{len(refinements)} refinements, {len(settings_adj)} settings changed")
         
         return behavior
@@ -307,6 +367,39 @@ class BehaviorRecorder:
         
         return deletions
     
+    def _find_additions(self, before: Dict, after: Dict) -> List[TrackAddition]:
+        """Find tracks that were manually added by user - THE KEY LEARNING DATA.
+        
+        This captures what pro users do to IMPROVE tracking:
+        - Which regions they reinforce
+        - Where they place markers
+        - How effective their additions are (bundle rate, error)
+        """
+        additions = []
+        
+        for name, data in after.items():
+            if name not in before:
+                # This is a new track added during monitoring
+                markers = data.get('markers', {})
+                if not markers:
+                    continue
+                
+                # Get initial frame (where user placed it)
+                initial_frame = min(markers.keys()) if markers else 0
+                initial_pos = markers.get(initial_frame, (0.5, 0.5))
+                
+                additions.append(TrackAddition(
+                    track_name=name,
+                    region=data['region'],
+                    initial_frame=initial_frame,
+                    position=initial_pos,
+                    lifespan_achieved=data['lifespan'],
+                    had_bundle=data['has_bundle'],
+                    reprojection_error=data['error']
+                ))
+        
+        return additions
+    
     def _find_disables(self, before: Dict, after: Dict) -> List[Tuple[str, str]]:
         """Find tracks that were disabled (hidden) by user."""
         disables = []
@@ -367,7 +460,7 @@ class BehaviorRecorder:
         """Infer why user deleted this track."""
         return infer_deletion_reason(track_data)
     
-    # _get_region removed - use from ..utils import instead
+
     
     def get_behavior_count(self) -> int:
         """Get count of saved behavior files."""

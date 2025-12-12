@@ -1,14 +1,11 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
-
 """
-Track and camera smoothing utilities for reducing jitter.
+Track marker smoothing utilities.
 
-Provides:
-- Pre-solve track marker smoothing (Gaussian/moving average)
-- Post-solve camera F-curve smoothing (Butterworth filter via Blender API)
+Reduces jitter in marker positions before running the camera solve.
+Uses Gaussian weighting to smooth track marker coordinates across frames.
 """
-
 import bpy
 from typing import List, Tuple, Optional
 from mathutils import Vector

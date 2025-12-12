@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -87,14 +87,14 @@ class FeatureExtractor:
     
     def extract_all(self, clip: Optional['bpy.types.MovieClip'] = None, 
                     tracking_data: Optional[Dict] = None,
-                    defer_thumbnails: bool = False) -> VisualFeatures:
+                    force_recompute: bool = False) -> VisualFeatures:
         """
         Extract all visual features from clip.
         
         Args:
             clip: Blender MovieClip (optional, uses self.clip if not provided)
             tracking_data: Optional dict with pre-computed tracking analysis
-            defer_thumbnails: Deprecated parameter, kept for backward compatibility
+            force_recompute: If True, ignore pre-calculated features and re-run extraction
             
         Returns:
             VisualFeatures dataclass with all extracted features
@@ -114,7 +114,9 @@ class FeatureExtractor:
             
             # Check if SmartTracker already computed feature density during detection
             pre_detected_density = tracking_data.get('detected_feature_density')
-            if pre_detected_density:
+            
+            # Use pre-detected ONLY if we're not forcing recompute
+            if pre_detected_density and not force_recompute:
                 # Use pre-computed density (avoid duplicate detect_features call)
                 # Note: This is from a single frame (detection frame), not multi-frame sampling
                 self.features.feature_density = pre_detected_density
@@ -126,6 +128,7 @@ class FeatureExtractor:
                 print(f"AutoSolve: Using pre-detected feature density - {self.features.feature_density_total} features")
             else:
                 # 3. Compute feature density per region using Blender's detect_features
+                # This performs the full 9-frame sampling
                 self._compute_feature_density()
         else:
             # No tracking data - compute from scratch
@@ -136,6 +139,24 @@ class FeatureExtractor:
         
         return self.features
     
+    def _get_context_override(self):
+        """Get context override for Clip Editor operators."""
+        context = bpy.context
+        for window in context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'CLIP_EDITOR':
+                    for region in area.regions:
+                        if region.type == 'WINDOW':
+                            return {
+                                'window': window,
+                                'screen': window.screen,
+                                'area': area,
+                                'region': region,
+                                'scene': context.scene,
+                                'workspace': context.workspace,
+                            }
+        return {}
+
     def _compute_feature_density(self):
         """
         Compute feature density per region using Blender's detect_features operator.
@@ -147,11 +168,20 @@ class FeatureExtractor:
         if not self.clip or not bpy:
             return
         
+        # CRITICAL FIX: Get context override for detect_features
+        override = self._get_context_override()
+        if not override:
+            print("AutoSolve: Feature density blocked - No CLIP_EDITOR context found")
+            return
+            
         try:
+            if not self.clip:
+                return
+
             scene = bpy.context.scene
             original_frame = scene.frame_current
             
-            # Calculate sample frames
+            # Calculate sample frames (reduced to 3 frames)
             duration = self.clip.frame_duration
             start = self.clip.frame_start
             sample_frames = {
@@ -168,59 +198,98 @@ class FeatureExtractor:
             correlation_attr = 'default_correlation_min' if hasattr(settings, 'default_correlation_min') else 'default_minimum_correlation'
             original_threshold = getattr(settings, correlation_attr, 0.75)
             
-            # Use low threshold to find ALL features
+            # Use LIGHTER detection - avoid detecting thousands of points
             settings.default_margin = 8
-            setattr(settings, correlation_attr, 0.3)
+            setattr(settings, correlation_attr, 0.3) # correlation for detection is unused by detect_features but good practice
             
             timeline = {}
             all_counts = {region: [] for region in self.REGIONS}
+
+            # CRITICAL FIX: Capture Clip Editor space and frame to restore later
+            # Failing to restore this causes GPU texture errors when viewport refreshes
+            clip_space = None
+            original_clip_frame = 0
+            for space in override['area'].spaces:
+                if space.type == 'CLIP_EDITOR':
+                    clip_space = space
+                    original_clip_frame = space.clip_user.frame_current
+                    break
+
+            print(f"AutoSolve: Computing density (3 frames @ 3 points, Threshold=0.4, Dist=20)...")
             
-            for frame_label, frame_num in sample_frames.items():
-                try:
-                    scene.frame_set(frame_num)
+            for base_label, start_frame in sample_frames.items():
+                # Sample 3 consecutive frames at each point (e.g. 25, 26, 27)
+                for offset in range(3):
+                    frame_num = start_frame + offset
+                    frame_label = f"{base_label}_{offset}"
                     
-                    # Get existing tracks to know what's new
-                    tracks = self.clip.tracking.tracks
-                    existing_track_names = [t.name for t in tracks]
-                    
-                    # Detect features at this frame
-                    bpy.ops.clip.detect_features(threshold=0.1, min_distance=8, margin=8, placement='FRAME')
-                    
-                    # Count per region
-                    region_counts = {region: 0 for region in self.REGIONS}
-                    new_tracks = [t for t in self.clip.tracking.tracks if t.name not in existing_track_names]
-                    
-                    for track in new_tracks:
-                        marker = track.markers.find_frame(frame_num)
-                        if marker and not marker.mute:
-                            x, y = marker.co
-                            region = self._get_region(x, y)
-                            region_counts[region] += 1
-                    
-                    # Clean up detected tracks
-                    for track in new_tracks:
-                        tracks.remove(track)
-                    
-                    # Store for this frame
-                    timeline[frame_label] = region_counts
-                    
-                    # Accumulate for averaging
-                    for region, count in region_counts.items():
-                        all_counts[region].append(count)
+                    try:
+                        # Set scene frame
+                        scene.frame_set(frame_num)
                         
-                except Exception as e:
-                    print(f"AutoSolve: Feature density at {frame_label} failed: {e}")
-                    timeline[frame_label] = {region: 0 for region in self.REGIONS}
+                        # Sync clip frame for detection (CRITICAL)
+                        if clip_space:
+                            clip_space.clip_user.frame_current = frame_num
+                        
+                        # Get existing tracks to know what's new
+                        tracks = self.clip.tracking.tracks
+                        existing_track_names = set(t.name for t in tracks)
+                        
+                        # Detect features with context override
+                        with bpy.context.temp_override(**override):
+                            bpy.ops.clip.detect_features(threshold=0.4, min_distance=20, margin=8, placement='FRAME')
+                        
+                        # Find new tracks
+                        new_tracks = [t for t in self.clip.tracking.tracks if t.name not in existing_track_names]
+                        
+                        # Count per region
+                        region_counts = {region: 0 for region in self.REGIONS}
+                        
+                        for track in new_tracks:
+                            marker = track.markers.find_frame(frame_num)
+                            if marker and not marker.mute:
+                                x, y = marker.co
+                                region = self._get_region(x, y)
+                                region_counts[region] += 1
+                        
+                        # Cleanup: BATCH DELETE
+                        if new_tracks:
+                            # Deselect all first
+                            for t in tracks:
+                                t.select = False
+                            
+                            # Select only new tracks for deletion
+                            for t in new_tracks:
+                                t.select = True
+                                
+                            # Batch delete
+                            with bpy.context.temp_override(**override):
+                                bpy.ops.clip.delete_track()
+                        
+                        # Store for this frame
+                        timeline[frame_label] = region_counts
+                        
+                        # Accumulate for averaging
+                        for region, count in region_counts.items():
+                            all_counts[region].append(count)
+                            
+                    except Exception as e:
+                        print(f"AutoSolve: Feature density at {frame_label} failed: {e}")
+                        timeline[frame_label] = {region: 0 for region in self.REGIONS}
             
             # Restore settings
             settings.default_margin = original_margin
             setattr(settings, correlation_attr, original_threshold)
             scene.frame_set(original_frame)
             
+            # Restore Clip Editor frame (Fixes gpu.texture error)
+            if clip_space:
+                clip_space.clip_user.frame_current = original_clip_frame
+            
             # Store multi-frame timeline
             self.features.feature_density_timeline = timeline
             
-            # Compute average across all frames for the main feature_density
+            # Compute average across all frames
             avg_counts = {}
             for region in self.REGIONS:
                 counts = all_counts[region]
@@ -230,7 +299,7 @@ class FeatureExtractor:
             self.features.feature_density_total = sum(avg_counts.values())
             self.features.feature_density_mean = self.features.feature_density_total / len(avg_counts) if avg_counts else 0
             
-            print(f"AutoSolve: Feature density - {self.features.feature_density_total} avg features (3-frame sampling)")
+            print(f"AutoSolve: Feature density computed - {self.features.feature_density_total} avg features")
             
         except Exception as e:
             print(f"AutoSolve: Feature density computation failed: {e}")
@@ -340,17 +409,12 @@ class FeatureExtractor:
                 s.get('avg_velocity', 0.0) for s in frame_samples[:10] if isinstance(s, dict)
             ]
 
-    
-    # NOTE: Thumbnail extraction methods removed - using feature_density instead
-    # which uses Blender's detect_features for actual trackable feature detection
-    
     def _compute_edge_density(self):
         """
         Compute edge density per region.
         
         Uses track survival rates and jitter as proxies for texture quality.
         High edge density = good texture for tracking.
-        
         This is a proxy method - full implementation would use Sobel filters
         on actual pixel data, but that's expensive without GPU.
         """

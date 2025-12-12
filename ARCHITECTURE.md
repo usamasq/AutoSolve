@@ -281,9 +281,7 @@ class AutoSolveSettings(PropertyGroup):
     tripod_mode: BoolProperty        # Rotation-only camera model
     footage_type: EnumProperty       # AUTO, INDOOR, OUTDOOR, DRONE, etc.
 
-    # Smoothing Settings
     smooth_tracks: BoolProperty      # Enable pre-solve track smoothing
-    track_smooth_factor: FloatProperty  # Track smoothing strength (0-1)
     track_smooth_factor: FloatProperty  # Track smoothing strength (0-1)
 
     # Runtime State

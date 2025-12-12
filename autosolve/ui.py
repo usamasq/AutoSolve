@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """AutoSolve UI panels - Beginner-friendly phase-based workflow."""
@@ -88,40 +88,48 @@ def get_workflow_phase(context):
 def _find_tracking_camera(context):
     """
     Find a camera with tracking-derived animation for the CURRENT clip.
-    
-    Important: Must verify the camera is actually tracking this specific clip,
-    not just any camera with animation (could be from a different clip).
     """
     clip = context.edit_movieclip
     if not clip:
         return None
     
-    # Check scene camera first - most common case after setup_tracking_scene
-    cam = context.scene.camera
-    if cam:
-        # Check for Camera Solver constraint pointing to THIS clip
-        for constraint in cam.constraints:
-            if constraint.type == 'CAMERA_SOLVER':
-                if hasattr(constraint, 'clip') and constraint.clip == clip:
-                    return cam
+    # helper to check object
+    def is_tracking_camera(obj):
+        if not obj or obj.type != 'CAMERA':
+            return False
         
-        # Check for animation data that might be baked from THIS clip's tracking
-        # Note: Baked animation loses the clip reference, so we need to check
-        # if the clip has a valid solve AND camera has animation
-        if clip.tracking.reconstruction.is_valid:
-            has_animation = cam.animation_data and cam.animation_data.action
-            if has_animation:
-                # Camera has animation and clip has valid solve - likely from this clip
-                # This is a heuristic; ideally we'd store metadata about which clip
-                return cam
+        has_valid_solve = clip.tracking.reconstruction.is_valid
+            
+        # Check constraints
+        for constraint in obj.constraints:
+            if constraint.type == 'CAMERA_SOLVER':
+                # Explicit clip match
+                if hasattr(constraint, 'clip') and constraint.clip == clip:
+                    return True
+                # Implicit match: constraint.clip is None means "use active clip"
+                # Safe only if current clip has a valid solve (prevents false positive on switch)
+                if hasattr(constraint, 'clip') and constraint.clip is None and has_valid_solve:
+                    return True
+        
+        # Check baked animation (fallback for constraints that were baked out)
+        if has_valid_solve:
+            if obj.animation_data and obj.animation_data.action:
+                return True
+                
+        return False
+
+    # 1. Check Active Object (most likely candidate after setup)
+    if is_tracking_camera(context.view_layer.objects.active):
+        return context.view_layer.objects.active
+
+    # 2. Check Scene Camera
+    if is_tracking_camera(context.scene.camera):
+        return context.scene.camera
     
-    # Fallback: search all cameras for Camera Solver constraint pointing to THIS clip
+    # 3. Search all cameras
     for obj in bpy.data.objects:
-        if obj.type == 'CAMERA':
-            for constraint in obj.constraints:
-                if constraint.type == 'CAMERA_SOLVER':
-                    if hasattr(constraint, 'clip') and constraint.clip == clip:
-                        return obj
+        if obj.type == 'CAMERA' and is_tracking_camera(obj):
+            return obj
     
     return None
 
@@ -229,11 +237,9 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             # ══════════════════════════════════════════════
             # ACTIVE PHASE
             # ══════════════════════════════════════════════
-            
-            # Guidance
-            outer_box.label(text="Click to auto-track your footage", icon='LIGHT')
-            
-            outer_box.separator()
+            clip = context.edit_movieclip
+            has_tracks = len(clip.tracking.tracks) > 0
+            has_solve = clip.tracking.reconstruction.is_valid
             
             # Main action
             if settings.is_solving:
@@ -241,7 +247,24 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
                 col.label(text=settings.solve_status, icon='TIME')
                 col.prop(settings, "solve_progress", text="")
                 col.label(text="Press ESC to cancel", icon='CANCEL')
+            elif has_tracks and not has_solve:
+                # User has manually added tracks - offer quick solve
+                outer_box.label(text="Tracks detected! Ready to solve.", icon='CHECKMARK')
+                outer_box.separator()
+                
+                row = outer_box.row()
+                row.scale_y = 2.0
+                op = row.operator("clip.solve_camera", text="Solve Camera", icon='PLAY')
+                
+                outer_box.separator()
+                outer_box.label(text="Or start fresh:", icon='INFO')
+                row = outer_box.row()
+                row.operator("autosolve.run_solve", text="Auto-Track Everything", icon='TRACKING')
             else:
+                # Fresh clip - full auto workflow
+                outer_box.label(text="One-click camera tracking", icon='LIGHT')
+                outer_box.separator()
+                
                 row = outer_box.row()
                 row.scale_y = 2.0
                 row.operator("autosolve.run_solve", text="Analyze & Solve", icon='PLAY')
@@ -249,7 +272,7 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             outer_box.separator()
             
             # Settings
-            outer_box.label(text="Options:", icon='PREFERENCES')
+            outer_box.label(text="Settings:", icon='PREFERENCES')
             col = outer_box.column(align=True)
             row = col.row(align=True)
             row.prop(settings, "quality_preset", text="")
@@ -275,15 +298,17 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             
             outer_box.separator()
             
-            # Redo
-            outer_box.label(text="Want to try again?", icon='LOOP_BACK')
+            # Redo section
+            outer_box.label(text="Not satisfied?", icon='LOOP_BACK')
             col = outer_box.column(align=True)
             row = col.row(align=True)
             row.prop(settings, "quality_preset", text="")
             row.prop(settings, "footage_type", text="")
             
-            row = outer_box.row()
-            row.operator("autosolve.run_solve", text="Re-track", icon='FILE_REFRESH')
+            row = outer_box.row(align=True)
+            row.scale_y = 1.4
+            row.operator("clip.solve_camera", text="Solve Camera", icon='PLAY')
+            row.operator("autosolve.run_solve", text="Re-Track", icon='FILE_REFRESH')
 
 
 class AUTOSOLVE_PT_phase1_advanced(Panel):
@@ -359,39 +384,39 @@ class AUTOSOLVE_PT_phase2_scene(Panel):
             # Quality indicator
             error = recon.average_error
             if error < 0.5:
-                outer_box.label(text="Excellent solve quality!", icon='CHECKMARK')
+                outer_box.label(text="Excellent quality!", icon='CHECKMARK')
             elif error < 1.0:
-                outer_box.label(text="Good solve quality", icon='INFO')
+                outer_box.label(text="Good quality", icon='INFO')
             else:
                 row = outer_box.row()
                 row.alert = True
-                row.label(text="High error - consider re-tracking", icon='ERROR')
+                row.label(text="High error – consider re-tracking", icon='ERROR')
             
             outer_box.separator()
             
             # Guidance
-            outer_box.label(text="Now create your 3D camera", icon='LIGHT')
+            outer_box.label(text="Set up your 3D scene", icon='LIGHT')
             
             outer_box.separator()
             
             # Action button
             row = outer_box.row()
             row.scale_y = 2.0
-            row.operator("autosolve.setup_scene", text="Setup Tracking Scene", icon='SCENE_DATA')
+            row.operator("autosolve.setup_scene", text="Create 3D Scene", icon='SCENE_DATA')
         
         else:
             # ══════════════════════════════════════════════
             # COMPLETED
             # ══════════════════════════════════════════════
             
-            outer_box.label(text="Camera created successfully", icon='CHECKMARK')
+            outer_box.label(text="Scene ready!", icon='CHECKMARK')
             
             outer_box.separator()
             
             # Redo
-            outer_box.label(text="Need to redo?", icon='LOOP_BACK')
+            outer_box.label(text="Need changes?", icon='LOOP_BACK')
             row = outer_box.row()
-            row.operator("autosolve.setup_scene", text="Redo Setup", icon='FILE_REFRESH')
+            row.operator("autosolve.setup_scene", text="Redo Scene Setup", icon='FILE_REFRESH')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -423,31 +448,29 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
         outer_box = layout.box()
         
         # Guidance
-        outer_box.label(text="Fine-tune your camera motion", icon='LIGHT')
+        outer_box.label(text="Polish your results", icon='LIGHT')
         
         outer_box.separator()
         
         # Smoothing tools
-        outer_box.label(text="Smoothing Tools:", icon='MOD_SMOOTH')
+        outer_box.label(text="Reduce Jitter:", icon='MOD_SMOOTH')
         settings = context.scene.autosolve
         
-        # Strength sliders
+        # Strength slider
         col = outer_box.column(align=True)
-        col.prop(settings, "track_smooth_factor", text="Track Strength", slider=True)
-
+        col.prop(settings, "track_smooth_factor", text="Smoothing", slider=True)
         
-        # Buttons
+        # Button
         row = outer_box.row(align=True)
         row.scale_y = 1.4
-        row.operator("autosolve.smooth_tracks", text="Tracks", icon='CURVE_PATH')
-
+        row.operator("autosolve.smooth_tracks", text="Apply Smoothing", icon='CURVE_PATH')
         
         outer_box.separator()
         
-        # Start over
-        outer_box.label(text="Start Over:", icon='LOOP_BACK')
+        # Restart options
+        outer_box.label(text="Need to restart?", icon='LOOP_BACK')
         row = outer_box.row(align=True)
-        row.operator("autosolve.run_solve", text="Re-track", icon='TRACKING')
+        row.operator("autosolve.run_solve", text="Re-Track", icon='TRACKING')
         row.operator("autosolve.setup_scene", text="Redo Scene", icon='SCENE_DATA')
         
         

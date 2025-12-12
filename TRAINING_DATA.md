@@ -177,12 +177,6 @@ Each tracking session generates a JSON file with this structure:
     "motion_class": "MEDIUM",
     "motion_magnitude": 0.015,
     "motion_variance": 0.008,
-    "thumbnails": [
-      "/9j/4AAQSkZJRgABAQEASABIAAD...",
-      "/9j/4AAQSkZJRgABAQEASABIAAD...",
-      "/9j/4AAQSkZJRgABAQEASABIAAD..."
-    ],
-    "thumbnail_frames": [60, 120, 180],
     "edge_density": {
       "center": 0.85,
       "top-left": 0.42,
@@ -210,13 +204,19 @@ Each tracking session generates a JSON file with this structure:
 
 ### Behavior Record (`behavior/*.json`)
 
-User behavior is recorded separately for ML training:
+User behavior is recorded separately for ML training. **This is THE KEY data** for learning how experts improve tracking.
 
 ```json
 {
   "schema_version": 1,
   "session_id": "20251209_093000",
   "timestamp": "2025-12-09T09:35:00",
+
+  // Session linkage (for multi-attempt analysis)
+  "clip_fingerprint": "a7f3c89b2e71d6f0",
+  "previous_session_id": "20251209_091500",
+  "iteration": 3,
+  "contributor_id": "x7f2k9a1",
 
   "editing_duration_seconds": 45.0,
 
@@ -241,6 +241,19 @@ User behavior is recorded separately for ML training:
     "improved": true
   },
 
+  // THE KEY: Track additions (what pros ADD to improve tracking)
+  "track_additions": [
+    {
+      "track_name": "Track.042",
+      "region": "center",
+      "initial_frame": 45,
+      "position": [0.52, 0.48],
+      "lifespan_achieved": 145,
+      "had_bundle": true,
+      "reprojection_error": 0.32
+    }
+  ],
+
   "track_deletions": [
     {
       "track_name": "Track.005",
@@ -260,13 +273,15 @@ User behavior is recorded separately for ML training:
       "new_position": [0.524, 0.477],
       "displacement_px": 2.3
     }
-  ]
+  ],
+
+  // Quality metrics
+  "net_track_change": 2,
+  "region_additions": { "center": 2, "bottom-left": 1 }
 }
 ```
 
 ---
-
-## Track Telemetry Fields
 
 ## Track Telemetry Fields
 
@@ -501,7 +516,8 @@ When "Learn from My Edits" is enabled, these features are extracted:
 
 **Feature Density Extraction:**
 
-- Runs `detect_features` with low threshold
+- Runs `detect_features` with low threshold (0.4)
+- Samples 3 consecutive frames at each timeline point (25%, 50%, 75%) for robustness
 - Counts potential markers in each 3x3 region
 - Saves counts without storing images (privacy safe)
 - Used to identify textureless or sky regions before tracking
@@ -688,8 +704,8 @@ All session data is **anonymized**:
 To help improve AutoSolve for everyone:
 
 1. Export your training data via the UI
-2. Email to: **usamasq@gmail.com**
-3. Include: footage types you commonly track
+2. Upload to: **[HuggingFace dataset](https://huggingface.co/datasets/UsamaSQ/autosolve-telemetry)**
+3. Discuss on: **[Discord community](https://discord.gg/qUvrXHP9PU)**
 
 ### Community Model
 

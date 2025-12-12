@@ -10,8 +10,9 @@
 ## Quick Start
 
 1. **Export** your data: `AutoSolve → Training Data → Export Data`
-2. **Share** via [Discord](https://discord.gg/kkAmxKsS) or email: [usamasq@gmail.com](mailto:usamasq@gmail.com)
-3. That's it! Your data helps improve tracking for the whole community.
+2. **Upload** to [HuggingFace dataset](https://huggingface.co/datasets/UsamaSQ/autosolve-telemetry)
+3. **Discuss** on [Discord](https://discord.gg/qUvrXHP9PU) - join the community!
+4. That's it! Your data helps improve tracking for everyone.
 
 ---
 
@@ -48,11 +49,33 @@ Each tracking session records **anonymized numerical data** to help AutoSolve le
 
 ### Visual Features (NEW)
 
-| Category           | Fields                                         | Purpose                         |
-| ------------------ | ---------------------------------------------- | ------------------------------- |
-| **Thumbnails**     | 3 JPEG images (64x64) at 25%, 50%, 75% of clip | CNN scene classification        |
-| **Edge Density**   | Per-region texture quality proxy               | Predict trackability per region |
-| **Contrast Stats** | Min/max/mean velocity per region               | Identify motion characteristics |
+| Category           | Fields                           | Purpose                         |
+| ------------------ | -------------------------------- | ------------------------------- |
+| **Edge Density**   | Per-region texture quality proxy | Predict trackability per region |
+| **Contrast Stats** | Min/max/mean velocity per region | Identify motion characteristics |
+
+### Behavior Recording (THE KEY DATA)
+
+**This is the most valuable data for AI learning** - captures how experts improve tracking.
+
+| Category               | Fields                                     | Purpose                      |
+| ---------------------- | ------------------------------------------ | ---------------------------- |
+| **Track Additions**    | Region, position, lifespan, quality        | Learn where pros add tracks  |
+| **Track Deletions**    | Region, lifespan, error, inferred reason   | Learn what to avoid          |
+| **Marker Refinements** | Frame, old/new position, displacement      | Learn precision adjustments  |
+| **Settings Changes**   | Before/after values for pattern/search/etc | Learn setting adaptations    |
+| **Re-solve Results**   | Error before/after, improvement            | Measure if changes helped    |
+| **Net Track Change**   | Additions minus deletions                  | Overall editing pattern      |
+| **Region Additions**   | Count added per region                     | Which regions pros reinforce |
+
+### Session Linkage (NEW)
+
+| Field                   | Purpose                                                |
+| ----------------------- | ------------------------------------------------------ |
+| **clip_fingerprint**    | Links all sessions for the same footage                |
+| **previous_session_id** | Links to prior session (for multi-attempt analysis)    |
+| **iteration**           | Which attempt on this clip (1, 2, 3...)                |
+| **contributor_id**      | Anonymous ID per Blender install (distinguishes users) |
 
 ---
 
@@ -192,7 +215,7 @@ This helps AutoSolve learn expert-level track cleanup and settings tuning patter
 
 ## Contact & Community
 
-**Discord:** [Join our community](https://discord.gg/qUvrXHP9PU)  
-**Email:** [usamasq@gmail.com](mailto:usamasq@gmail.com)
+**Upload Data:** [HuggingFace dataset](https://huggingface.co/datasets/UsamaSQ/autosolve-telemetry)  
+**Discord:** [Join our community](https://discord.gg/qUvrXHP9PU)
 
 Your contributions make AutoSolve better for everyone! 🙏

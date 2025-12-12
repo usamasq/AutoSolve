@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -40,6 +40,48 @@ def get_cache_dir() -> Path:
 def get_model_path() -> Path:
     """Get path to the learned model file."""
     return get_autosolve_data_dir() / 'model.json'
+
+
+def get_contributor_id() -> str:
+    """
+    Get or generate anonymous contributor ID.
+    
+    Generated once per Blender install and stored persistently.
+    Used to distinguish data from different users while maintaining privacy.
+    
+    Format: 8-character random hex string (e.g., "a7f3c89b")
+    
+    Returns:
+        Anonymous contributor ID string
+    """
+    import hashlib
+    import secrets
+    
+    # Store in autosolve data directory
+    id_file = get_autosolve_data_dir() / 'contributor_id.txt'
+    
+    # Check if ID already exists
+    if id_file.exists():
+        try:
+            contributor_id = id_file.read_text().strip()
+            if len(contributor_id) >= 8:
+                return contributor_id
+        except Exception:
+            pass  # Generate new ID if read fails
+    
+    # Generate new random ID (privacy-safe: no personal data)
+    random_bytes = secrets.token_bytes(16)
+    contributor_id = hashlib.sha256(random_bytes).hexdigest()[:8]
+    
+    # Persist for future sessions
+    try:
+        id_file.parent.mkdir(parents=True, exist_ok=True)
+        id_file.write_text(contributor_id)
+        print(f"AutoSolve: Generated anonymous contributor ID: {contributor_id}")
+    except Exception as e:
+        print(f"AutoSolve: Could not persist contributor ID: {e}")
+    
+    return contributor_id
 
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -39,11 +39,15 @@ _state = TrackingState()
 #
 # Legacy globals (kept for backward compat, but prefer ClipStateManager):
 _behavior_recorder = None
-_behavior_monitor = None  # Timer-based monitor for manual tracking/solve
+
 _last_solve_settings = None
 _last_solve_error = None
 _last_solve_footage_class = None
 _last_solve_clip_fingerprint = None  # Track which clip the behavior belongs to
+_last_solve_session_id = None  # For linking behaviors to previous sessions
+
+# Iteration tracking per clip (fingerprint -> iteration count)
+_clip_iteration_count: dict = {}
 
 # Pending behavior to learn from AFTER the new solve completes
 _pending_behavior = None
@@ -76,7 +80,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
     
     bl_idname = "autosolve.run_solve"
     bl_label = "Analyze & Solve"
-    bl_description = "Smart tracking with adaptive learning from failures"
+    bl_description = "Full automatic tracking: analyzes footage, detects features, and solves camera (clears existing tracks)"
     bl_options = {'REGISTER'}
     
     _timer = None
@@ -113,7 +117,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
         # ═══════════════════════════════════════════════════════════════
         # BEHAVIOR LEARNING: Capture and learn from user edits since last solve
         # ═══════════════════════════════════════════════════════════════
-        global _behavior_recorder, _behavior_monitor
+        global _behavior_recorder
         global _last_solve_settings, _last_solve_error, _last_solve_footage_class
         global _pending_behavior, _pending_behavior_footage_class, _last_solve_clip_fingerprint
         
@@ -142,7 +146,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     manager.set_current_clip(clip)
                 
                 _behavior_recorder = None
-                _behavior_monitor = None
                 _last_solve_footage_class = None
             
             #    (Don't learn yet - we need the new solve's error to compare)
@@ -172,7 +175,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
         
         # Reset recorders (but keep pending behavior)
         _behavior_recorder = None
-        _behavior_monitor = None
         _last_solve_settings = None
         _last_solve_error = None
         _last_solve_clip_fingerprint = current_fingerprint  # Track current clip
@@ -184,6 +186,13 @@ class AUTOSOLVE_OT_run_solve(Operator):
             quality_preset=quality_preset,
             tripod_mode=tripod_mode
         )
+        
+        # Set session linkage for multi-attempt analysis
+        # (iteration is tracked per clip_fingerprint, previous_session_id links to prior attempt)
+        current_fingerprint = _generate_clip_fingerprint(clip)
+        _state.tracker.iteration = _clip_iteration_count.get(current_fingerprint, 1)
+        _state.tracker.previous_session_id = _last_solve_session_id or ""
+        
         _state.frame_start = clip.frame_start
         _state.frame_end = clip.frame_start + clip.frame_duration - 1
         _state.frame_current = clip.frame_start
@@ -217,26 +226,18 @@ class AUTOSOLVE_OT_run_solve(Operator):
         
         try:
             # ═══════════════════════════════════════════════════════════════
-            # PHASE: LOAD LEARNING DATA
+            # PHASE: CONFIGURE
             # ═══════════════════════════════════════════════════════════════
             if _state.phase == 'LOAD_LEARNING':
-                settings.solve_status = "Loading learning data..."
-                settings.solve_progress = 0.01
-                
-                # Try to load previous learning
-                tracker.load_learning(clip.name)
-                
+                # Learning data is loaded automatically in SmartTracker __init__
                 _state.phase = 'CONFIGURE'
                 return {'RUNNING_MODAL'}
             
-            # ═══════════════════════════════════════════════════════════════
-            # PHASE: CONFIGURE
-            # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'CONFIGURE':
                 settings.solve_status = f"Configuring (iteration {_state.iteration + 1})..."
                 settings.solve_progress = 0.03
                 
-                tracker.analyze_footage()
+                # Configure optimal tracker settings
                 tracker.configure_settings()
                 
                 # 1.3 Failure pattern warning: Check if similar footage has failed before
@@ -410,8 +411,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     _state.phase = 'ANALYZE'
                     return {'RUNNING_MODAL'}
             
-            # NOTE: MID_REPLENISH, MID_TRACK_FORWARD, MID_TRACK_BACKWARD phases removed.
-            # Replaced by adaptive monitor_and_replenish() during TRACK_FORWARD/BACKWARD.
+            # Adaptive monitoring now handles replenishment during tracking
             
             
             # ═══════════════════════════════════════════════════════════════
@@ -433,9 +433,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
-            # NOTE: ANALYZE_COVERAGE, FILL_GAPS, TRACK_GAP_*, VERIFY_TIMELINE, EXTEND_* phases removed.
-            # These were replaced by adaptive monitor_and_replenish() during TRACK_FORWARD/BACKWARD,
-            # which handles gaps in real-time without requiring additional full-clip tracking passes.
+            # Real-time adaptive monitoring handles coverage gaps
             
             # ═══════════════════════════════════════════════════════════════
             # PHASE: RETRY DECISION
@@ -695,10 +693,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     final_learned = tracker.learn_from_user_templates()
                     tracker.save_user_learning(final_learned)
                 
-                # NOTE: Camera smoothing is NOT applied here because AutoSolve
-                # only computes reconstruction data, not the actual camera object.
-                # Camera smoothing must be applied AFTER "Setup Tracking Scene"
-                # creates the camera with F-curves.
+                # Camera setup handled by AUTOSOLVE_OT_setup_scene operator
                 
                 settings.solve_status = "Complete!"
                 settings.solve_progress = 1.0
@@ -733,7 +728,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
         clip = context.edit_movieclip
         tracker = _state.tracker
         
-        # NOTE: Thumbnail extraction removed - now using feature_density via detect_features
         
         # ═══════════════════════════════════════════════════════════════
         # LEARN FROM PENDING BEHAVIOR (now we have the ACTUAL new error)
@@ -804,29 +798,41 @@ class AUTOSOLVE_OT_run_solve(Operator):
             from datetime import datetime
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Start behavior recorder (captures settings changes, track deletions, etc.)
+            # Track iterations per clip (for multi-attempt analysis)
+            global _clip_iteration_count, _last_solve_session_id
+            current_fingerprint = _last_solve_clip_fingerprint or ""
+            _clip_iteration_count[current_fingerprint] = _clip_iteration_count.get(current_fingerprint, 0) + 1
+            iteration = _clip_iteration_count[current_fingerprint]
+            
+            # Previous session ID for linking (what user was editing)
+            previous_session_id = _last_solve_session_id or ""
+            _last_solve_session_id = session_id  # Store for next iteration
+            
+            # Start behavior recorder (captures settings changes, track deletions, additions, etc.)
             from .tracker.learning.behavior_recorder import BehaviorRecorder
+            from .tracker.utils import get_contributor_id
             _behavior_recorder = BehaviorRecorder()
             _behavior_recorder.start_monitoring(
                 clip=clip,
                 settings=_last_solve_settings,
                 solve_error=_last_solve_error,
-                session_id=session_id
+                session_id=session_id,
+                clip_fingerprint=current_fingerprint,
+                previous_session_id=previous_session_id,
+                iteration=iteration,
+                contributor_id=get_contributor_id()
             )
             
-            # Initialize behavior monitor for manual tracking detection
-            # This enables detecting when user uses Blender's manual tracking/solve
-            from .tracker.learning.behavior_monitor import BehaviorMonitor
-            _behavior_monitor = BehaviorMonitor(clip)
+
             
             # Store in ClipState for multi-clip support
             if manager:
                 state = manager.get_state(clip)
                 state.behavior_recorder = _behavior_recorder
-                state.behavior_monitor = _behavior_monitor
+
             
             status = "success" if success else "failure"
-            print(f"AutoSolve: Monitoring for user behavior changes after {status}")
+            print(f"AutoSolve: Monitoring for user behavior changes after {status} (iteration {iteration})")
         
         self._cleanup(context)
         return {'FINISHED'} if success else {'CANCELLED'}
@@ -849,6 +855,7 @@ class AUTOSOLVE_OT_setup_scene(Operator):
     
     bl_idname = "autosolve.setup_scene"
     bl_label = "Setup Tracking Scene"
+    bl_description = "Initialize 3D scene: sets up background, creates camera, and orients floor/origin from tracks"
     bl_options = {'REGISTER', 'UNDO'}
     
     # Floor setup mode
@@ -953,19 +960,21 @@ class AUTOSOLVE_OT_setup_scene(Operator):
         return {'FINISHED'}
 
 
+
+
 class AUTOSOLVE_OT_contribute_data(Operator):
-    """Open the contribution page/Discord."""
+    """Open the HuggingFace dataset to upload training data."""
     
     bl_idname = "autosolve.contribute_data"
     bl_label = "Contribute Data"
-    bl_description = "Open the community page to share your training data"
+    bl_description = "Open HuggingFace dataset page to upload your training data"
     bl_options = {'REGISTER'}
     
     def execute(self, context):
         import webbrowser
-        # Using Discord URL as primary contribution point for now
-        webbrowser.open("https://discord.gg/qUvrXHP9PU")
-        self.report({'INFO'}, "Opened Discord community page")
+        # Using HuggingFace dataset as primary data upload destination
+        webbrowser.open("https://huggingface.co/datasets/UsamaSQ/autosolve-telemetry")
+        self.report({'INFO'}, "Opened HuggingFace dataset page")
         return {'FINISHED'}
 
 
@@ -974,12 +983,13 @@ class AUTOSOLVE_OT_export_training_data(Operator):
     
     bl_idname = "autosolve.export_training_data"
     bl_label = "Export Training Data"
+    bl_description = "Export sessions, behavior, and model data to a ZIP file for backup or sharing"
     bl_options = {'REGISTER'}
     
     filepath: bpy.props.StringProperty(
         name="File Path",
         description="Path to export training data",
-        default="autosolve_training.zip",
+        default="autosolve_telemetry.zip",
         subtype='FILE_PATH',
     )
     
@@ -989,6 +999,18 @@ class AUTOSOLVE_OT_export_training_data(Operator):
     )
     
     def invoke(self, context, event):
+        # Generate timestamped filename for unique HuggingFace uploads
+        import os
+        from datetime import datetime
+        from pathlib import Path
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"autosolve_telemetry_{timestamp}.zip"
+        
+        # Use user's home directory as default location
+        home = Path.home()
+        self.filepath = str(home / filename)
+        
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
     
@@ -1011,11 +1033,10 @@ class AUTOSOLVE_OT_export_training_data(Operator):
             
             session_count = 0
             behavior_count = 0
-            thumbnail_count = 0
             total_tracks = 0
             
             with zipfile.ZipFile(filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # 1. Export sessions and extract thumbnails
+                # 1. Export sessions
                 sessions_dir = base_dir / 'sessions'
                 if sessions_dir.exists():
                     for session_file in sessions_dir.glob('*.json'):
@@ -1023,44 +1044,6 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                             with open(session_file) as f:
                                 data = json.load(f)
                                 total_tracks += len(data.get('tracks', []))
-                            
-                            # Extract session ID from filename (e.g., "2025-12-12T10-30-00_a7f3c2b1.json")
-                            session_id = session_file.stem
-                            
-                            # Export thumbnails as individual files
-                            visual_features = data.get('visual_features') or {}
-                            thumbnails = visual_features.get('thumbnails') or []
-                            thumbnail_frames = visual_features.get('thumbnail_frames') or []
-                            
-                            for i, thumb_data in enumerate(thumbnails):
-                                # Edge cases: None, empty string, not a string
-                                if not thumb_data or not isinstance(thumb_data, str):
-                                    continue
-                                
-                                # Skip fallback/hash identifiers
-                                if thumb_data.startswith('fallback:'):
-                                    continue
-                                
-                                # Skip if too short to be valid base64 image
-                                if len(thumb_data) < 100:
-                                    continue
-                                
-                                # Get frame number safely
-                                frame = thumbnail_frames[i] if i < len(thumbnail_frames) else i
-                                if not isinstance(frame, (int, float)):
-                                    frame = i
-                                
-                                try:
-                                    # Decode base64 and write to ZIP
-                                    thumb_bytes = base64.b64decode(thumb_data)
-                                    # Verify it looks like valid image data
-                                    if len(thumb_bytes) < 50:
-                                        continue
-                                    thumb_filename = f"{session_id}_frame{int(frame):04d}.jpg"
-                                    zf.writestr(f"thumbnails/{thumb_filename}", thumb_bytes)
-                                    thumbnail_count += 1
-                                except Exception as e:
-                                    print(f"AutoSolve: Failed to export thumbnail {i}: {e}")
                             
                             # Write session JSON
                             zf.write(session_file, f"sessions/{session_file.name}")
@@ -1090,18 +1073,17 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                 
                 # 4. Create manifest
                 manifest = {
-                    'export_version': 2,  # Bumped version for thumbnail support
+                    'export_version': 1,
                     'export_date': datetime.now().isoformat(),
-                    'addon_version': '1.0.0',
+                    'addon_version': '0.1.0',
                     'session_count': session_count,
                     'behavior_count': behavior_count,
-                    'thumbnail_count': thumbnail_count,
                     'total_tracks': total_tracks,
                 }
                 zf.writestr('manifest.json', json.dumps(manifest, indent=2))
             
             self.report({'INFO'}, 
-                f"Exported {session_count} sessions, {behavior_count} behaviors, {thumbnail_count} thumbnails to {filepath.name}")
+                f"Exported {session_count} sessions, {behavior_count} behaviors to {filepath.name}")
             return {'FINISHED'}
             
         except Exception as e:
@@ -1116,6 +1098,7 @@ class AUTOSOLVE_OT_import_training_data(Operator):
     
     bl_idname = "autosolve.import_training_data"
     bl_label = "Import Training Data"
+    bl_description = "Import training data from a ZIP file to improve your local tracking model"
     bl_options = {'REGISTER', 'UNDO'}
     
     filepath: bpy.props.StringProperty(
@@ -1275,6 +1258,7 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
     
     bl_idname = "autosolve.reset_training_data"
     bl_label = "Reset Training Data"
+    bl_description = "WARNING: Permanently delete all learned data, sessions, and behavior history. Cannot be undone"
     bl_options = {'REGISTER', 'UNDO'}
     
     def invoke(self, context, event):
@@ -1380,6 +1364,7 @@ class AUTOSOLVE_OT_view_training_stats(Operator):
     
     bl_idname = "autosolve.view_training_stats"
     bl_label = "View Training Statistics"
+    bl_description = "Show current learning stats: number of sessions, known footage types, and success rates"
     bl_options = {'REGISTER'}
     
     def execute(self, context):
@@ -1408,7 +1393,7 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
     
     bl_idname = "autosolve.smooth_tracks"
     bl_label = "Smooth Tracks"
-    bl_description = "Apply smoothing to track markers and automatically update the camera solve"
+    bl_description = "Smooth track markers to reduce jitter, then automatically re-solve camera (preserves floor orientation)"
     bl_options = {'REGISTER', 'UNDO'}
     
     @classmethod
@@ -1593,7 +1578,7 @@ classes = (
 @bpy.app.handlers.persistent
 def _save_behavior_on_quit(dummy):
     """Save pending behavior data when Blender quits or file is saved."""
-    global _behavior_recorder, _behavior_monitor
+    global _behavior_recorder
     
     # First, save behavior from ClipStateManager (all clips)
     try:
@@ -1614,7 +1599,6 @@ def _save_behavior_on_quit(dummy):
             print(f"AutoSolve: Error saving behavior on quit: {e}")
         finally:
             _behavior_recorder = None
-            _behavior_monitor = None
 
 
 def register():

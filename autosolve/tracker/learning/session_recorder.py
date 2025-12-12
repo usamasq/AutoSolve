@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -162,6 +162,10 @@ class SessionData:
     
     # ML Enhancement v2: Clip fingerprint for per-clip learning
     clip_fingerprint: str = ""
+    
+    # Session linkage: link to previous session for multi-attempt analysis
+    previous_session_id: str = ""
+    contributor_id: str = ""  # Anonymous ID per Blender install (distinguishes users)
     
     # ML Enhancement v2: Motion classification for sub-classification
     motion_class: str = "MEDIUM"  # LOW, MEDIUM, HIGH
@@ -747,6 +751,23 @@ class SessionRecorder:
         
         self.current_session.clip_fingerprint = fingerprint
     
+    def record_session_linkage(self, previous_session_id: str = "", iteration: int = 1):
+        """
+        Record session linkage for multi-attempt analysis.
+        
+        Links this session to the previous session for the same clip,
+        enabling analysis of how user iterations improve tracking.
+        
+        Args:
+            previous_session_id: Session ID of the previous attempt on this clip
+            iteration: Which attempt this is (1, 2, 3...)
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.previous_session_id = previous_session_id
+        self.current_session.iteration = iteration
+    
     def record_motion_class(self, motion_class: str):
         """
         Record motion classification for sub-classification.
@@ -758,6 +779,18 @@ class SessionRecorder:
             return
         
         self.current_session.motion_class = motion_class
+    
+    def record_contributor_id(self, contributor_id: str):
+        """
+        Record anonymous contributor ID for multi-user data distinction.
+        
+        Args:
+            contributor_id: Anonymous ID from get_contributor_id()
+        """
+        if not self.current_session:
+            return
+        
+        self.current_session.contributor_id = contributor_id
     
     def record_flow_histograms(self, direction_histogram: List[float], magnitude_histogram: List[float]):
         """

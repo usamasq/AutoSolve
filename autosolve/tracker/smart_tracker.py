@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 AutoSolve Contributors
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -328,6 +328,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.footage_class = f"{self.resolution_class}_{footage_type}"
         self.current_settings: Dict = {}
         self.iteration = 0
+        self.previous_session_id: str = ""  # For linking sessions across multi-attempts
         self.last_analysis: Optional[Dict] = None
         self.known_dead_zones: Set[str] = set()
         
@@ -564,30 +565,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self.known_dead_zones = learned_dead_zones
             print(f"AutoSolve: Using LEARNED dead zones: {', '.join(learned_dead_zones)}")
 
-    def load_learning(self, clip_name: str):
-        """
-        Load learning data for the specific clip.
-        
-        Currently a placeholder or wrapper for ensure settings are consistent
-        with what might be loaded from a more specific per-clip file if implemented later.
-        For now, we rely on the class-based local learning loaded in __init__.
-        """
-        print(f"AutoSolve: Loading learning data for clip '{clip_name}'...")
-        # In the future, per-clip specific learning could be loaded here.
-        # For now, we are good with the class-based learning loaded in init.
-        pass
 
-    def analyze_footage(self):
-        """
-        Analyze footage characteristics.
-        
-        This method inspects the clip to determine its properties and
-        adjust settings accordingly. Currently a placeholder that logs
-        the classification already done in __init__.
-        """
-        print(f"AutoSolve: Analyzing footage - {self.footage_class}")
-        # Footage analysis is already done in __init__ via _classify_footage
-        # and _load_initial_settings. This method exists for explicit calls.
     
     # ═══════════════════════════════════════════════════════════════════════════
     # MID-SESSION ADAPTATION (Real-time Settings Adjustment)
@@ -1364,74 +1342,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     # STRATEGIC MARKER PLACEMENT (Industry-Standard Approach)
     # ═══════════════════════════════════════════════════════════════════════════
     
-    def detect_strategic_features(self, markers_per_region: int = 3) -> int:
-        """
-        DEPRECATED: Use detect_features_smart() instead.
-        
-        This method is maintained for backwards compatibility but will be removed
-        in a future version. detect_features_smart() provides the same functionality
-        with better performance using single-pass detection.
-        
-        Args:
-            markers_per_region: Target markers per screen region (default 3)
-            
-        Returns:
-            Total number of features detected
-        """
-        import warnings
-        warnings.warn(
-            "detect_strategic_features is deprecated, use detect_features_smart instead",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        total_detected = 0
-        regions = REGIONS.copy()
-        
-        # Get user priority regions
-        priority = self.get_user_priority_regions()
-        priority_regions = set(priority['high']) | set(priority['existing'])
-        
-        # Preserve existing good tracks
-        self.preserve_existing_tracks()
-        
-        # Shuffle regions to avoid bias (randomize placement order)
-        import random
-        random.shuffle(regions)
-        
-        # Exclude known temporal dead zones for current frame
-        current_frame = bpy.context.scene.frame_current
-        active_dead_zones = set()
-        segment = self._get_frame_segment(current_frame)
-        if segment in self.temporal_dead_zones:
-            for region, count in self.temporal_dead_zones[segment].items():
-                if count >= 3:
-                    active_dead_zones.add(region)
-        
-        for region in regions:
-            if region in active_dead_zones:
-                print(f"AutoSolve: Skipping {region} (temporal dead zone)")
-                continue
-            
-            # Double markers in user-priority regions
-            target_count = markers_per_region
-            if region in priority_regions:
-                target_count = markers_per_region * 2
-                print(f"AutoSolve: Priority region {region}: targeting {target_count} markers")
-            
-            detected = self.detect_in_region(region, target_count)
-            total_detected += detected
-        
-        # If strategic detection failed, fallback to standard detection
-        if total_detected < 8:
-            print(f"AutoSolve: Strategic detection got only {total_detected}, using standard detection")
-            threshold = self.current_settings.get('threshold', 0.3)
-            standard_count = self.detect_features(threshold)
-            print(f"AutoSolve: Standard detection: {standard_count} markers")
-            return standard_count
-        
-        print(f"AutoSolve: Strategic detection - {total_detected} markers "
-              f"({len(priority_regions)} priority regions)")
-        return total_detected
+
     
     def _is_non_rigid_region(self, region: str) -> bool:
         """
@@ -1612,10 +1523,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         initial_count = len(self.tracking.tracks)
         
-        # DEBUG: Log frame context before detection
         scene_frame = bpy.context.scene.frame_current
-        print(f"AutoSolve DEBUG: detect_all_regions at scene_frame={scene_frame}, clip.frame_start={self.clip.frame_start}")
-        print(f"AutoSolve DEBUG: Expected clip_frame = {self.scene_to_clip_frame(scene_frame)}")
         
         # Use HIGHER threshold for better quality initial features
         # A higher threshold means only strong corners/features are detected
@@ -1638,11 +1546,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         new_tracks = list(self.tracking.tracks)[initial_count:]
         
-        # DEBUG: Show where markers were actually placed
-        if new_tracks:
-            sample_marker = new_tracks[0].markers[0] if len(new_tracks[0].markers) > 0 else None
-            if sample_marker:
-                print(f"AutoSolve DEBUG: First marker placed at clip frame {sample_marker.frame} (expected {self.scene_to_clip_frame(scene_frame)})")
+        # Verify detection was successful
+        if not new_tracks:
+            print("AutoSolve: No features detected")
+            return {r: 0 for r in REGIONS}
         
         if not new_tracks:
             print("AutoSolve: No features detected")
@@ -1840,9 +1747,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Returns:
             Total number of features detected
         """
-        print(f"AutoSolve: ═══════════════════════════════════════════════")
-        print(f"AutoSolve: SMART FEATURE DETECTION")
-        print(f"AutoSolve: ═══════════════════════════════════════════════")
+        print(f"AutoSolve: Starting feature detection...")
         
         # Step 1: Get motion classification (use cache or run probe)
         if use_cached_probe and hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
@@ -1852,7 +1757,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Fix: Ensure motion class is set on instance
             self.motion_class = probe_results.get('motion_class', 'MEDIUM')
             
-            # Fix: Extract visual features even when using cache (thumbnails aren't cached)
+            # Extract visual features from cached probe results
             try:
                 if hasattr(self, 'feature_extractor'):
                     self.feature_extractor.extract_all(tracking_data=probe_results)
@@ -1954,83 +1859,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         return total
     
-    def detect_exploratory_features(self, markers_per_region: int = 3) -> int:
-        """
-        DEPRECATED: Use detect_features_smart() instead.
-        
-        This method is maintained for backwards compatibility but will be removed
-        in a future version. detect_features_smart() provides the same functionality
-        with better performance.
-        
-        Args:
-            markers_per_region: Target markers per region (default 3)
-            
-        Returns:
-            Total number of quality features detected
-        """
-        import warnings
-        warnings.warn(
-            "detect_exploratory_features is deprecated, use detect_features_smart instead",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        print(f"AutoSolve: ═══════════════════════════════════════════════")
-        print(f"AutoSolve: PHASED EXPLORATORY DETECTION")
-        print(f"AutoSolve: ═══════════════════════════════════════════════")
-        
-        # ═══════════════════════════════════════════════════════════════
-        # PHASE 1: MOTION PROBE
-        # Place few markers with very aggressive settings to measure motion
-        # ═══════════════════════════════════════════════════════════════
-        print(f"AutoSolve: Phase 1 - MOTION PROBE")
-        
-        probe_results = self._run_motion_probe()
-        
-        if not probe_results['success']:
-            print(f"AutoSolve: Probe failed, using default aggressive settings")
-            return self._detect_quality_markers(
-                motion_class='HIGH',
-                texture_class='LOW',
-                markers_per_region=2
-            )
-        
-        motion_class = probe_results['motion_class']  # LOW, MEDIUM, HIGH
-        texture_class = probe_results['texture_class']  # LOW, MEDIUM, HIGH
-        best_regions = probe_results['best_regions']
-        
-        print(f"AutoSolve: Phase 1 complete - Motion: {motion_class}, Texture: {texture_class}")
-        print(f"AutoSolve: Best regions: {', '.join(best_regions)}")
-        
-        # ═══════════════════════════════════════════════════════════════
-        # PHASE 2: QUALITY DETECTION
-        # Use probe results to place fewer, better markers
-        # ═══════════════════════════════════════════════════════════════
-        print(f"AutoSolve: Phase 2 - QUALITY DETECTION")
-        
-        # Determine markers per region based on motion (fewer for high motion)
-        if motion_class == 'HIGH':
-            target_per_region = 1  # Few but robust
-        elif motion_class == 'MEDIUM':
-            target_per_region = 2
-        else:
-            target_per_region = 2  # Low motion can handle more
-        
-        total = self._detect_quality_markers(
-            motion_class=motion_class,
-            texture_class=texture_class,
-            markers_per_region=target_per_region,
-            priority_regions=best_regions
-        )
-        
-        print(f"AutoSolve: Phase 2 complete - {total} quality markers placed")
-        
-        # Minimum viable check
-        if total < 8:
-            print(f"AutoSolve: Only {total} markers, adding reinforcements...")
-            extra = self._add_reinforcement_markers(total, motion_class)
-            total += extra
-        
-        return total
+
     
     def _estimate_motion_quick(self) -> str:
         """
@@ -2108,7 +1937,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             }
             self.cached_motion_probe = quick_result.copy()
             
-            # Extract visual features even for quick estimate (needed for thumbnails)
+            # Extract visual features for feature density
             try:
                 if hasattr(self, 'feature_extractor'):
                     self.feature_extractor.extract_all(tracking_data=quick_result)
@@ -2272,8 +2101,13 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # Extract visual features for ML training data
         try:
             if hasattr(self, 'feature_extractor'):
-                # Use extract_all() to populate all visual features including thumbnails
-                self.feature_extractor.extract_all(tracking_data=result)
+                # Extract all visual features for ML training
+                override = self._get_context_override()
+                if override:
+                    with bpy.context.temp_override(**override):
+                        self.feature_extractor.extract_all(tracking_data=result)
+                else:
+                    self.feature_extractor.extract_all(tracking_data=result)
                 # Sync motion class to feature extractor
                 self.feature_extractor.features.motion_class = self.motion_class
                 print(f"AutoSolve: Visual features extracted")
@@ -2997,28 +2831,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         markers_at_frame_before = len(active_before)
         
-        # ALWAYS log first few frames to confirm tracking runs
-        if frame <= 190 or frame % 50 == 0:
-            print(f"AutoSolve DEBUG: track_frame({backwards=}) frame={frame} selected={selected_count} markers_here={markers_at_frame_before}")
-            # Inspect first track to see where its markers are
-            if selected_count > 0 and markers_at_frame_before == 0:
-                for track in self.tracking.tracks:
-                    if track.select:
-                        print(f"  - Track {track.name} has {len(track.markers)} markers at frames: {[m.frame for m in track.markers]}")
-                        break
+
         
-        # DEBUG: Check clip_user frame vs scene frame before tracking
-        clip_user_frame = None
-        for window in bpy.context.window_manager.windows:
-            for area in window.screen.areas:
-                if area.type == 'CLIP_EDITOR':
-                    for space in area.spaces:
-                        if space.type == 'CLIP_EDITOR':
-                            clip_user_frame = space.clip_user.frame_current
-                            break
-        
-        if frame <= 125:
-            print(f"AutoSolve DEBUG: Before track_markers: scene_frame={frame}, clip_user_frame={clip_user_frame}, clip.frame_start={self.clip.frame_start}")
+
         
         self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
         
@@ -3039,21 +2854,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         markers_at_next = len(active_after)
         
-        # Log if we lost markers this frame
+        # Track marker loss for adaptive replenishment
         lost_count = markers_at_frame_before - markers_at_next
-        if lost_count > 0 and frame <= 130:
-            lost = set(active_before) - set(active_after)
-            print(f"AutoSolve DEBUG: Frame {frame}→{next_frame} LOST {lost_count} markers: {list(lost)[:5]}")
-            # Show settings of first lost track
-            for t in self.tracking.tracks:
-                if t.name in lost:
-                    print(f"  - {t.name}: correlation_min={t.correlation_min:.2f}")
-                    break
         
-        # Log if tracking completely failed
-        if markers_at_next == 0 and markers_at_frame_before > 0:
-            print(f"AutoSolve DEBUG: TRACKING FAILED at frame {frame} → {next_frame}")
-            print(f"  - Had {markers_at_frame_before} markers, now {markers_at_next}")
+
     
     def track_sequence(self, start_frame: int, end_frame: int, backwards: bool = False) -> int:
         """
@@ -3120,8 +2924,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         min_markers = min(frame_coverage.values()) if frame_coverage else 0
         max_markers = max(frame_coverage.values()) if frame_coverage else 0
         
-        print(f"AutoSolve DEBUG: solve_camera - {track_count} tracks, {tracks_with_markers} with markers")
-        print(f"AutoSolve DEBUG: Frame coverage - min {min_markers} markers, max {max_markers} markers")
+
         
         # Helper to toggle refinement options safely across Blender versions
         def set_refinement(enable: bool):
@@ -3195,8 +2998,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 bundle_count = self.get_bundle_count()
                 bundle_ratio = bundle_count / max(track_count, 1)
                 raw_error = self.tracking.reconstruction.average_error
-                
-                print(f"AutoSolve DEBUG: Final Solve - {bundle_count}/{track_count} bundles ({bundle_ratio:.0%}), error {raw_error:.2f}")
+
                 
                 if bundle_ratio < 0.3:
                     print(f"AutoSolve WARNING: Low quality solve - only {bundle_count}/{track_count} tracks reconstructed")
@@ -3215,20 +3017,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         except Exception as e:
             print(f"AutoSolve: Solve camera failed with error: {e}")
             return False
-                    print(f"AutoSolve WARNING: Marginal quality - {bundle_count}/{track_count} tracks reconstructed")
-                    self._solve_quality_failure = False
-                else:
-                    self._solve_quality_failure = False
-                
-                print(f"AutoSolve DEBUG: Solve SUCCESS - error {raw_error:.2f}")
-                return True
-            else:
-                print(f"AutoSolve DEBUG: Solve FAILED - reconstruction not valid")
-                return False
-                
-        except RuntimeError as e:
-            print(f"AutoSolve DEBUG: Solve EXCEPTION - {e}")
-            return False
+
     
     def get_solve_error(self) -> float:
         """Get solve error, accounting for quality issues."""
@@ -3336,6 +3125,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 # 1. Start Session (if not already aligned)
                 if not self.recorder.current_session:
                     self.recorder.start_session(self.clip, self.current_settings)
+                else:
+                    # CRITICAL FIX: Update settings to match final state (in case of adaptation)
+                    self.recorder.current_session.settings = self.current_settings.copy()
+                    print(f"AutoSolve: Synced final settings to session record")
                 
                 # 2. Record Motion Probe Results (if available)
                 if hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
@@ -3346,6 +3139,16 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     self.recorder.record_clip_fingerprint(self.clip_fingerprint)
                 if hasattr(self, 'motion_class') and self.motion_class:
                     self.recorder.record_motion_class(self.motion_class)
+                
+                # 4. Record session linkage for multi-attempt analysis
+                # Uses iteration count and previous_session_id if available
+                previous_session_id = getattr(self, 'previous_session_id', "")
+                iteration = getattr(self, 'iteration', 1)
+                self.recorder.record_session_linkage(previous_session_id, iteration)
+                
+                # 5. Record contributor ID for multi-user data distinction
+                from .utils import get_contributor_id
+                self.recorder.record_contributor_id(get_contributor_id())
                 
                 # 4. Extract and Record Visual Features (feature density, motion, etc.)
                 if hasattr(self, 'feature_extractor') and self.feature_extractor:
@@ -3358,10 +3161,30 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     
                     # Extract features (feature density via detect_features if not pre-computed, motion, edge density)
                     try:
+                        # CRITICAL: Force recompute to ensure we get full 9-frame timeline (not just detection frame shortcut)
                         self.feature_extractor.extract_all(
                             clip=self.clip,
-                            tracking_data=tracking_data
+                            tracking_data=tracking_data,
+                            force_recompute=True
                         )
+                        
+                        # CRITICAL FIX: Explicitly compute post-tracking features
+                        # valid tracking data is now available, so we must update edge density and histograms
+                        if tracking_data:
+                            self.feature_extractor.compute_from_tracking(tracking_data)
+                            
+                            # Build list of motion vectors from tracks for histogram
+                            vectors = []
+                            for track in self.tracking.tracks:
+                                if len(track.markers) >= 2:
+                                    markers = sorted(track.markers, key=lambda m: m.frame)
+                                    dx = markers[-1].co.x - markers[0].co.x
+                                    dy = markers[-1].co.y - markers[0].co.y
+                                    vectors.append((dx, dy))
+                            
+                            self.feature_extractor.compute_flow_histograms(vectors)
+                            print("AutoSolve: Re-computed visual features from final tracking data")
+                            
                     except Exception as fe:
                         print(f"AutoSolve: Feature extraction failed: {fe}")
                     self.recorder.record_visual_features(self.feature_extractor.to_dict())
