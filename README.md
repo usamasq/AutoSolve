@@ -182,11 +182,14 @@ autosolve/
 - [x] **Setup Tracking Scene** - Auto-create camera and background
 - [x] **Multi-frame Feature Density** - Temporal texture analysis
 - [x] **Per-Marker Quality Tracking** - Survival prediction data
+- [x] **Real-time Motion Estimation** - Zoom & motion confidence analysis
 
-### Future
+### Future Roadmap
 
-- [ ] **Real-time Motion Estimation** - Analyze optical flow before tracking
-- [ ] **Neural Network Model** - Replace heuristics with ML using collected data
+- [ ] **Community Model Sync** - Download aggregated best settings
+- [ ] **Retry with diagnosis** - Automatic retry loops based on failure type
+- [ ] **XGBoost Settings Model** - Lightweight ML model when >500 sessions collected
+- [ ] **Deep Learning (Long Term)** - LSTM/RNN for trajectory prediction (>10k sessions)
 
 ---
 

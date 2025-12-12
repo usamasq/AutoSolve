@@ -43,6 +43,14 @@ class TrackTelemetry:
     # ML Enhancement: Sampled trajectory for RNN training
     trajectory: List[List[float]] = field(default_factory=list)  # [[x,y], [x,y], ...]
     trajectory_sample_rate: int = 5  # Every Nth frame
+    
+    # ML Enhancement: Per-segment velocities for acceleration detection
+    trajectory_velocities: List[float] = field(default_factory=list)  # [v1, v2, ...] between samples
+    
+    # ML Enhancement: Per-sample confidence (pseudo-correlation from velocity smoothness)
+    # High confidence = smooth motion, Low confidence = jerky/hunting motion
+    trajectory_confidence: List[float] = field(default_factory=list)  # [0.98, 0.95, 0.72, ...]
+    avg_confidence: float = 1.0  # Average confidence across all samples
 
 
 @dataclass
@@ -167,19 +175,16 @@ class SessionData:
     previous_session_id: str = ""
     contributor_id: str = ""  # Anonymous ID per Blender install (distinguishes users)
     
-    # ML Enhancement v2: Motion classification for sub-classification
-    motion_class: str = "MEDIUM"  # LOW, MEDIUM, HIGH
-    
     # ML Enhancement v2: Visual features from feature_extractor
+    # NOTE: motion_class is now stored ONLY in visual_features (removed redundancy)
     visual_features: Dict = field(default_factory=dict)
     
     # ML Enhancement v2: Track failure logging
     # Format: [{"track_name": str, "frame": int, "position": [x, y], "reason": str}, ...]
     track_failures: List[Dict] = field(default_factory=list)
     
-    # ML Enhancement v2: Flow histograms for NN
-    flow_direction_histogram: List[float] = field(default_factory=lambda: [0.0] * 8)
-    flow_magnitude_histogram: List[float] = field(default_factory=lambda: [0.0] * 5)
+    # NOTE: flow_direction_histogram and flow_magnitude_histogram are now stored
+    # ONLY in visual_features (removed redundancy)
     
     # ML Enhancement v3: Marker survival summary for quick analysis
     marker_survival_summary: Dict = field(default_factory=lambda: {
@@ -190,6 +195,19 @@ class SessionData:
         'avg_quality_score': 0.0,
         'quality_vs_survival_correlation': 0.0,  # For validating quality score
         'per_region': {},  # {"region": {"total": N, "survived": M, "rate": 0.X}, ...}
+    })
+    
+    # ML Enhancement v4: Zoom/dolly detection from track trajectories
+    # Uses existing trajectory data to detect and characterize zoom movements
+    zoom_analysis: Dict = field(default_factory=lambda: {
+        'is_zoom_detected': False,       # True if significant radial motion detected
+        'zoom_direction': 'NONE',        # ZOOM_IN, ZOOM_OUT, NONE
+        'scale_timeline': [],            # [1.0, 1.02, 1.05, ...] per trajectory sample
+        'estimated_fl_ratio': 1.0,       # Final/initial scale ratio (>1=zoom out, <1=zoom in)
+        'scale_variance': 0.0,           # Low=zoom (uniform), high=dolly (parallax)
+        'is_uniform_scale': False,       # True if zoom-like, False if dolly-like
+        'radial_convergence': 0.0,       # -1=converging (zoom in), +1=diverging (zoom out)
+        'confidence': 0.0,               # Detection confidence (0-1)
     })
 
 
@@ -447,9 +465,37 @@ class SessionRecorder:
                 
                 # ML Enhancement: Sample trajectory every N frames
                 trajectory = []
+                trajectory_velocities = []
+                prev_pos = None
                 for i, marker in enumerate(markers):
                     if i % trajectory_sample_rate == 0:
-                        trajectory.append([round(marker.co.x, 4), round(marker.co.y, 4)])
+                        pos = [round(marker.co.x, 4), round(marker.co.y, 4)]
+                        trajectory.append(pos)
+                        
+                        # Compute velocity between this sample and previous
+                        if prev_pos is not None:
+                            dx = pos[0] - prev_pos[0]
+                            dy = pos[1] - prev_pos[1]
+                            velocity = (dx**2 + dy**2)**0.5 / trajectory_sample_rate
+                            trajectory_velocities.append(round(velocity, 6))
+                        prev_pos = pos
+                
+                # ML Enhancement: Compute trajectory confidence (pseudo-correlation)
+                # Based on velocity smoothness - sudden changes indicate low confidence
+                trajectory_confidence = []
+                if len(trajectory_velocities) >= 2:
+                    trajectory_confidence.append(1.0)  # First point has no history
+                    for i in range(1, len(trajectory_velocities)):
+                        # Acceleration = change in velocity
+                        accel = abs(trajectory_velocities[i] - trajectory_velocities[i-1])
+                        # Convert to confidence: high acceleration = low confidence
+                        # Threshold: 0.005 normalized velocity change = near-zero confidence
+                        confidence = max(0.0, 1.0 - accel / 0.005)
+                        trajectory_confidence.append(round(confidence, 3))
+                elif len(trajectory_velocities) == 1:
+                    trajectory_confidence = [1.0]
+                
+                avg_confidence = sum(trajectory_confidence) / len(trajectory_confidence) if trajectory_confidence else 1.0
                 
                 # ML Enhancement: Initial position for survival prediction
                 initial_pos = [round(markers[0].co.x, 4), round(markers[0].co.y, 4)]
@@ -486,6 +532,9 @@ class SessionRecorder:
                     feature_quality_score=round(quality, 3),
                     trajectory=trajectory,
                     trajectory_sample_rate=trajectory_sample_rate,
+                    trajectory_velocities=trajectory_velocities,
+                    trajectory_confidence=trajectory_confidence,
+                    avg_confidence=round(avg_confidence, 3),
                 )
             
                 self.current_session.tracks.append(asdict(telemetry))
@@ -653,6 +702,157 @@ class SessionRecorder:
             total_possible_lifespan = self.current_session.frame_count
             early_failures = sum(1 for t in tracks if t.get('lifespan', 0) < total_possible_lifespan * 0.3)
             of['track_dropout_rate'] = round(early_failures / len(tracks), 4)
+        
+        # Velocity acceleration: compute from trajectory velocities
+        # Positive = speeding up, Negative = slowing down
+        self._compute_velocity_acceleration()
+        
+        # Compute zoom analysis from trajectory data
+        self._compute_zoom_analysis()
+    
+    def _compute_velocity_acceleration(self):
+        """
+        Compute velocity acceleration from trajectory velocity data.
+        
+        Uses per-track trajectory_velocities to detect if motion is:
+        - Accelerating (positive value)
+        - Decelerating (negative value)
+        - Constant (near zero)
+        """
+        if not self.current_session or not self.current_session.tracks:
+            return
+        
+        tracks = self.current_session.tracks
+        all_accelerations = []
+        
+        for track in tracks:
+            velocities = track.get('trajectory_velocities', [])
+            if len(velocities) < 3:
+                continue
+            
+            # Compute acceleration: average change in velocity
+            velocity_changes = [velocities[i+1] - velocities[i] for i in range(len(velocities)-1)]
+            avg_acceleration = sum(velocity_changes) / len(velocity_changes)
+            all_accelerations.append(avg_acceleration)
+        
+        if all_accelerations:
+            # Average across all tracks
+            avg_global_acceleration = sum(all_accelerations) / len(all_accelerations)
+            self.current_session.optical_flow['velocity_acceleration'] = round(avg_global_acceleration, 6)
+    
+    def _compute_zoom_analysis(self):
+        """
+        Compute zoom/dolly detection from existing trajectory data.
+        
+        Uses the already-collected trajectory samples to detect:
+        - Zoom In: tracks converge toward principal point (uniform scale decrease)
+        - Zoom Out: tracks diverge from principal point (uniform scale increase)
+        - Dolly: same pattern but with high parallax (non-uniform scale)
+        
+        The key insight: zoom changes scale uniformly, while dolly creates parallax.
+        """
+        if not self.current_session or not self.current_session.tracks:
+            return
+        
+        tracks = self.current_session.tracks
+        
+        # Get principal point (default to center if not available)
+        pp = self.current_session.camera_intrinsics.get('principal_point', [0.5, 0.5])
+        if not pp or len(pp) != 2:
+            pp = [0.5, 0.5]
+        
+        # Group trajectory samples by time index
+        per_time_samples = {}  # {time_idx: [distances_from_pp, ...]}
+        
+        for track in tracks:
+            trajectory = track.get('trajectory', [])
+            if len(trajectory) < 3:
+                continue
+            
+            for i, pos in enumerate(trajectory):
+                if not pos or len(pos) != 2:
+                    continue
+                
+                # Distance from principal point
+                dist = ((pos[0] - pp[0])**2 + (pos[1] - pp[1])**2)**0.5
+                
+                # Skip tracks very close to center (less reliable for scale detection)
+                if dist < 0.02:
+                    continue
+                
+                if i not in per_time_samples:
+                    per_time_samples[i] = []
+                per_time_samples[i].append(dist)
+        
+        # Need at least 3 time samples with data
+        if len(per_time_samples) < 3:
+            return
+        
+        # Compute average distance at each time sample
+        time_indices = sorted(per_time_samples.keys())
+        avg_distances = []
+        for t in time_indices:
+            if per_time_samples[t]:
+                avg_distances.append(sum(per_time_samples[t]) / len(per_time_samples[t]))
+        
+        if len(avg_distances) < 3 or avg_distances[0] < 0.01:
+            return
+        
+        # Compute scale timeline (normalize to first frame)
+        scale_timeline = [d / avg_distances[0] for d in avg_distances]
+        
+        # Compute overall metrics
+        start_to_end_ratio = scale_timeline[-1] / scale_timeline[0] if scale_timeline[0] > 0 else 1.0
+        
+        # Scale variance: how much does scale deviate from linear interpolation?
+        # Low variance = uniform scaling (zoom), high variance = parallax (dolly)
+        if len(scale_timeline) > 2:
+            # Linear fit: expected scale at each point
+            slope = (scale_timeline[-1] - scale_timeline[0]) / (len(scale_timeline) - 1)
+            expected = [scale_timeline[0] + slope * i for i in range(len(scale_timeline))]
+            scale_variance = sum((s - e)**2 for s, e in zip(scale_timeline, expected)) / len(scale_timeline)
+        else:
+            scale_variance = 0.0
+        
+        # Thresholds for detection
+        ZOOM_THRESHOLD = 0.05  # 5% total scale change to be considered a zoom
+        VARIANCE_THRESHOLD = 0.01  # Low variance = uniform (zoom-like)
+        
+        is_zoom_detected = abs(start_to_end_ratio - 1.0) > ZOOM_THRESHOLD
+        is_uniform_scale = scale_variance < VARIANCE_THRESHOLD
+        
+        # Radial convergence: negative = converging (zoom in), positive = diverging (zoom out)
+        radial_convergence = (start_to_end_ratio - 1.0)
+        radial_convergence_normalized = radial_convergence / max(abs(radial_convergence), 0.001) if radial_convergence != 0 else 0.0
+        
+        # Determine direction
+        if start_to_end_ratio > (1.0 + ZOOM_THRESHOLD):
+            zoom_direction = 'ZOOM_OUT'
+        elif start_to_end_ratio < (1.0 - ZOOM_THRESHOLD):
+            zoom_direction = 'ZOOM_IN'
+        else:
+            zoom_direction = 'NONE'
+        
+        # Confidence: based on how many tracks contributed and variance
+        tracks_with_trajectory = sum(1 for t in tracks if len(t.get('trajectory', [])) >= 3)
+        confidence = min(1.0, tracks_with_trajectory / 10.0) * (1.0 if is_uniform_scale else 0.5)
+        
+        self.current_session.zoom_analysis = {
+            'is_zoom_detected': is_zoom_detected,
+            'zoom_direction': zoom_direction,
+            'scale_timeline': [round(s, 4) for s in scale_timeline],
+            'estimated_fl_ratio': round(start_to_end_ratio, 4),
+            'scale_variance': round(scale_variance, 6),
+            'is_uniform_scale': is_uniform_scale,
+            'radial_convergence': round(radial_convergence_normalized, 4),
+            'confidence': round(confidence, 3),
+        }
+        
+        if is_zoom_detected:
+            print(f"AutoSolve: Zoom detected - {zoom_direction} "
+                  f"(scale: {start_to_end_ratio:.2f}x, "
+                  f"{'uniform' if is_uniform_scale else 'parallax'}, "
+                  f"confidence: {confidence:.0%})")
     
     def record_motion_probe(self, probe_results: Dict):
         """Record motion probe results for ML training."""

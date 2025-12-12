@@ -237,3 +237,15 @@ def get_clip_manager() -> ClipStateManager:
     if _clip_manager is None:
         _clip_manager = ClipStateManager()
     return _clip_manager
+
+
+def reset_clip_manager():
+    """Reset the global clip state manager singleton.
+    
+    Should be called during addon unregister to prevent stale state
+    when addon is disabled/enabled without restarting Blender.
+    """
+    global _clip_manager
+    if _clip_manager is not None:
+        _clip_manager.clear_all()
+    _clip_manager = None

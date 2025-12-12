@@ -18,7 +18,7 @@ def _get_clip_fingerprint(clip):
         import hashlib
         data = f"{clip.size[0]}x{clip.size[1]}_{clip.fps}_{clip.frame_duration}"
         return hashlib.sha256(data.encode()).hexdigest()[:12]
-    except:
+    except Exception:
         return ""
 
 
@@ -304,6 +304,10 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             row = col.row(align=True)
             row.prop(settings, "quality_preset", text="")
             row.prop(settings, "footage_type", text="")
+            
+            row = col.row(align=True)
+            row.prop(settings, "tripod_mode", toggle=True)
+            row.prop(settings, "robust_mode", toggle=True)
             
             row = outer_box.row(align=True)
             row.scale_y = 1.4

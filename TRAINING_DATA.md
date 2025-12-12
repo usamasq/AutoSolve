@@ -31,7 +31,38 @@ The "AI" currently running on your machine is a **statistical feedback loop**, n
 We are currently collecting rich telemetry data (optical flow patterns, trajectory shapes, error gradients) to train a **Deep Neural Network**.
 
 - **Why collect this data?** While the current statistical model is effective, a neural network can learn complex, non-linear relationships—like "shaky handheld footage with motion blur requires specific settings that differ from smooth drone shots."
+
 - **The Goal:** To replace the current statistical heuristics with a trained model that can "see" the motion in your footage and understand it like a human tracker would.
+
+---
+
+## Practical Applications (What can we build?)
+
+The data schema allows for three tiers of AI advancement based on data volume:
+
+### ✅ Tier 1: Statistical Heuristics (< 500 sessions)
+
+**What you have now.**
+
+- **Lookup Tables:** "If 4K_24fps, try pattern=19".
+- **Rule-based Logic:** "If velocity > 0.03, assume drone/high-motion".
+- **Region Scoring:** "Center tracks survive 80% longer than edges".
+
+### 🟡 Tier 2: Shallow Machine Learning (500-5k sessions)
+
+**Practical Next Step.**
+
+- **Settings Predictor (XGBoost/LightGBM):** Input clip metadata and motion probe results → Output optimal 5 tracking parameters.
+- **Dead Zone Classifier (Random Forest):** Input region texture/density → Output probability of tracking failure.
+- **Track Quality Filter (Logistic Regression):** Filter "good" vs "bad" tracks based on jitter, velocity, and correlation confidence.
+
+### 🔴 Tier 3: Deep Learning (10k+ sessions)
+
+**Long-term Goal.**
+
+- **LSTM/Transformer:** Analyze full 100-frame trajectory sequences to predict exact frame of failure.
+- **End-to-End Control:** Neural network that actively drives the tracker, adjusting parameters per-frame.
+- **Visual Saliency (CNN):** Input raw pixels → Output exact feature placement map (requires image data export).
 
 ---
 
@@ -169,6 +200,7 @@ Each tracking session generates a JSON file with this structure:
     "parallax_score": 0.32,
     "dominant_direction": [0.98, -0.12],
     "direction_entropy": 0.15,
+    "velocity_acceleration": 0.0012,
     "track_dropout_rate": 0.18
   },
 
@@ -359,6 +391,30 @@ Continuous metrics for neural network training:
 | `adaptation_history`   | [obj]  | List of mid-session settings adaptations         |
 | `region_confidence`    | Dict   | Probabilistic confidence scores per region (0-1) |
 | `frame_samples`        | [obj]  | Per-frame statistics for temporal ML (v1+)       |
+
+## Zoom Analysis Fields (NEW)
+
+Zoom/dolly detection computed from track trajectory data:
+
+| Field                | Type    | Description                                         |
+| -------------------- | ------- | --------------------------------------------------- |
+| `is_zoom_detected`   | bool    | True if >5% scale change detected                   |
+| `zoom_direction`     | string  | ZOOM_IN, ZOOM_OUT, or NONE                          |
+| `scale_timeline`     | [float] | Temporal scale at each trajectory sample [1.0, ...] |
+| `estimated_fl_ratio` | float   | Final/initial scale ratio (>1=out, <1=in)           |
+| `scale_variance`     | float   | Low=zoom (uniform), high=dolly (parallax)           |
+| `is_uniform_scale`   | bool    | True if zoom-like, False if dolly-like              |
+| `radial_convergence` | float   | -1=converging (in), +1=diverging (out)              |
+| `confidence`         | float   | Detection confidence (0-1)                          |
+
+**Interpretation:**
+
+| Scale Timeline     | Variance | Interpretation   |
+| ------------------ | -------- | ---------------- |
+| `[1.0, 1.1, 1.2]`↑ | Low      | ZOOM OUT (lens)  |
+| `[1.0, 0.9, 0.8]`↓ | Low      | ZOOM IN (lens)   |
+| `[1.0, 1.1, 1.2]`↑ | High     | DOLLY OUT (move) |
+| `[1.0, 0.9, 0.8]`↓ | High     | DOLLY IN (move)  |
 
 ### Frame Samples (v1 Schema)
 

@@ -71,7 +71,7 @@ def _generate_clip_fingerprint(clip):
         import hashlib
         data = f"{clip.size[0]}x{clip.size[1]}_{clip.fps}_{clip.frame_duration}"
         return hashlib.sha256(data.encode()).hexdigest()[:12]
-    except:
+    except Exception:
         return ""
 
 
@@ -189,7 +189,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
         
         # Set session linkage for multi-attempt analysis
         # (iteration is tracked per clip_fingerprint, previous_session_id links to prior attempt)
-        current_fingerprint = _generate_clip_fingerprint(clip)
+        # Note: current_fingerprint already generated at line 125
         _state.tracker.iteration = _clip_iteration_count.get(current_fingerprint, 1)
         _state.tracker.previous_session_id = _last_solve_session_id or ""
         
@@ -277,7 +277,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 _state.optimal_start = tracker.get_optimal_start_frame()
                 _state.frame_current = _state.optimal_start
                 context.scene.frame_set(_state.optimal_start)
-                context.area.tag_redraw()
+                if context.area:
+                    context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
@@ -847,7 +848,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
             self._timer = None
         
         context.scene.autosolve.is_solving = False
-        context.area.tag_redraw()
+        if context.area:
+            context.area.tag_redraw()
 
 
 class AUTOSOLVE_OT_setup_scene(Operator):
@@ -1347,8 +1349,9 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
                 self.report({'INFO'}, f"Reset complete: {total} files deleted, model cleared")
             
             # Force UI to redraw with new values
-            for area in context.screen.areas:
-                area.tag_redraw()
+            if context.screen:
+                for area in context.screen.areas:
+                    area.tag_redraw()
             
             return {'FINISHED'}
             
@@ -1614,6 +1617,13 @@ def unregister():
     # Remove save handler
     if _save_behavior_on_quit in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.remove(_save_behavior_on_quit)
+    
+    # Reset clip state manager singleton to prevent stale state on addon reload
+    try:
+        from .clip_state import reset_clip_manager
+        reset_clip_manager()
+    except ImportError:
+        pass
     
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

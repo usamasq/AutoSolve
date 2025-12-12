@@ -61,6 +61,11 @@ class VisualFeatures:
     # Failure analysis
     failure_frames: List[int] = field(default_factory=list)
     failure_positions: List[List[float]] = field(default_factory=list)  # [[x, y], ...]
+    
+    # Zoom/dolly detection (computed from trajectory data)
+    zoom_detected: bool = False               # True if significant zoom/dolly detected
+    zoom_direction: str = "NONE"              # ZOOM_IN, ZOOM_OUT, NONE
+    zoom_scale_ratio: float = 1.0             # Final/initial scale ratio
 
 
 class FeatureExtractor:
@@ -198,8 +203,20 @@ class FeatureExtractor:
             correlation_attr = 'default_correlation_min' if hasattr(settings, 'default_correlation_min') else 'default_minimum_correlation'
             original_threshold = getattr(settings, correlation_attr, 0.75)
             
+            # RESOLUTION SCALING: Use 720p (1280px) as baseline for consistent speed
+            # This makes 4K feature detection as fast as 720p by detecting proportionally fewer features
+            clip_width = self.clip.size[0]
+            resolution_scale = max(1.0, clip_width / 1280)  # 1.0 for 720p, 3.0 for 4K, 6.0 for 8K
+            
+            # Scale detection parameters:
+            # - Higher min_distance = fewer features detected (scales with resolution)
+            # - Higher threshold = only strongest features (slight increase for high-res)
+            scaled_min_distance = int(20 * resolution_scale)  # 20 for 720p, 60 for 4K, 120 for 8K
+            scaled_threshold = min(0.7, 0.4 + (0.1 * (resolution_scale - 1)))  # 0.4 for 720p, 0.6 for 4K
+            scaled_margin = int(8 * resolution_scale)
+            
             # Use LIGHTER detection - avoid detecting thousands of points
-            settings.default_margin = 8
+            settings.default_margin = scaled_margin
             setattr(settings, correlation_attr, 0.3) # correlation for detection is unused by detect_features but good practice
             
             timeline = {}
@@ -215,10 +232,11 @@ class FeatureExtractor:
                     original_clip_frame = space.clip_user.frame_current
                     break
 
-            print(f"AutoSolve: Computing density (3 frames @ 3 points, Threshold=0.4, Dist=20)...")
+            print(f"AutoSolve: Computing density (9 frames, Scale={resolution_scale:.1f}x, Threshold={scaled_threshold:.2f}, Dist={scaled_min_distance})...")
             
+            # Sample 3 consecutive frames at each of 3 sample points (9 total)
+            # This captures temporal changes (moving objects, transient occlusions)
             for base_label, start_frame in sample_frames.items():
-                # Sample 3 consecutive frames at each point (e.g. 25, 26, 27)
                 for offset in range(3):
                     frame_num = start_frame + offset
                     frame_label = f"{base_label}_{offset}"
@@ -235,9 +253,9 @@ class FeatureExtractor:
                         tracks = self.clip.tracking.tracks
                         existing_track_names = set(t.name for t in tracks)
                         
-                        # Detect features with context override
+                        # Detect features with RESOLUTION-SCALED parameters
                         with bpy.context.temp_override(**override):
-                            bpy.ops.clip.detect_features(threshold=0.4, min_distance=20, margin=8, placement='FRAME')
+                            bpy.ops.clip.detect_features(threshold=scaled_threshold, min_distance=scaled_min_distance, margin=scaled_margin, placement='FRAME')
                         
                         # Find new tracks
                         new_tracks = [t for t in self.clip.tracking.tracks if t.name not in existing_track_names]

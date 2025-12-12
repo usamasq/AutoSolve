@@ -422,7 +422,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         cache_dir = Path(bpy.utils.user_resource('SCRIPTS')) / 'autosolve' / 'cache'
         cache_dir.mkdir(parents=True, exist_ok=True)
         # Hash clip filepath for unique identifier
-        clip_hash = hashlib.md5(self.clip.filepath.encode()).hexdigest()[:8]
+        # For packed/embedded clips, use clip name + resolution as fallback
+        filepath = self.clip.filepath or f"{self.clip.name}_{self.clip.size[0]}x{self.clip.size[1]}"
+        clip_hash = hashlib.md5(filepath.encode()).hexdigest()[:8]
         return cache_dir / f"probe_{clip_hash}.json"
     
     def _try_load_cached_probe(self):
@@ -435,10 +437,16 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             data = json.loads(cache_path.read_text())
             
             # Validate cache is for same clip version
-            clip_mtime = os.path.getmtime(bpy.path.abspath(self.clip.filepath))
-            if abs(data.get('clip_mtime', 0) - clip_mtime) < 1:  # Within 1 second
-                self.cached_motion_probe = data.get('probe_results')
-                print(f"AutoSolve: Loaded cached probe for {self.clip.name}")
+            # Skip mtime check for packed/embedded clips (no filepath)
+            if self.clip.filepath:
+                try:
+                    clip_mtime = os.path.getmtime(bpy.path.abspath(self.clip.filepath))
+                    if abs(data.get('clip_mtime', 0) - clip_mtime) >= 1:
+                        return  # Cache is stale
+                except (FileNotFoundError, OSError):
+                    pass  # Can't verify mtime, use cache anyway
+            self.cached_motion_probe = data.get('probe_results')
+            print(f"AutoSolve: Loaded cached probe for {self.clip.name}")
         except Exception as e:
             print(f"AutoSolve: Could not load cached probe: {e}")
     
@@ -446,7 +454,13 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         """Save probe results to disk for reuse."""
         try:
             cache_path = self._get_probe_cache_path()
-            clip_mtime = os.path.getmtime(bpy.path.abspath(self.clip.filepath))
+            # Get mtime for external clips, use 0 for packed/embedded
+            clip_mtime = 0
+            if self.clip.filepath:
+                try:
+                    clip_mtime = os.path.getmtime(bpy.path.abspath(self.clip.filepath))
+                except (FileNotFoundError, OSError):
+                    pass
             
             cache_data = {
                 'clip_filepath': self.clip.filepath,
@@ -463,7 +477,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     def _classify_footage(self) -> str:
         """Classify footage by resolution and fps."""
         width = self.clip.size[0]
-        fps = self.clip.fps if self.clip.fps > 0 else 24
+        fps = self.clip.fps if (self.clip.fps is not None and self.clip.fps > 0) else 24
         
         if width >= 3840:
             res = '4K'

@@ -153,7 +153,7 @@ def classify_footage(clip) -> str:
         Classification string
     """
     width = clip.size[0]
-    fps = clip.fps if clip.fps > 0 else 24
+    fps = clip.fps if (clip.fps is not None and clip.fps > 0) else 24
     
     # Resolution class
     if width >= 3840:
