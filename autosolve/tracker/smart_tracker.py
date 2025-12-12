@@ -2897,10 +2897,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         prev_active_count = 0
         self.select_all_tracks()
         
-        # Reset cache window when starting a new sequence
-        if hasattr(self, '_cache_window'):
-            del self._cache_window
-        
         for frame in frame_range:
             bpy.context.scene.frame_set(frame)
             self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
@@ -2911,10 +2907,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 prev_active_count = self.recorder.record_frame_sample(
                     frame, self.tracking, prev_active_count
                 )
-            
-            # Smart cache management: called every frame, internally decides if refresh needed
-            # This works for both forward and backward tracking
-            self.prefetch_frames(from_frame=frame, backwards=backwards)
         
         return frames_tracked
 
@@ -3267,148 +3259,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         else:
             op_func(**kwargs)
 
-    def prefetch_frames(self, from_frame: int = None, backwards: bool = False):
-        """
-        Smart frame cache management for tracking.
-        
-        Intelligently manages the frame cache by:
-        1. Tracking the estimated cache window (which frames are currently cached)
-        2. Clearing only frames that have been tracked (no longer needed)
-        3. Prefetching new frames in the tracking direction
-        
-        IMPORTANT: Blender's prefetch only caches FORWARD from current position.
-        For backward tracking, we jump to a frame BEFORE our current position,
-        then prefetch forward - this fills the cache with frames we'll need.
-        
-        Args:
-            from_frame: Current tracking frame position.
-            backwards: Direction of tracking (True = going to lower frames).
-        """
-        try:
-            current_frame = from_frame if from_frame is not None else bpy.context.scene.frame_current
-            
-            # Initialize cache tracking on first call
-            if not hasattr(self, '_cache_window'):
-                self._init_cache_window(current_frame, backwards)
-            
-            # Check if we need to refresh the cache (approaching window edge)
-            needs_refresh = self._needs_cache_refresh(current_frame, backwards)
-            
-            if needs_refresh:
-                # Clear old frames that have been tracked
-                self._clear_tracked_frames(current_frame, backwards)
-                
-                # CRITICAL: Blender's prefetch only works FORWARD!
-                # For backward tracking, jump to a frame BEFORE current position
-                # and prefetch forward to fill cache with frames we'll need.
-                if backwards:
-                    # Jump ahead of tracking direction (to lower frame numbers)
-                    prefetch_start = max(
-                        self.clip.frame_start,
-                        current_frame - self._cache_capacity
-                    )
-                    bpy.context.scene.frame_set(prefetch_start)
-                    self._run_ops(bpy.ops.clip.prefetch)
-                    # Return to tracking position
-                    bpy.context.scene.frame_set(current_frame)
-                    print(f"AutoSolve: Prefetched backward range [{prefetch_start}, {current_frame}]")
-                else:
-                    # Forward tracking - prefetch normally from current position
-                    bpy.context.scene.frame_set(current_frame)
-                    self._run_ops(bpy.ops.clip.prefetch)
-                
-                # Update cache window bounds
-                self._update_cache_window(current_frame, backwards)
-                
-        except Exception as e:
-            # Prefetch is optional optimization - don't fail if it doesn't work
-            print(f"AutoSolve: Frame cache management skipped: {e}")
-    
-    def _init_cache_window(self, start_frame: int, backwards: bool = False):
-        """Initialize cache window tracking based on tracking direction."""
-        # Estimate cache capacity based on typical memory limits
-        # Most systems can cache ~100-200 frames depending on resolution
-        self._cache_capacity = getattr(self, '_estimated_cache_size', 100)
-        
-        if backwards:
-            # Backward tracking: cache extends from start_frame down to lower frames
-            cache_start = max(self.clip.frame_start, start_frame - self._cache_capacity)
-            cache_end = start_frame
-        else:
-            # Forward tracking: cache extends from start_frame up to higher frames
-            cache_start = start_frame
-            cache_end = min(
-                self.clip.frame_start + self.clip.frame_duration - 1,
-                start_frame + self._cache_capacity
-            )
-        
-        self._cache_window = {
-            'start': cache_start,
-            'end': cache_end,
-            'last_tracked': start_frame,
-            'direction': 'backward' if backwards else 'forward'
-        }
-        print(f"AutoSolve: Initialized cache window [{cache_start}, {cache_end}] for {'backward' if backwards else 'forward'} tracking")
-    
-    def _needs_cache_refresh(self, current_frame: int, backwards: bool) -> bool:
-        """Check if we're approaching the edge of cached frames."""
-        if not hasattr(self, '_cache_window'):
-            return True
-        
-        # Threshold: refresh when within 10% of cache edge
-        margin = max(5, self._cache_capacity // 10)
-        
-        if backwards:
-            # Going backward - check if approaching start of cache window
-            return current_frame <= self._cache_window['start'] + margin
-        else:
-            # Going forward - check if approaching end of cache window
-            return current_frame >= self._cache_window['end'] - margin
-    
-    def _clear_tracked_frames(self, current_frame: int, backwards: bool):
-        """
-        Clear frames that have been tracked to make room for new ones.
-        
-        Blender doesn't support per-frame cache clearing, so we clear and
-        re-prefetch from the current position. The key insight is that we
-        only do this when needed (approaching cache edge), not every frame.
-        """
-        try:
-            self._run_ops(bpy.ops.clip.clear_prefetch_cache)
-            direction = "backward" if backwards else "forward"
-            print(f"AutoSolve: Cleared tracked frames, moving {direction} from {current_frame}")
-        except Exception:
-            # clear_prefetch_cache may not exist in all Blender versions
-            pass
-    
-    def _update_cache_window(self, current_frame: int, backwards: bool):
-        """Update the cache window bounds after prefetching."""
-        if backwards:
-            # Cache now extends backward from current frame
-            self._cache_window['end'] = current_frame
-            self._cache_window['start'] = max(
-                self.clip.frame_start,
-                current_frame - self._cache_capacity
-            )
-        else:
-            # Cache now extends forward from current frame
-            self._cache_window['start'] = current_frame
-            self._cache_window['end'] = min(
-                self.clip.frame_start + self.clip.frame_duration - 1,
-                current_frame + self._cache_capacity
-            )
-        
-        self._cache_window['last_tracked'] = current_frame
-    
-    def reset_cache_window(self):
-        """
-        Reset the cache window tracking state.
-        
-        Call this when switching tracking directions (forward to backward or vice versa)
-        to ensure the cache is properly re-initialized for the new direction.
-        """
-        if hasattr(self, '_cache_window'):
-            del self._cache_window
 
 
 def sync_scene_to_clip(clip: bpy.types.MovieClip):

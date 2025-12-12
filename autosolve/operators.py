@@ -310,9 +310,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 print(f"AutoSolve: Smart detection - {num} balanced markers")
                 tracker.select_all_tracks()
                 
-                # Prefetch frames forward from optimal start for faster tracking
-                tracker.prefetch_frames(from_frame=_state.frame_current)
-                
                 _state.phase = 'TRACK_FORWARD'
                 _state.segment_start = _state.frame_current
                 context.area.tag_redraw()
@@ -343,10 +340,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     _state.frame_current = min(optimal_start + 3, _state.frame_end)
                     context.scene.frame_set(_state.frame_current)
                     
-                    # Reset cache for direction change and prefetch backward
-                    tracker.reset_cache_window()
-                    tracker.prefetch_frames(from_frame=_state.frame_current, backwards=True)
-                    
                     tracker.select_all_tracks()
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
@@ -365,9 +358,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     if _state.frame_current % tracker.MONITOR_INTERVAL == 0:
                         tracker.monitor_and_replenish(_state.frame_current, backwards=False)
                     
-                    # Smart cache management: called every frame, internally decides if refresh needed
-                    tracker.prefetch_frames(from_frame=_state.frame_current, backwards=False)
-                    
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
@@ -377,10 +367,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     # during forward pass are fully covered backward
                     _state.frame_current = _state.frame_end
                     context.scene.frame_set(_state.frame_current)
-                    
-                    # Reset cache for direction change and prefetch backward
-                    tracker.reset_cache_window()
-                    tracker.prefetch_frames(from_frame=_state.frame_end, backwards=True)
                     
                     tracker.select_all_tracks()
                     return {'RUNNING_MODAL'}
@@ -392,9 +378,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if settings.batch_tracking and _state.frame_current == _state.frame_end:
                     settings.solve_status = "Batch tracking backward..."
                     settings.solve_progress = 0.55
-                    
-                    # Prefetch frames backward from end for faster backward tracking
-                    tracker.prefetch_frames(from_frame=_state.frame_end, backwards=True)
                     
                     frames = tracker.track_sequence(
                         _state.frame_current,
@@ -422,9 +405,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     # ADAPTIVE monitoring every MONITOR_INTERVAL frames
                     if _state.frame_current % tracker.MONITOR_INTERVAL == 0:
                         tracker.monitor_and_replenish(_state.frame_current, backwards=True)
-                    
-                    # Smart cache management: called every frame, internally decides if refresh needed
-                    tracker.prefetch_frames(from_frame=_state.frame_current, backwards=True)
                     
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
