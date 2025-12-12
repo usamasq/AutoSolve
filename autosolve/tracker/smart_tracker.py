@@ -88,22 +88,22 @@ PRETRAINED_DEFAULTS = {
         'motion_model': 'LocRot',
     },
     '4K_24fps': {
-        'pattern_size': 41,      # Larger for 4K (increased from 31)
-        'search_size': 181,      # Larger search for 4K (increased from 151)
+        'pattern_size': 61,      # 2x HD for proper visual scaling on 4K
+        'search_size': 251,      # Proportionally larger search for 4K
         'correlation': 0.62,     # Slightly lower for larger patterns
         'threshold': 0.22,
         'motion_model': 'Affine',
     },
     '4K_30fps': {
-        'pattern_size': 37,      # Larger for 4K (increased from 29)
-        'search_size': 171,      # Larger search (increased from 141)
+        'pattern_size': 55,      # 2x HD for proper visual scaling on 4K
+        'search_size': 231,      # Proportionally larger search for 4K
         'correlation': 0.62,     # Slightly lower for larger patterns
         'threshold': 0.22,
         'motion_model': 'LocRot',
     },
     '4K_60fps': {
-        'pattern_size': 33,      # Larger for 4K (increased from 25)
-        'search_size': 151,      # Larger search (increased from 121)
+        'pattern_size': 49,      # 2x HD for proper visual scaling on 4K
+        'search_size': 201,      # Proportionally larger search for 4K
         'correlation': 0.65,
         'threshold': 0.25,
         'motion_model': 'LocRot',
@@ -2897,6 +2897,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         prev_active_count = 0
         self.select_all_tracks()
         
+        # Prefetch interval for backward tracking on limited RAM systems
+        PREFETCH_INTERVAL = 50
+        
         for frame in frame_range:
             bpy.context.scene.frame_set(frame)
             self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
@@ -2907,6 +2910,11 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 prev_active_count = self.recorder.record_frame_sample(
                     frame, self.tracking, prev_active_count
                 )
+            
+            # Periodic prefetch during backward tracking for limited RAM systems
+            # The cache can't hold the entire sequence, so prefetch ahead periodically
+            if backwards and frames_tracked % PREFETCH_INTERVAL == 0:
+                self.prefetch_frames(from_frame=frame)
         
         return frames_tracked
     
@@ -3257,6 +3265,29 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 op_func(**kwargs)
         else:
             op_func(**kwargs)
+
+    def prefetch_frames(self, from_frame: int = None):
+        """
+        Prefetch frames from disk for faster playback/tracking.
+        
+        Blender's prefetch caches frames starting from the current frame position.
+        Call this before tracking in a specific direction to ensure frames are cached.
+        
+        Args:
+            from_frame: Optional frame to start prefetching from. 
+                       If None, uses current scene frame.
+        """
+        try:
+            if from_frame is not None:
+                bpy.context.scene.frame_set(from_frame)
+            
+            self._run_ops(bpy.ops.clip.prefetch)
+            
+            if from_frame is not None:
+                print(f"AutoSolve: Prefetching frames from frame {from_frame}")
+        except Exception as e:
+            # Prefetch is optional optimization - don't fail if it doesn't work
+            print(f"AutoSolve: Frame prefetch skipped: {e}")
 
 
 def sync_scene_to_clip(clip: bpy.types.MovieClip):
