@@ -86,6 +86,19 @@ class FilteringMixin:
             track.select = track.name in to_delete
         
         if to_delete:
+            # Record track failures for ML training before deletion
+            if hasattr(self, 'recorder') and self.recorder:
+                current_frame = bpy.context.scene.frame_current
+                for track in self.tracking.tracks:
+                    if track.name in to_delete:
+                        markers = [m for m in track.markers if not m.mute]
+                        if markers:
+                            marker = markers[0]  # Use first marker position
+                            self.recorder.record_track_failure(
+                                track.name, current_frame, 
+                                marker.co.x, marker.co.y, "VELOCITY_SPIKE"
+                            )
+            
             print(f"AutoSolve: Removing {len(to_delete)} outliers")
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
@@ -311,6 +324,19 @@ class FilteringMixin:
             track.select = track.name in to_delete
         
         if to_delete:
+            # Record track failures for ML training before deletion
+            if hasattr(self, 'recorder') and self.recorder:
+                current_frame = bpy.context.scene.frame_current
+                for track in self.tracking.tracks:
+                    if track.name in to_delete:
+                        markers = [m for m in track.markers if not m.mute]
+                        if markers:
+                            marker = markers[0]
+                            self.recorder.record_track_failure(
+                                track.name, current_frame,
+                                marker.co.x, marker.co.y, "NON_RIGID"
+                            )
+            
             print(f"AutoSolve: Removing {len(to_delete)} non-rigid tracks")
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
@@ -340,6 +366,19 @@ class FilteringMixin:
             track.select = track.name in to_delete
         
         if to_delete:
+            # Record track failures for ML training before deletion
+            if hasattr(self, 'recorder') and self.recorder:
+                current_frame = bpy.context.scene.frame_current
+                for track in self.tracking.tracks:
+                    if track.name in to_delete:
+                        markers = [m for m in track.markers if not m.mute]
+                        if markers:
+                            marker = markers[0]
+                            self.recorder.record_track_failure(
+                                track.name, current_frame,
+                                marker.co.x, marker.co.y, "HIGH_ERROR"
+                            )
+            
             print(f"AutoSolve: Removing {len(to_delete)} high-error tracks")
             try:
                 self._run_ops(bpy.ops.clip.delete_track)

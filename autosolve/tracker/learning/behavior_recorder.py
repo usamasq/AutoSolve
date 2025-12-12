@@ -139,6 +139,26 @@ class BehaviorRecorder:
         
         print(f"AutoSolve: Started behavior monitoring ({len(self.initial_tracks)} tracks)")
     
+    def update_snapshot(self, clip: bpy.types.MovieClip, settings: Dict = None, solve_error: float = None):
+        """
+        Update the initial snapshot to current state.
+        
+        Used when programmatic changes (like auto-smoothing) occur that shouldn't
+        be interpreted as user edits.
+        """
+        if not self.is_monitoring:
+            return
+            
+        self.clip = clip
+        self.initial_tracks = self._snapshot_tracks()
+        
+        if settings:
+            self.initial_settings = settings.copy()
+        if solve_error is not None:
+            self.initial_error = solve_error
+            
+        print(f"AutoSolve: Updated behavior snapshot (programmatic change)")
+    
     def stop_monitoring(self, final_settings: Dict = None, 
                         final_error: float = None) -> Optional[BehaviorData]:
         """

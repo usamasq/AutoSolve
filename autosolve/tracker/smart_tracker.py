@@ -24,7 +24,7 @@ from .filtering import FilteringMixin
 # Analyzer classes extracted to analyzers.py
 from .analyzers import TrackStats, RegionStats, CoverageData, TrackAnalyzer, CoverageAnalyzer
 # Constants needed for regions
-from .constants import REGIONS, TIERED_SETTINGS
+from .constants import REGIONS
 # Utility functions
 from .utils import get_region, get_region_bounds
 
@@ -1652,6 +1652,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Categorize all tracks by region WITH QUALITY SCORE
         tracks_by_region: Dict[str, List[Tuple[Any, float]]] = {r: [] for r in REGIONS}
+        detected_per_region: Dict[str, int] = {r: 0 for r in REGIONS}  # For feature density
         no_marker_tracks = []
         
         current_frame = bpy.context.scene.frame_current
@@ -1671,6 +1672,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             
             region = get_region(marker.co.x, marker.co.y)
             tracks_by_region[region].append((track, quality))
+            detected_per_region[region] += 1  # Count for feature density
+        
+        # Store detected counts for feature extractor (before filtering)
+        self._detected_feature_density = detected_per_region
         
         # Process each region: SORT BY QUALITY, keep top N
         result: Dict[str, int] = {}
@@ -2102,6 +2107,16 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 'probe_type': 'quick_estimate'
             }
             self.cached_motion_probe = quick_result.copy()
+            
+            # Extract visual features even for quick estimate (needed for thumbnails)
+            try:
+                if hasattr(self, 'feature_extractor'):
+                    self.feature_extractor.extract_all(tracking_data=quick_result)
+                    self.feature_extractor.features.motion_class = self.motion_class
+                    print(f"AutoSolve: Visual features extracted (quick path)")
+            except Exception as e:
+                print(f"AutoSolve: Visual feature extraction skipped: {e}")
+                
             return quick_result
         
         print(f"AutoSolve: Running full motion probe (quick estimate: {quick_class})")
@@ -3082,7 +3097,12 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     
     def solve_camera(self, tripod_mode: bool = False) -> bool:
-        """Solve camera."""
+        """
+        Solve camera with robustness and quality checks.
+        
+        Attempts to solve with current settings. If that fails or yields poor quality
+        (low track reconstruction), it re-tries with focal length refinement enabled.
+        """
         if hasattr(self.settings, 'use_tripod_solver'):
             self.settings.use_tripod_solver = tripod_mode
         
@@ -3103,26 +3123,98 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         print(f"AutoSolve DEBUG: solve_camera - {track_count} tracks, {tracks_with_markers} with markers")
         print(f"AutoSolve DEBUG: Frame coverage - min {min_markers} markers, max {max_markers} markers")
         
+        # Helper to toggle refinement options safely across Blender versions
+        def set_refinement(enable: bool):
+            # refine_focal_length, refine_k1, refine_k2 are standard properties
+            # Some versions might bundle them differently, but these are top-level on settings
+            props = ['refine_focal_length', 'refine_k1', 'refine_k2']
+            count = 0
+            for p in props:
+                if hasattr(self.settings, p):
+                    setattr(self.settings, p, enable)
+                    count += 1
+            return count > 0
+
+        # Store original refinement state
+        original_refinement = {}
+        for p in ['refine_focal_length', 'refine_k1', 'refine_k2']:
+            if hasattr(self.settings, p):
+                original_refinement[p] = getattr(self.settings, p)
+
         try:
+            # ATTEMPT 1: Initial solve (usually without refinement unless user enabled it)
+            print("AutoSolve: Attempting initial camera solve...")
             self._run_ops(bpy.ops.clip.solve_camera)
-            is_valid = self.tracking.reconstruction.is_valid
             
+            # Check results
+            is_valid = self.tracking.reconstruction.is_valid
+            bundle_count = self.get_bundle_count()
+            bundle_ratio = bundle_count / max(track_count, 1)
+            raw_error = self.tracking.reconstruction.average_error if is_valid else 999.0
+            
+            # Define failure (invalid or < 30% reconstruction is poor)
+            quality_fail = is_valid and bundle_ratio < 0.3
+            
+            # ATTEMPT 2: Refine Intrinsics (if Attempt 1 failed or was poor)
+            # This fixes "POINT BEHIND CAMERA" errors due to wrong focal length
+            if not is_valid or quality_fail or raw_error > 3.0:
+                print(f"AutoSolve: Initial solve poor (valid={is_valid}, ratio={bundle_ratio:.0%}, err={raw_error:.2f})")
+                print("AutoSolve: Retrying with FOCAL LENGTH REFINEMENT enabled...")
+                
+                # Enable refinement
+                set_refinement(True)
+                
+                # Solve again
+                self._run_ops(bpy.ops.clip.solve_camera)
+                
+                # Check new results
+                is_valid = self.tracking.reconstruction.is_valid
+                bundle_count = self.get_bundle_count()
+                bundle_ratio = bundle_count / max(track_count, 1)
+                new_error = self.tracking.reconstruction.average_error if is_valid else 999.0
+                
+                print(f"AutoSolve: Refined solve result (valid={is_valid}, ratio={bundle_ratio:.0%}, err={new_error:.2f})")
+                
+                # If this worked better, keep it!
+                # If it's still bad, we proceed to report failure
+                if is_valid and bundle_ratio >= 0.3:
+                    print("AutoSolve: Refinement FIXED the solve!")
+                else:
+                    print("AutoSolve: Refinement failed to improve solve sufficienty.")
+                    
+                # Restore original refinement state (so we don't accidentally leave it on forever)
+                # But wait, if it fixed it, maybe we should keep the refined intrinsics?
+                # The solver updates the camera intrinsics (FL, k1, k2). The 'refine' flags just tell it to DO so.
+                # Once done, the FL is updated. We can turn the flags off.
+                for p, val in original_refinement.items():
+                    setattr(self.settings, p, val)
+
+            # Final check before return
             if is_valid:
-                # Check solve QUALITY - not just validity
+                # Re-calculate final stats
                 bundle_count = self.get_bundle_count()
                 bundle_ratio = bundle_count / max(track_count, 1)
                 raw_error = self.tracking.reconstruction.average_error
                 
-                print(f"AutoSolve DEBUG: Solve returned valid - {bundle_count}/{track_count} bundles ({bundle_ratio:.0%}), error {raw_error:.2f}")
+                print(f"AutoSolve DEBUG: Final Solve - {bundle_count}/{track_count} bundles ({bundle_ratio:.0%}), error {raw_error:.2f}")
                 
-                # Quality check: less than 30% of tracks reconstructed = quality failure
                 if bundle_ratio < 0.3:
                     print(f"AutoSolve WARNING: Low quality solve - only {bundle_count}/{track_count} tracks reconstructed")
                     print(f"AutoSolve WARNING: This usually indicates incorrect focal length or missing lens distortion")
-                    # Mark as failed due to poor quality
                     self._solve_quality_failure = True
                     return False
                 elif bundle_ratio < 0.5:
+                    print(f"AutoSolve NOTICE: Moderate quality solve - {bundle_count}/{track_count} tracks reconstructed")
+                
+                self._solve_quality_failure = False
+                return True
+            else:
+                print("AutoSolve WARNING: Solve failed (is_valid=False)")
+                return False
+                
+        except Exception as e:
+            print(f"AutoSolve: Solve camera failed with error: {e}")
+            return False
                     print(f"AutoSolve WARNING: Marginal quality - {bundle_count}/{track_count} tracks reconstructed")
                     self._solve_quality_failure = False
                 else:
@@ -3255,8 +3347,23 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 if hasattr(self, 'motion_class') and self.motion_class:
                     self.recorder.record_motion_class(self.motion_class)
                 
-                # 4. Record Visual Features (if extracted)
+                # 4. Extract and Record Visual Features (feature density, motion, etc.)
                 if hasattr(self, 'feature_extractor') and self.feature_extractor:
+                    # Build tracking_data with pre-computed feature density
+                    tracking_data = self.last_analysis.copy() if self.last_analysis else {}
+                    
+                    # Add detected feature density from smart detection (avoids duplicate detect_features call)
+                    if hasattr(self, '_detected_feature_density') and self._detected_feature_density:
+                        tracking_data['detected_feature_density'] = self._detected_feature_density
+                    
+                    # Extract features (feature density via detect_features if not pre-computed, motion, edge density)
+                    try:
+                        self.feature_extractor.extract_all(
+                            clip=self.clip,
+                            tracking_data=tracking_data
+                        )
+                    except Exception as fe:
+                        print(f"AutoSolve: Feature extraction failed: {fe}")
                     self.recorder.record_visual_features(self.feature_extractor.to_dict())
                     
                 # 5. Record Adaptation History

@@ -22,6 +22,7 @@ autosolve/
 ├── operators.py         # Main operators (Analyze & Solve, training tools)
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
+├── clip_state.py       # Multi-clip state manager
 └── tracker/             # Core tracking engine
     ├── smart_tracker.py      # Main tracking orchestrator with learning
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
@@ -185,14 +186,14 @@ def smooth_track_markers(tracking, strength)  # Gaussian weighted-average smooth
 
 **Modules:**
 
-| File                     | Purpose                                      |
-| ------------------------ | -------------------------------------------- |
-| `session_recorder.py`    | Collects session & frame telemetry           |
-| `settings_predictor.py`  | Predicts optimal settings                    |
-| `failure_diagnostics.py` | Diagnoses failures & recommends fixes        |
-| `feature_extractor.py`   | Extracts visual features (thumbnails, stats) |
-| `behavior_recorder.py`   | Records user behavior patterns               |
-| `pretrained_model.json`  | Bundled defaults from community data         |
+| File                     | Purpose                                   |
+| ------------------------ | ----------------------------------------- |
+| `session_recorder.py`    | Collects session & frame telemetry        |
+| `settings_predictor.py`  | Predicts optimal settings                 |
+| `failure_diagnostics.py` | Diagnoses failures & recommends fixes     |
+| `feature_extractor.py`   | Extracts visual features (density, stats) |
+| `behavior_recorder.py`   | Records user behavior patterns            |
+| `pretrained_model.json`  | Bundled defaults from community data      |
 
 #### Session Recorder
 
@@ -214,7 +215,7 @@ def smooth_track_markers(tracking, strength)  # Gaussian weighted-average smooth
 - Extracts visual signatures from footage
 - Generates clip fingerprints (MD5)
 - Computes motion histograms and edge density proxies
-- Captures thumbnails for dataset visualization
+- Captures feature density for texture analysis
 
 #### Failure Diagnostics
 
@@ -296,9 +297,31 @@ class AutoSolveSettings(PropertyGroup):
     point_count: IntProperty         # Number of 3D points
 ```
 
+````
+
 ---
 
-### 6. UI (`ui.py`)
+### 6. Clip State Management (`clip_state.py`)
+
+**Purpose:** Manages per-clip runtime state for multi-clip workflows.
+
+**Class: `ClipStateManager` (Singleton)**
+
+- **Isolation:** Ensures learning data and UI state are unique to each clip
+- **Fingerprinting:** Identifies clips by hash (resolution + fps + duration)
+- **State Persistence:** Saves/restores behavior data when switching clips
+
+```python
+class ClipState:
+    has_solve: bool
+    solve_error: float
+    behavior_recorder: Any
+    # ...
+````
+
+---
+
+### 7. UI (`ui.py`)
 
 **Panel: `CLIP_PT_autosolve`**
 

@@ -93,11 +93,33 @@ class SettingsPredictor:
         return model
 
     def _save_model(self):
-        """Save model to disk."""
+        """Save model to disk atomically to prevent corruption on crash."""
+        import tempfile
+        import os
+        
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        with open(self.model_path, 'w') as f:
-            json.dump(self.model, f, indent=2)
+        try:
+            # Write to temp file first, then rename (atomic on most filesystems)
+            with tempfile.NamedTemporaryFile(
+                mode='w', 
+                suffix='.json', 
+                dir=self.data_dir, 
+                delete=False
+            ) as tmp:
+                json.dump(self.model, tmp, indent=2)
+                tmp_path = tmp.name
+            
+            # Atomic replace (os.replace is atomic on POSIX and Windows)
+            os.replace(tmp_path, self.model_path)
+        except (OSError, IOError) as e:
+            print(f"AutoSolve: Error saving model: {e}")
+            # Clean up temp file if it exists
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
     
     # ═══════════════════════════════════════════════════════════════════════════
     # HER REWARD COMPUTATION
@@ -919,14 +941,27 @@ class SettingsPredictor:
                             error: float = 999.0, region_stats: Dict = None,
                             bundle_count: int = 0, failure_type: str = None):
         """Update from session data (LocalLearningModel compat)."""
+        
+        # Extract total and successful tracks from region_stats
+        # region_stats = {region: {total_tracks: N, successful_tracks: N}, ...}
+        region_stats = region_stats or {}
+        total_tracks = 0
+        successful_tracks = 0
+        for region, stats in region_stats.items():
+            total_tracks += stats.get('total', stats.get('total_tracks', 0))
+            successful_tracks += stats.get('success', stats.get('successful_tracks', 0))
+        
         session_data = {
             'footage_class': footage_class,
             'success': success,
             'settings': settings,
             'solve_error': error,
-            'region_stats': region_stats or {},
+            'region_stats': region_stats,
             'bundle_count': bundle_count,
             'failure_type': failure_type,
+            # FIX: Include track counts for success_rate calculation
+            'total_tracks': total_tracks,
+            'successful_tracks': successful_tracks,
         }
         self.update_model(session_data)
     

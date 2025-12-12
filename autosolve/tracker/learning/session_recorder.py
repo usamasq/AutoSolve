@@ -7,6 +7,7 @@ SessionRecorder - Records tracking sessions for learning.
 Stores detailed telemetry about what worked and what didn't.
 """
 
+import hashlib
 import json
 import os
 from datetime import datetime
@@ -20,7 +21,7 @@ from ..utils import get_region, calculate_jitter, get_sessions_dir
 
 @dataclass
 class TrackTelemetry:
-    """Telemetry for a single track."""
+    """Telemetry for a single track - designed for ML training."""
     # Required fields (no defaults)
     name: str
     lifespan: int
@@ -29,10 +30,16 @@ class TrackTelemetry:
     region: str
     avg_velocity: float
     jitter_score: float
-    success: bool
+    success: bool  # Survived long enough (lifespan >= threshold)
+    
     # Optional fields (have defaults)
     contributed_to_solve: bool = False
     reprojection_error: float = 0.0
+    
+    # ML Enhancement: Per-marker data for survival prediction
+    initial_position: List[float] = field(default_factory=lambda: [0.0, 0.0])  # [x, y] at start
+    feature_quality_score: float = 0.0  # Quality score from detection (0-1)
+    
     # ML Enhancement: Sampled trajectory for RNN training
     trajectory: List[List[float]] = field(default_factory=list)  # [[x,y], [x,y], ...]
     trajectory_sample_rate: int = 5  # Every Nth frame
@@ -169,6 +176,17 @@ class SessionData:
     # ML Enhancement v2: Flow histograms for NN
     flow_direction_histogram: List[float] = field(default_factory=lambda: [0.0] * 8)
     flow_magnitude_histogram: List[float] = field(default_factory=lambda: [0.0] * 5)
+    
+    # ML Enhancement v3: Marker survival summary for quick analysis
+    marker_survival_summary: Dict = field(default_factory=lambda: {
+        'total_markers': 0,
+        'survived_markers': 0,
+        'survival_rate': 0.0,
+        'avg_lifespan': 0.0,
+        'avg_quality_score': 0.0,
+        'quality_vs_survival_correlation': 0.0,  # For validating quality score
+        'per_region': {},  # {"region": {"total": N, "survived": M, "rate": 0.X}, ...}
+    })
 
 
 class SessionRecorder:
@@ -196,29 +214,68 @@ class SessionRecorder:
         """Start recording a new session."""
         self.start_time = datetime.now()
         
-        # Extract camera intrinsics
-        camera_intrinsics = self._extract_camera_intrinsics(clip)
+        try:
+            # Extract camera intrinsics
+            camera_intrinsics = self._extract_camera_intrinsics(clip)
+            
+            # Extract source video metadata
+            source_metadata = self._extract_source_metadata(clip)
+            
+            # Generate anonymous session ID (privacy: no clip names)
+            session_id = self._generate_anonymous_id(clip)
+            
+            # Get clip size safely
+            resolution = (
+                clip.size[0] if clip.size[0] > 0 else 0,
+                clip.size[1] if clip.size[1] > 0 else 0
+            )
+            fps = clip.fps if clip.fps > 0 else 24
+            frame_count = clip.frame_duration if clip.frame_duration > 0 else 1
+            
+            self.current_session = SessionData(
+                timestamp=self.start_time.isoformat(),
+                clip_name=session_id,  # Anonymous hash, not actual filename
+                iteration=0,
+                duration_seconds=0.0,
+                resolution=resolution,
+                fps=fps,
+                frame_count=frame_count,
+                settings=settings.copy() if settings else {},
+                success=False,
+                solve_error=999.0,
+                total_tracks=0,
+                successful_tracks=0,
+                bundle_count=0,
+                camera_intrinsics=camera_intrinsics,
+                source_metadata=source_metadata,
+            )
+        except (AttributeError, ReferenceError, TypeError) as e:
+            print(f"AutoSolve: Error starting session: {e}")
+            self.current_session = None
+    
+    def _generate_anonymous_id(self, clip: bpy.types.MovieClip) -> str:
+        """
+        Generate anonymous session ID for privacy.
         
-        # Extract source video metadata
-        source_metadata = self._extract_source_metadata(clip)
-        
-        self.current_session = SessionData(
-            timestamp=self.start_time.isoformat(),
-            clip_name=clip.name,
-            iteration=0,
-            duration_seconds=0.0,
-            resolution=(clip.size[0], clip.size[1]),
-            fps=clip.fps if clip.fps > 0 else 24,
-            frame_count=clip.frame_duration,
-            settings=settings.copy(),
-            success=False,
-            solve_error=999.0,
-            total_tracks=0,
-            successful_tracks=0,
-            bundle_count=0,
-            camera_intrinsics=camera_intrinsics,
-            source_metadata=source_metadata,
-        )
+        Does NOT include clip filename or path - only uses:
+        - Resolution
+        - FPS
+        - Frame count
+        - Current timestamp
+        """
+        try:
+            # Edge case: clip may be invalid or deleted
+            size_x = clip.size[0] if clip.size[0] > 0 else 0
+            size_y = clip.size[1] if clip.size[1] > 0 else 0
+            fps = clip.fps if clip.fps > 0 else 24  # Fallback to 24fps
+            duration = clip.frame_duration if clip.frame_duration > 0 else 1
+            
+            data = f"{size_x}x{size_y}_{fps}_{duration}_{datetime.now().timestamp()}"
+            return hashlib.sha256(data.encode()).hexdigest()[:8]
+        except (AttributeError, ReferenceError, TypeError):
+            # Clip is invalid - generate random ID as fallback
+            import random
+            return hashlib.sha256(str(random.random()).encode()).hexdigest()[:8]
     
     def _extract_camera_intrinsics(self, clip: bpy.types.MovieClip) -> Dict:
         """Extract camera intrinsics and lens distortion from clip."""
@@ -390,6 +447,26 @@ class SessionRecorder:
                     if i % trajectory_sample_rate == 0:
                         trajectory.append([round(marker.co.x, 4), round(marker.co.y, 4)])
                 
+                # ML Enhancement: Initial position for survival prediction
+                initial_pos = [round(markers[0].co.x, 4), round(markers[0].co.y, 4)]
+                
+                # ML Enhancement: Feature quality score
+                # Based on distance from edges and center preference
+                x, y = markers[0].co.x, markers[0].co.y
+                edge_margin = 0.08
+                quality = 1.0
+                # Penalty for edges
+                if x < edge_margin or x > (1.0 - edge_margin):
+                    quality *= 0.7
+                if y < edge_margin or y > (1.0 - edge_margin):
+                    quality *= 0.7
+                # Bonus for center
+                center_dist = ((x - 0.5) ** 2 + (y - 0.5) ** 2) ** 0.5
+                if center_dist < 0.25:
+                    quality *= 1.1
+                # Cap at 1.0
+                quality = min(1.0, quality)
+                
                 telemetry = TrackTelemetry(
                     name=track.name,
                     lifespan=lifespan,
@@ -401,6 +478,8 @@ class SessionRecorder:
                     success=lifespan >= 5,
                     contributed_to_solve=track.has_bundle,
                     reprojection_error=track.average_error if track.has_bundle else 0.0,
+                    initial_position=initial_pos,
+                    feature_quality_score=round(quality, 3),
                     trajectory=trajectory,
                     trajectory_sample_rate=trajectory_sample_rate,
                 )
@@ -444,8 +523,72 @@ class SessionRecorder:
             1 for t in self.current_session.tracks if t.get('contributed_to_solve', False)
         )
         
+        # ML Enhancement v3: Compute marker survival summary
+        self._compute_marker_survival_summary()
+        
         # Compute optical flow descriptors for ML
         self._compute_optical_flow(all_velocities, all_motion_vectors, tracking)
+    
+    def _compute_marker_survival_summary(self):
+        """
+        Compute marker survival summary for ML analysis.
+        
+        Includes per-region breakdown and quality-vs-survival correlation
+        to validate the feature_quality_score metric.
+        """
+        if not self.current_session or not self.current_session.tracks:
+            return
+        
+        tracks = self.current_session.tracks
+        
+        # Basic counts
+        total = len(tracks)
+        survived = sum(1 for t in tracks if t.get('success', False))
+        
+        # Lifespans and quality scores
+        lifespans = [t.get('lifespan', 0) for t in tracks]
+        quality_scores = [t.get('feature_quality_score', 0.0) for t in tracks]
+        
+        # Per-region breakdown
+        per_region = {}
+        for t in tracks:
+            region = t.get('region', 'center')
+            if region not in per_region:
+                per_region[region] = {'total': 0, 'survived': 0, 'rate': 0.0}
+            per_region[region]['total'] += 1
+            if t.get('success', False):
+                per_region[region]['survived'] += 1
+        
+        # Calculate rates
+        for region, stats in per_region.items():
+            if stats['total'] > 0:
+                stats['rate'] = round(stats['survived'] / stats['total'], 3)
+        
+        # Simple correlation between quality and survival
+        # (Pearson correlation approximation)
+        correlation = 0.0
+        if total >= 3 and any(q > 0 for q in quality_scores):
+            survival_binary = [1.0 if t.get('success', False) else 0.0 for t in tracks]
+            
+            mean_q = sum(quality_scores) / total
+            mean_s = sum(survival_binary) / total
+            
+            numerator = sum((q - mean_q) * (s - mean_s) for q, s in zip(quality_scores, survival_binary))
+            denom_q = sum((q - mean_q) ** 2 for q in quality_scores) ** 0.5
+            denom_s = sum((s - mean_s) ** 2 for s in survival_binary) ** 0.5
+            
+            if denom_q > 0 and denom_s > 0:
+                correlation = numerator / (denom_q * denom_s)
+        
+        self.current_session.marker_survival_summary = {
+            'total_markers': total,
+            'survived_markers': survived,
+            'survival_rate': round(survived / total, 3) if total > 0 else 0.0,
+            'avg_lifespan': round(sum(lifespans) / total, 1) if total > 0 else 0.0,
+            'avg_quality_score': round(sum(quality_scores) / total, 3) if total > 0 else 0.0,
+            'quality_vs_survival_correlation': round(correlation, 3),
+            'per_region': per_region,
+        }
     
     def _compute_optical_flow(self, velocities: List[float], motion_vectors: List, tracking):
         """
@@ -701,12 +844,13 @@ class SessionRecorder:
     
     def _save_edit_session(self, edit_session):
         """
-        Save user edit session data to JSON file.
+        Save user edit session data to JSON file atomically.
         
         Args:
             edit_session: BehaviorData dataclass from BehaviorRecorder
         """
         from dataclasses import asdict
+        import tempfile
         
         try:
             # Create edits subdirectory
@@ -722,40 +866,71 @@ class SessionRecorder:
             edit_dict = asdict(edit_session)
             edit_dict = self._sanitize_for_json(edit_dict)
             
-            with open(filepath, 'w') as f:
-                json.dump(edit_dict, f, indent=2)
+            # Write to temp file first, then rename (atomic)
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.json',
+                dir=edits_dir,
+                delete=False
+            ) as tmp:
+                json.dump(edit_dict, tmp, indent=2)
+                tmp_path = tmp.name
+            
+            # Atomic replace
+            os.replace(tmp_path, filepath)
             
             print(f"AutoSolve: Saved edit session to {filepath}")
         except (OSError, IOError, TypeError) as e:
             print(f"AutoSolve: Error saving edit session: {e}")
+            # Clean up temp file if it exists
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
     
     def _save_session(self):
-        """Save session data to JSON file."""
+        """Save session data to JSON file atomically."""
         if not self.current_session:
             return
         
+        import tempfile
+        
         try:
-            # Generate filename with sanitized characters
+            # Generate filename with timestamp and anonymous session ID
             timestamp = self.current_session.timestamp.replace(':', '-').replace('.', '-')
-            # Sanitize clip name - remove/replace problematic characters
-            clip_name = self.current_session.clip_name
-            for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']:
-                clip_name = clip_name.replace(char, '_')
-            clip_name = clip_name.replace('.', '_').replace(' ', '_')
+            # clip_name is already an anonymous hash (e.g., "a7f3c2b1")
+            session_id = self.current_session.clip_name
             
-            filename = f"{timestamp[:19]}_{clip_name}.json"
+            filename = f"{timestamp[:19]}_{session_id}.json"
             filepath = self.data_dir / filename
             
             # Convert session to dict and sanitize for JSON serialization
             session_dict = asdict(self.current_session)
             session_dict = self._sanitize_for_json(session_dict)
             
-            with open(filepath, 'w') as f:
-                json.dump(session_dict, f, indent=2)
+            # Write to temp file first, then rename (atomic)
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                suffix='.json',
+                dir=self.data_dir,
+                delete=False
+            ) as tmp:
+                json.dump(session_dict, tmp, indent=2)
+                tmp_path = tmp.name
+            
+            # Atomic replace
+            os.replace(tmp_path, filepath)
             
             print(f"AutoSolve: Saved session data to {filepath}")
         except (OSError, IOError, TypeError) as e:
             print(f"AutoSolve: Error saving session: {e}")
+            # Clean up temp file if it exists
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
     
     def _sanitize_for_json(self, data):
         """Recursively sanitize data for JSON serialization."""

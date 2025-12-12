@@ -107,6 +107,8 @@ AutoSolve gets smarter through community data. Your anonymized tracking sessions
 
 - ✅ Settings used (pattern size, correlation, etc.)
 - ✅ Success/failure metrics per region
+- ✅ feature_density (multi-frame sampling at 25%, 50%, 75%)
+- ✅ Per-marker survival tracking and quality scores
 - ✅ Solve error and track statistics
 - ❌ NO file paths, images, or personal data
 
@@ -138,7 +140,7 @@ autosolve/
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── validation.py         # ValidationMixin - pre-solve validation
     ├── filtering.py          # FilteringMixin - track cleanup methods
-    ├── smoothing.py          # Track and camera smoothing utilities
+    ├── smoothing.py          # Track smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
     └── learning/             # Learning components
@@ -157,7 +159,7 @@ autosolve/
 | `smart_tracker.py`       | Main tracking logic, settings, learning |
 | `operators.py`           | Modal pipeline phases                   |
 | `failure_diagnostics.py` | Failure pattern detection               |
-| `pretrained_model.json`  | Default settings from community data    |
+| `feature_extractor.py`   | Visual density & quality analysis       |
 
 ### Documentation
 
@@ -170,15 +172,20 @@ autosolve/
 
 ### In Progress
 
-- [ ] **UI for footage type selection** - Dropdown in panel
 - [ ] **Retry with diagnosis** - Automatic retry using failure analysis
+- [ ] **Community Model Sync** - Download improved defaults
+
+### Implemented ✅
+
+- [x] **UI for footage type selection** - Dropdown in panel
+- [x] **Setup Tracking Scene** - Auto-create camera and background
+- [x] **Multi-frame Feature Density** - Temporal texture analysis
+- [x] **Per-Marker Quality Tracking** - Survival prediction data
 
 ### Future
 
-- [ ] **Setup Tracking Scene** - Auto-create camera and background
-- [ ] **Community Model Sync** - Download improved defaults
 - [ ] **Real-time Motion Estimation** - Analyze optical flow before tracking
-- [ ] **Neural Network Model** - Replace heuristics with ML
+- [ ] **Neural Network Model** - Replace heuristics with ML using collected data
 
 ---
 

@@ -268,10 +268,14 @@ User behavior is recorded separately for ML training:
 
 ## Track Telemetry Fields
 
+## Track Telemetry Fields
+
 | Field                    | Type        | Description                             |
 | ------------------------ | ----------- | --------------------------------------- |
 | `name`                   | string      | Marker identifier                       |
 | `lifespan`               | int         | Number of frames tracked                |
+| `initial_position`       | [x,y]       | Position at first frame (0-1)           |
+| `feature_quality_score`  | float       | 0-1 score (edges=low, center=high)      |
 | `start_frame`            | int         | First frame of track                    |
 | `end_frame`              | int         | Last frame of track                     |
 | `region`                 | string      | Frame region (9 zones)                  |
@@ -488,17 +492,19 @@ When "Learn from My Edits" is enabled, these features are extracted:
 
 | Feature              | Description                                       | ML Purpose                 |
 | -------------------- | ------------------------------------------------- | -------------------------- |
-| **Thumbnails**       | 3 JPEG images (64x64) at 25%, 50%, 75%            | CNN scene classification   |
+| **Feature Density**  | Count of trackable features per region            | Dead zone prediction       |
+| **Density Timeline** | Density at 25%, 50%, 75% of clip                  | Temporal change/occlusion  |
 | **Edge Density**     | Track success rate per region (proxy for texture) | Region quality prediction  |
 | **Contrast Stats**   | Success/track counts per region                   | Dead zone prediction       |
 | **Flow Histograms**  | 8-bin direction + 5-bin magnitude                 | Motion pattern recognition |
 | **Temporal Profile** | Velocity at evenly-spaced frames                  | RNN/LSTM training          |
 
-**Thumbnail Extraction:**
+**Feature Density Extraction:**
 
-- Movies (.mp4, .mov): FFmpeg extracts frame → scales → JPEG
-- Image sequences: Blender API loads frame → scales → JPEG
-- Fallback: Hash identifier if extraction fails
+- Runs `detect_features` with low threshold
+- Counts potential markers in each 3x3 region
+- Saves counts without storing images (privacy safe)
+- Used to identify textureless or sky regions before tracking
 
 ---
 

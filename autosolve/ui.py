@@ -6,6 +6,50 @@
 import bpy
 from bpy.types import Panel
 
+# Track which clip was last displayed (for detecting clip switches)
+_last_displayed_clip_fingerprint = ""
+
+
+def _get_clip_fingerprint(clip):
+    """Get fingerprint for clip identification."""
+    if not clip:
+        return ""
+    try:
+        import hashlib
+        data = f"{clip.size[0]}x{clip.size[1]}_{clip.fps}_{clip.frame_duration}"
+        return hashlib.sha256(data.encode()).hexdigest()[:12]
+    except:
+        return ""
+
+
+def _sync_clip_state_if_changed(context):
+    """
+    Detect clip switch and sync state accordingly.
+    
+    Called on each panel draw to ensure UI reflects current clip's state.
+    """
+    global _last_displayed_clip_fingerprint
+    
+    clip = context.edit_movieclip
+    if not clip:
+        _last_displayed_clip_fingerprint = ""
+        return
+    
+    current_fingerprint = _get_clip_fingerprint(clip)
+    
+    if current_fingerprint != _last_displayed_clip_fingerprint:
+        # Clip changed! Sync state
+        if _last_displayed_clip_fingerprint:
+            # There was a previous clip - save its behavior data
+            try:
+                from .clip_state import get_clip_manager
+                manager = get_clip_manager()
+                manager.update_from_blender(clip, context.scene)
+            except Exception as e:
+                print(f"AutoSolve: Error syncing clip state: {e}")
+        
+        _last_displayed_clip_fingerprint = current_fingerprint
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPER: Determine current workflow phase
@@ -42,24 +86,42 @@ def get_workflow_phase(context):
 
 
 def _find_tracking_camera(context):
-    """Find a camera with tracking-derived animation."""
+    """
+    Find a camera with tracking-derived animation for the CURRENT clip.
+    
+    Important: Must verify the camera is actually tracking this specific clip,
+    not just any camera with animation (could be from a different clip).
+    """
+    clip = context.edit_movieclip
+    if not clip:
+        return None
+    
     # Check scene camera first - most common case after setup_tracking_scene
     cam = context.scene.camera
     if cam:
-        # Check for animation data OR constraints (tracking can use both)
-        has_animation = cam.animation_data and cam.animation_data.action
-        has_constraints = len(cam.constraints) > 0
+        # Check for Camera Solver constraint pointing to THIS clip
+        for constraint in cam.constraints:
+            if constraint.type == 'CAMERA_SOLVER':
+                if hasattr(constraint, 'clip') and constraint.clip == clip:
+                    return cam
         
-        if has_animation or has_constraints:
-            return cam
+        # Check for animation data that might be baked from THIS clip's tracking
+        # Note: Baked animation loses the clip reference, so we need to check
+        # if the clip has a valid solve AND camera has animation
+        if clip.tracking.reconstruction.is_valid:
+            has_animation = cam.animation_data and cam.animation_data.action
+            if has_animation:
+                # Camera has animation and clip has valid solve - likely from this clip
+                # This is a heuristic; ideally we'd store metadata about which clip
+                return cam
     
-    # Fallback: search all cameras for any with animation
+    # Fallback: search all cameras for Camera Solver constraint pointing to THIS clip
     for obj in bpy.data.objects:
         if obj.type == 'CAMERA':
-            if obj.animation_data and obj.animation_data.action:
-                return obj
-            if len(obj.constraints) > 0:
-                return obj
+            for constraint in obj.constraints:
+                if constraint.type == 'CAMERA_SOLVER':
+                    if hasattr(constraint, 'clip') and constraint.clip == clip:
+                        return obj
     
     return None
 
@@ -74,8 +136,9 @@ class AUTOSOLVE_PT_main_panel(Panel):
     bl_label = "AutoSolve"
     bl_idname = "AUTOSOLVE_PT_main_panel"
     bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
+    bl_order = 0
     
     @classmethod
     def poll(cls, context):
@@ -85,7 +148,10 @@ class AUTOSOLVE_PT_main_panel(Panel):
         layout = self.layout
         clip = context.edit_movieclip
         
-        # Clip info - compact header
+        # Sync per-clip state when clip changes
+        _sync_clip_state_if_changed(context)
+        
+        # Clip info - compact header with fingerprint indicator
         row = layout.row()
         row.label(text=clip.name, icon='SEQUENCE')
         row.label(text=f"{clip.frame_duration}f")
@@ -101,7 +167,7 @@ class AUTOSOLVE_PT_research_panel(Panel):
     bl_label = "Research Beta"
     bl_idname = "AUTOSOLVE_PT_research_panel"
     bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
     bl_options = {'DEFAULT_CLOSED'}
@@ -121,7 +187,7 @@ class AUTOSOLVE_PT_research_panel(Panel):
             predictor = SettingsPredictor()
             stats = predictor.get_stats()
             col.label(text=f"Sessions: {stats.get('total_sessions', 0)} | Success: {stats.get('success_rate', 0):.0%}")
-        except:
+        except Exception:
             col.label(text="No data collected yet")
         
         row = layout.row(align=True)
@@ -140,7 +206,7 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
     bl_label = "Step 1: Track"
     bl_idname = "AUTOSOLVE_PT_phase1_tracking"
     bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
     
@@ -226,7 +292,7 @@ class AUTOSOLVE_PT_phase1_advanced(Panel):
     bl_label = "Advanced Options"
     bl_idname = "AUTOSOLVE_PT_phase1_advanced"
     bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_phase1_tracking"
     bl_options = {'DEFAULT_CLOSED'}
@@ -258,7 +324,7 @@ class AUTOSOLVE_PT_phase2_scene(Panel):
     bl_label = "Step 2: Setup Scene"
     bl_idname = "AUTOSOLVE_PT_phase2_scene"
     bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
     
@@ -338,7 +404,7 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
     bl_label = "Step 3: Refine"
     bl_idname = "AUTOSOLVE_PT_phase3_refine"
     bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'UI'
+    bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
     bl_parent_id = "AUTOSOLVE_PT_main_panel"
     

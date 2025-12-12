@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024-2025 Your Name
+# SPDX-FileCopyrightText: 2024-2025 Usama Bin Shahid
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
@@ -11,7 +11,7 @@ tracking system. It replaces Blender's manual tracking workflow with a single
 
 bl_info = {
     "name": "AutoSolve",
-    "author": "Your Name",
+    "author": "Usama Bin Shahid",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),
     "location": "Clip Editor > Sidebar > AutoSolve",

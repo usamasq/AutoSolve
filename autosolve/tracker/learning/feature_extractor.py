@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 """
-FeatureExtractor - CPU-only visual feature extraction for ML training.
+FeatureExtractor - Visual feature extraction for ML training.
 
-Extracts content-aware features from video frames without requiring GPU.
-Features are designed for:
-1. Immediate statistical model improvement (motion-based sub-classification)
-2. Future neural network training (thumbnails, edge maps, histograms)
+Extracts content-aware features from video clips for learning:
+1. Feature density per region (using Blender's detect_features)
+2. Motion classification (LOW/MEDIUM/HIGH)
+3. Edge density proxy (from track survival rates)
 """
 
 import hashlib
@@ -33,12 +33,18 @@ class VisualFeatures:
     motion_magnitude: float = 0.0
     motion_variance: float = 0.0
     
-    # Frame thumbnails (base64 encoded, 64x64 RGB)
-    # List of 3-5 representative frames
-    thumbnails: List[str] = field(default_factory=list)
-    thumbnail_frames: List[int] = field(default_factory=list)
+    # Feature density per region (count of detected features)
+    # Uses Blender's detect_features operator for actual feature detection
+    feature_density: Dict[str, int] = field(default_factory=dict)
+    feature_density_total: int = 0
+    feature_density_mean: float = 0.0
     
-    # Edge density per region (0-1, higher = more texture)
+    # Multi-frame feature density (for detecting temporal changes)
+    # Samples at 25%, 50%, 75% of clip duration
+    feature_density_timeline: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # Example: {"frame_25pct": {"top-left": 45, ...}, "frame_50pct": {...}, ...}
+    
+    # Edge density per region (0-1, higher = more texture) - proxy from track survival
     edge_density: Dict[str, float] = field(default_factory=dict)
     edge_density_mean: float = 0.0
     
@@ -80,13 +86,15 @@ class FeatureExtractor:
         self.features = VisualFeatures()
     
     def extract_all(self, clip: Optional['bpy.types.MovieClip'] = None, 
-                    tracking_data: Optional[Dict] = None) -> VisualFeatures:
+                    tracking_data: Optional[Dict] = None,
+                    defer_thumbnails: bool = False) -> VisualFeatures:
         """
         Extract all visual features from clip.
         
         Args:
             clip: Blender MovieClip (optional, uses self.clip if not provided)
             tracking_data: Optional dict with pre-computed tracking analysis
+            defer_thumbnails: Deprecated parameter, kept for backward compatibility
             
         Returns:
             VisualFeatures dataclass with all extracted features
@@ -103,14 +111,143 @@ class FeatureExtractor:
         # 2. Extract motion features (uses tracking if available)
         if tracking_data:
             self._extract_motion_from_tracking(tracking_data)
+            
+            # Check if SmartTracker already computed feature density during detection
+            pre_detected_density = tracking_data.get('detected_feature_density')
+            if pre_detected_density:
+                # Use pre-computed density (avoid duplicate detect_features call)
+                # Note: This is from a single frame (detection frame), not multi-frame sampling
+                self.features.feature_density = pre_detected_density
+                self.features.feature_density_total = sum(pre_detected_density.values())
+                if len(pre_detected_density) > 0:
+                    self.features.feature_density_mean = self.features.feature_density_total / len(pre_detected_density)
+                # Store in timeline format for consistency
+                self.features.feature_density_timeline = {"detection_frame": pre_detected_density}
+                print(f"AutoSolve: Using pre-detected feature density - {self.features.feature_density_total} features")
+            else:
+                # 3. Compute feature density per region using Blender's detect_features
+                self._compute_feature_density()
+        else:
+            # No tracking data - compute from scratch
+            self._compute_feature_density()
         
-        # 3. Extract frame thumbnails (3 representative frames)
-        self._extract_thumbnails()
-        
-        # 4. Compute edge density per region
+        # 4. Compute edge density per region (proxy from track survival)
         self._compute_edge_density()
         
         return self.features
+    
+    def _compute_feature_density(self):
+        """
+        Compute feature density per region using Blender's detect_features operator.
+        
+        Samples at 3 frames (25%, 50%, 75% of clip duration) to detect:
+        - Temporal changes (moving objects, transient occlusions)
+        - Consistent dead zones (regions that are always low)
+        """
+        if not self.clip or not bpy:
+            return
+        
+        try:
+            scene = bpy.context.scene
+            original_frame = scene.frame_current
+            
+            # Calculate sample frames
+            duration = self.clip.frame_duration
+            start = self.clip.frame_start
+            sample_frames = {
+                "frame_25pct": start + int(duration * 0.25),
+                "frame_50pct": start + int(duration * 0.50),
+                "frame_75pct": start + int(duration * 0.75)
+            }
+            
+            # Store settings to restore later
+            settings = self.clip.tracking.settings
+            original_margin = settings.default_margin
+            
+            # Handle API change: default_correlation_min (new) vs default_minimum_correlation (old)
+            correlation_attr = 'default_correlation_min' if hasattr(settings, 'default_correlation_min') else 'default_minimum_correlation'
+            original_threshold = getattr(settings, correlation_attr, 0.75)
+            
+            # Use low threshold to find ALL features
+            settings.default_margin = 8
+            setattr(settings, correlation_attr, 0.3)
+            
+            timeline = {}
+            all_counts = {region: [] for region in self.REGIONS}
+            
+            for frame_label, frame_num in sample_frames.items():
+                try:
+                    scene.frame_set(frame_num)
+                    
+                    # Get existing tracks to know what's new
+                    tracks = self.clip.tracking.tracks
+                    existing_track_names = [t.name for t in tracks]
+                    
+                    # Detect features at this frame
+                    bpy.ops.clip.detect_features(threshold=0.1, min_distance=8, margin=8, placement='FRAME')
+                    
+                    # Count per region
+                    region_counts = {region: 0 for region in self.REGIONS}
+                    new_tracks = [t for t in self.clip.tracking.tracks if t.name not in existing_track_names]
+                    
+                    for track in new_tracks:
+                        marker = track.markers.find_frame(frame_num)
+                        if marker and not marker.mute:
+                            x, y = marker.co
+                            region = self._get_region(x, y)
+                            region_counts[region] += 1
+                    
+                    # Clean up detected tracks
+                    for track in new_tracks:
+                        tracks.remove(track)
+                    
+                    # Store for this frame
+                    timeline[frame_label] = region_counts
+                    
+                    # Accumulate for averaging
+                    for region, count in region_counts.items():
+                        all_counts[region].append(count)
+                        
+                except Exception as e:
+                    print(f"AutoSolve: Feature density at {frame_label} failed: {e}")
+                    timeline[frame_label] = {region: 0 for region in self.REGIONS}
+            
+            # Restore settings
+            settings.default_margin = original_margin
+            setattr(settings, correlation_attr, original_threshold)
+            scene.frame_set(original_frame)
+            
+            # Store multi-frame timeline
+            self.features.feature_density_timeline = timeline
+            
+            # Compute average across all frames for the main feature_density
+            avg_counts = {}
+            for region in self.REGIONS:
+                counts = all_counts[region]
+                avg_counts[region] = int(sum(counts) / len(counts)) if counts else 0
+            
+            self.features.feature_density = avg_counts
+            self.features.feature_density_total = sum(avg_counts.values())
+            self.features.feature_density_mean = self.features.feature_density_total / len(avg_counts) if avg_counts else 0
+            
+            print(f"AutoSolve: Feature density - {self.features.feature_density_total} avg features (3-frame sampling)")
+            
+        except Exception as e:
+            print(f"AutoSolve: Feature density computation failed: {e}")
+            self.features.feature_density = {region: 0 for region in self.REGIONS}
+    
+    def _get_region(self, x: float, y: float) -> str:
+        """Get region name for normalized coordinates."""
+        # Divide frame into 3x3 grid
+        col = 0 if x < 0.33 else (1 if x < 0.66 else 2)
+        row = 2 if y < 0.33 else (1 if y < 0.66 else 0)  # Flip Y
+        
+        region_map = [
+            ['top-left', 'top-center', 'top-right'],
+            ['mid-left', 'center', 'mid-right'],
+            ['bottom-left', 'bottom-center', 'bottom-right']
+        ]
+        return region_map[row][col]
     
     def _generate_fingerprint(self) -> str:
         """
@@ -123,6 +260,9 @@ class FeatureExtractor:
             return ""
         
         try:
+            # Access a property to trigger ReferenceError if clip was deleted
+            _ = self.clip.name
+            
             # Get absolute filepath
             filepath = bpy.path.abspath(self.clip.filepath) if self.clip.filepath else ""
             
@@ -131,6 +271,9 @@ class FeatureExtractor:
             
             # Generate hash
             return hashlib.md5(fingerprint_data.encode()).hexdigest()[:16]
+        except (ReferenceError, AttributeError) as e:
+            print(f"AutoSolve: Error generating fingerprint (clip may have been deleted): {e}")
+            return ""
         except Exception as e:
             print(f"AutoSolve: Error generating fingerprint: {e}")
             return ""
@@ -140,20 +283,49 @@ class FeatureExtractor:
         Extract motion classification from tracking analysis.
         
         Uses velocity statistics from tracked markers to classify motion.
+        Handles both dict format (new: {avg, max}) and list format (legacy).
         """
-        velocities = tracking_data.get('velocities', [])
-        
-        if not velocities:
+        if not tracking_data:
             return
         
-        # Compute velocity statistics
-        mean_vel = sum(velocities) / len(velocities)
-        variance = sum((v - mean_vel) ** 2 for v in velocities) / len(velocities)
+        velocities_data = tracking_data.get('velocities')
         
-        self.features.motion_magnitude = mean_vel
-        self.features.motion_variance = variance ** 0.5
+        # Edge case: None or missing velocities
+        if velocities_data is None:
+            return
         
-        # Classify motion
+        mean_vel = 0.0  # Default for classification
+        
+        # Handle dict format (new) vs list format (legacy)
+        if isinstance(velocities_data, dict):
+            # Edge case: empty dict
+            if not velocities_data:
+                return
+            # New format: {'avg': float, 'max': float}
+            mean_vel = float(velocities_data.get('avg', 0.0) or 0.0)
+            max_vel = float(velocities_data.get('max', 0.0) or 0.0)
+            self.features.motion_magnitude = mean_vel
+            # Use max-avg as proxy for variance
+            self.features.motion_variance = max_vel - mean_vel if max_vel > mean_vel else 0.0
+        elif isinstance(velocities_data, list):
+            # Edge case: empty list
+            if not velocities_data:
+                return
+            # Filter out None/invalid values
+            valid_velocities = [v for v in velocities_data if isinstance(v, (int, float)) and v is not None]
+            if not valid_velocities:
+                return
+            # Legacy format: [float, float, ...]
+            mean_vel = sum(valid_velocities) / len(valid_velocities)
+            variance = sum((v - mean_vel) ** 2 for v in valid_velocities) / len(valid_velocities)
+            self.features.motion_magnitude = mean_vel
+            self.features.motion_variance = variance ** 0.5
+        else:
+            # Unexpected type - log and skip
+            print(f"AutoSolve: Unexpected velocities type: {type(velocities_data)}")
+            return
+        
+        # Classify motion based on mean velocity
         if mean_vel < self.MOTION_LOW_THRESHOLD:
             self.features.motion_class = "LOW"
         elif mean_vel > self.MOTION_HIGH_THRESHOLD:
@@ -165,227 +337,12 @@ class FeatureExtractor:
         frame_samples = tracking_data.get('frame_samples', [])
         if frame_samples:
             self.features.temporal_motion_profile = [
-                s.get('avg_velocity', 0.0) for s in frame_samples[:10]
+                s.get('avg_velocity', 0.0) for s in frame_samples[:10] if isinstance(s, dict)
             ]
+
     
-    def _extract_thumbnails(self, sample_count: int = 3):
-        """
-        Extract frame thumbnails for NN training.
-        
-        Samples frames at 25%, 50%, 75% of clip duration.
-        Extracts actual RGB pixels, downscales to 64x64, encodes as base64 JPEG.
-        
-        Total overhead: ~200-500ms for 3 thumbnails.
-        Storage: ~2-4KB per thumbnail (JPEG compressed).
-        """
-        if not self.clip or not bpy:
-            return
-        
-        try:
-            frame_count = self.clip.frame_duration
-            if frame_count < 1:
-                return
-            
-            # Sample at 25%, 50%, 75% of clip duration (more representative than evenly spaced)
-            percentages = [0.25, 0.50, 0.75]
-            sample_frames = []
-            for pct in percentages[:sample_count]:
-                frame = self.clip.frame_start + int(frame_count * pct)
-                sample_frames.append(min(frame, self.clip.frame_start + frame_count - 1))
-            
-            self.features.thumbnail_frames = sample_frames
-            
-            for frame in sample_frames:
-                thumbnail = self._render_thumbnail(frame)
-                if thumbnail:
-                    self.features.thumbnails.append(thumbnail)
-            
-            if self.features.thumbnails:
-                print(f"AutoSolve: Extracted {len(self.features.thumbnails)} thumbnails "
-                      f"(~{sum(len(t) for t in self.features.thumbnails) // 1024}KB)")
-                
-        except Exception as e:
-            print(f"AutoSolve: Error extracting thumbnails: {e}")
-    
-    def _render_thumbnail(self, frame: int, size: int = 64) -> Optional[str]:
-        """
-        Render a single frame thumbnail with actual pixel data.
-        
-        Uses Blender's MovieClip preview system to extract frame pixels,
-        downscales to target size, and encodes as base64 JPEG.
-        
-        Args:
-            frame: Frame number to render
-            size: Output size (64x64 default)
-            
-        Returns:
-            Base64 encoded JPEG data or None on failure
-        """
-        if not self.clip or not bpy:
-            return None
-        
-        try:
-            import base64
-            import tempfile
-            import os
-            
-            # Get clip dimensions
-            width, height = self.clip.size
-            if width == 0 or height == 0:
-                return None
-            
-            # Calculate aspect-correct dimensions
-            aspect = width / height
-            if aspect > 1:
-                thumb_w = size
-                thumb_h = max(1, int(size / aspect))
-            else:
-                thumb_h = size
-                thumb_w = max(1, int(size * aspect))
-            
-            # Method: Use Blender's image loading for the clip's source
-            filepath = bpy.path.abspath(self.clip.filepath)
-            if not filepath:
-                return None
-            
-            # For movie files, we need to extract the specific frame
-            # Create a temporary image to hold the frame
-            temp_img_name = f"__autosolve_thumb_{frame}"
-            
-            # Check if this is a movie or image sequence
-            is_movie = filepath.lower().endswith(('.mp4', '.mov', '.avi', '.mkv', '.webm', '.mxf'))
-            
-            if is_movie:
-                # For movies, use the compositor to extract frame
-                # This is the most reliable method
-                thumbnail_data = self._extract_movie_frame(frame, thumb_w, thumb_h)
-            else:
-                # For image sequences, load the specific frame file
-                thumbnail_data = self._extract_sequence_frame(frame, thumb_w, thumb_h)
-            
-            return thumbnail_data
-            
-        except Exception as e:
-            print(f"AutoSolve: Error rendering thumbnail frame {frame}: {e}")
-            return None
-    
-    def _extract_movie_frame(self, frame: int, width: int, height: int) -> Optional[str]:
-        """
-        Extract a frame from a movie file using FFmpeg through Blender.
-        
-        Falls back to a simpler hash-based identifier if extraction fails.
-        """
-        try:
-            import base64
-            import tempfile
-            import os
-            import subprocess
-            
-            filepath = bpy.path.abspath(self.clip.filepath)
-            fps = self.clip.fps if self.clip.fps > 0 else 24
-            
-            # Calculate timestamp from frame
-            time_sec = (frame - self.clip.frame_start) / fps
-            
-            # Try to use FFmpeg directly (faster than compositor)
-            with tempfile.TemporaryDirectory() as tmpdir:
-                output_path = os.path.join(tmpdir, "thumb.jpg")
-                
-                # FFmpeg command to extract and scale frame
-                cmd = [
-                    'ffmpeg', '-y',
-                    '-ss', str(time_sec),
-                    '-i', filepath,
-                    '-vframes', '1',
-                    '-vf', f'scale={width}:{height}',
-                    '-q:v', '5',  # JPEG quality (2-31, lower is better)
-                    output_path
-                ]
-                
-                try:
-                    result = subprocess.run(
-                        cmd, 
-                        capture_output=True, 
-                        timeout=5,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    )
-                    
-                    if result.returncode == 0 and os.path.exists(output_path):
-                        with open(output_path, 'rb') as f:
-                            jpeg_data = f.read()
-                        return base64.b64encode(jpeg_data).decode('utf-8')
-                except (subprocess.TimeoutExpired, FileNotFoundError):
-                    # FFmpeg not available or timeout
-                    pass
-            
-            # Fallback: use frame identifier if FFmpeg fails
-            return self._create_frame_identifier(frame)
-            
-        except Exception as e:
-            return self._create_frame_identifier(frame)
-    
-    def _extract_sequence_frame(self, frame: int, width: int, height: int) -> Optional[str]:
-        """
-        Extract a frame from an image sequence.
-        """
-        try:
-            import base64
-            
-            # Get the specific frame's filepath
-            filepath = bpy.path.abspath(self.clip.filepath)
-            
-            # For sequences, Blender uses # notation or frame numbers
-            # Try to construct the frame path
-            if '#' in filepath:
-                # Replace # with frame number
-                num_hashes = filepath.count('#')
-                frame_str = str(frame).zfill(num_hashes)
-                frame_path = filepath.replace('#' * num_hashes, frame_str)
-            else:
-                # Try common naming patterns
-                frame_path = filepath
-            
-            # Load and resize image
-            if os.path.exists(frame_path):
-                # Load image
-                img = bpy.data.images.load(frame_path, check_existing=False)
-                try:
-                    # Scale and save as JPEG
-                    img.scale(width, height)
-                    
-                    # Save to temp file and read back
-                    import tempfile
-                    import os
-                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-                        tmp_path = tmp.name
-                    
-                    img.save_render(tmp_path)
-                    
-                    with open(tmp_path, 'rb') as f:
-                        jpeg_data = f.read()
-                    
-                    os.unlink(tmp_path)
-                    return base64.b64encode(jpeg_data).decode('utf-8')
-                finally:
-                    bpy.data.images.remove(img)
-            
-            return self._create_frame_identifier(frame)
-            
-        except Exception:
-            return self._create_frame_identifier(frame)
-    
-    def _create_frame_identifier(self, frame: int) -> str:
-        """
-        Create a lightweight frame identifier as fallback.
-        
-        Used when actual pixel extraction fails.
-        """
-        import hashlib
-        filepath = bpy.path.abspath(self.clip.filepath) if self.clip else ""
-        width, height = self.clip.size if self.clip else (0, 0)
-        frame_id = f"{filepath}:{frame}:{width}x{height}"
-        frame_hash = hashlib.md5(frame_id.encode()).hexdigest()[:16]
-        return f"fallback:{frame}:{frame_hash}"
+    # NOTE: Thumbnail extraction methods removed - using feature_density instead
+    # which uses Blender's detect_features for actual trackable feature detection
     
     def _compute_edge_density(self):
         """

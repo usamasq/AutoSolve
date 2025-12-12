@@ -31,15 +31,44 @@ class TrackingState:
 
 _state = TrackingState()
 
-# Global recorders (persist between solves to capture user behavior)
+# ═══════════════════════════════════════════════════════════════════════════
+# MULTI-CLIP STATE MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════
+# Users can work on multiple clips in one session. Instead of global recorders,
+# we now use ClipStateManager to isolate state per-clip.
+#
+# Legacy globals (kept for backward compat, but prefer ClipStateManager):
 _behavior_recorder = None
+_behavior_monitor = None  # Timer-based monitor for manual tracking/solve
 _last_solve_settings = None
 _last_solve_error = None
 _last_solve_footage_class = None
+_last_solve_clip_fingerprint = None  # Track which clip the behavior belongs to
 
 # Pending behavior to learn from AFTER the new solve completes
 _pending_behavior = None
 _pending_behavior_footage_class = None
+
+
+def _get_clip_manager():
+    """Get the ClipStateManager for per-clip state isolation."""
+    try:
+        from .clip_state import get_clip_manager
+        return get_clip_manager()
+    except ImportError:
+        return None
+
+
+def _generate_clip_fingerprint(clip):
+    """Generate privacy-safe fingerprint for clip identification."""
+    if not clip:
+        return ""
+    try:
+        import hashlib
+        data = f"{clip.size[0]}x{clip.size[1]}_{clip.fps}_{clip.frame_duration}"
+        return hashlib.sha256(data.encode()).hexdigest()[:12]
+    except:
+        return ""
 
 
 class AUTOSOLVE_OT_run_solve(Operator):
@@ -84,10 +113,38 @@ class AUTOSOLVE_OT_run_solve(Operator):
         # ═══════════════════════════════════════════════════════════════
         # BEHAVIOR LEARNING: Capture and learn from user edits since last solve
         # ═══════════════════════════════════════════════════════════════
-        global _behavior_recorder
+        global _behavior_recorder, _behavior_monitor
         global _last_solve_settings, _last_solve_error, _last_solve_footage_class
+        global _pending_behavior, _pending_behavior_footage_class, _last_solve_clip_fingerprint
+        
+        # Generate fingerprint for current clip
+        current_fingerprint = _generate_clip_fingerprint(clip)
         
         if settings.record_edits:
+            # Check if user switched clips using fingerprint comparison
+            clip_changed = (
+                _last_solve_clip_fingerprint and 
+                current_fingerprint != _last_solve_clip_fingerprint
+            )
+            
+            if clip_changed:
+                print(f"AutoSolve: Clip changed ({_last_solve_clip_fingerprint[:8]} -> {current_fingerprint[:8]})")
+                # Save behavior for OLD clip before switching
+                if _behavior_recorder and _behavior_recorder.is_monitoring:
+                    behavior = _behavior_recorder.stop_monitoring(None, None)
+                    if behavior:
+                        _behavior_recorder.save_behavior(behavior)
+                        print(f"AutoSolve: Saved behavior for previous clip")
+                
+                # Update ClipStateManager
+                manager = _get_clip_manager()
+                if manager:
+                    manager.set_current_clip(clip)
+                
+                _behavior_recorder = None
+                _behavior_monitor = None
+                _last_solve_footage_class = None
+            
             #    (Don't learn yet - we need the new solve's error to compare)
             if _behavior_recorder and _last_solve_footage_class:
                 # Get current settings (user may have changed them)
@@ -115,8 +172,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
         
         # Reset recorders (but keep pending behavior)
         _behavior_recorder = None
+        _behavior_monitor = None
         _last_solve_settings = None
         _last_solve_error = None
+        _last_solve_clip_fingerprint = current_fingerprint  # Track current clip
         
         _state.tracker = SmartTracker(
             clip, 
@@ -210,7 +269,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 is_valid, issues = tracker.validate_pre_tracking()
                 if not is_valid and _state.iteration >= tracker.MAX_ITERATIONS:
                     self.report({'ERROR'}, f"Validation failed: {'; '.join(issues)}")
-                    return self._cancel(context)
+                    return self._finish(context, success=False)
                 
                 _state.phase = 'DETECT'
                 # Use optimal start frame (middle of clip for bidirectional tracking)
@@ -243,7 +302,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     else:
                         # Record failure before cancelling
                         tracker.save_session_results(success=False, solve_error=999.0)
-                        return self._cancel(context)
+                        return self._finish(context, success=False)
                     return {'RUNNING_MODAL'}
                 
                 print(f"AutoSolve: Smart detection - {num} balanced markers")
@@ -406,6 +465,13 @@ class AUTOSOLVE_OT_run_solve(Operator):
                                     tracker.current_settings
                                 )
                             
+                            # Record failure diagnostics for session data (ML training)
+                            if hasattr(tracker, 'recorder') and tracker.recorder:
+                                tracker.recorder.record_failure_diagnostics(
+                                    diagnosis.pattern.value,
+                                    _state.last_analysis.get('frame_of_failure')
+                                )
+                            
                             tracker.current_settings = diagnostics.apply_fix(
                                 tracker.current_settings, diagnosis
                             )
@@ -460,7 +526,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     self.report({'ERROR'}, f"Only {num} tracks - footage may be too difficult")
                     # Record failure before cancelling
                     tracker.save_session_results(success=False, solve_error=999.0)
-                    return self._cancel(context)
+                    return self._finish(context, success=False)
                 
                 # Pre-solve validation
                 is_valid, issues = tracker.validate_pre_solve()
@@ -539,7 +605,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     self.report({'ERROR'}, f"Only {num} tracks (removed {removed} bad)")
                     # Record failure before cancelling
                     tracker.save_session_results(success=False, solve_error=999.0)
-                    return self._cancel(context)
+                    return self._finish(context, success=False)
                 
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
                 
@@ -578,7 +644,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         else:
                             self.report({'ERROR'}, "Solve failed - footage may be too difficult (try Robust Mode or adjust settings)")
                         tracker.save_session_results(success=False, solve_error=999.0)
-                        return self._cancel(context)
+                        return self._finish(context, success=False)
                 
                 # Check if we need refinement (error > 2px)
                 error = tracker.get_solve_error()
@@ -653,7 +719,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
             import traceback
             traceback.print_exc()
             self.report({'ERROR'}, f"Error: {str(e)}")
-            return self._cancel(context)
+            return self._finish(context, success=False)
         
         return {'RUNNING_MODAL'}
     
@@ -666,6 +732,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
         settings = context.scene.autosolve
         clip = context.edit_movieclip
         tracker = _state.tracker
+        
+        # NOTE: Thumbnail extraction removed - now using feature_density via detect_features
         
         # ═══════════════════════════════════════════════════════════════
         # LEARN FROM PENDING BEHAVIOR (now we have the ACTUAL new error)
@@ -702,15 +770,35 @@ class AUTOSOLVE_OT_run_solve(Operator):
             _pending_behavior = None
             _pending_behavior_footage_class = None
         
-        if success and settings.record_edits and clip:
+        # Start behavior monitoring after solve (success OR failure)
+        # This captures user edits including fixes after failures
+        if settings.record_edits and clip:
             # Store current solve state for comparison when user re-solves
             _last_solve_settings = {
                 'pattern_size': clip.tracking.settings.default_pattern_size,
                 'search_size': clip.tracking.settings.default_search_size,
                 'correlation': clip.tracking.settings.default_correlation_min,
             }
-            _last_solve_error = clip.tracking.reconstruction.average_error if clip.tracking.reconstruction.is_valid else 0.0
+            # Use actual error if available, otherwise mark as failed with high error
+            if clip.tracking.reconstruction.is_valid:
+                _last_solve_error = clip.tracking.reconstruction.average_error
+            else:
+                _last_solve_error = 999.0  # Marker for failed solve
             _last_solve_footage_class = tracker.footage_class if tracker else None
+            
+            # Update ClipStateManager with solve results
+            manager = _get_clip_manager()
+            if manager:
+                manager.update_from_blender(clip, context.scene)
+                manager.set_current_clip(clip)
+                
+                # Store behavior recorder in clip state
+                state = manager.get_state(clip)
+                state.solve_success = success
+                state.has_solve = clip.tracking.reconstruction.is_valid
+                state.solve_error = _last_solve_error if _last_solve_error < 999 else 0.0
+                state.last_settings = _last_solve_settings.copy()
+                state.last_footage_class = _last_solve_footage_class
             
             # Create session ID for linking behavior with session
             from datetime import datetime
@@ -726,10 +814,22 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 session_id=session_id
             )
             
-            print(f"AutoSolve: Monitoring for user behavior changes")
+            # Initialize behavior monitor for manual tracking detection
+            # This enables detecting when user uses Blender's manual tracking/solve
+            from .tracker.learning.behavior_monitor import BehaviorMonitor
+            _behavior_monitor = BehaviorMonitor(clip)
+            
+            # Store in ClipState for multi-clip support
+            if manager:
+                state = manager.get_state(clip)
+                state.behavior_recorder = _behavior_recorder
+                state.behavior_monitor = _behavior_monitor
+            
+            status = "success" if success else "failure"
+            print(f"AutoSolve: Monitoring for user behavior changes after {status}")
         
         self._cleanup(context)
-        return {'FINISHED'}
+        return {'FINISHED'} if success else {'CANCELLED'}
     
     def _cancel(self, context):
         self._cleanup(context)
@@ -895,6 +995,7 @@ class AUTOSOLVE_OT_export_training_data(Operator):
     def execute(self, context):
         import json
         import zipfile
+        import base64
         from pathlib import Path
         from datetime import datetime
         
@@ -910,10 +1011,11 @@ class AUTOSOLVE_OT_export_training_data(Operator):
             
             session_count = 0
             behavior_count = 0
+            thumbnail_count = 0
             total_tracks = 0
             
             with zipfile.ZipFile(filepath, 'w', zipfile.ZIP_DEFLATED) as zf:
-                # 1. Export sessions
+                # 1. Export sessions and extract thumbnails
                 sessions_dir = base_dir / 'sessions'
                 if sessions_dir.exists():
                     for session_file in sessions_dir.glob('*.json'):
@@ -921,7 +1023,46 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                             with open(session_file) as f:
                                 data = json.load(f)
                                 total_tracks += len(data.get('tracks', []))
-                            # Use just timestamp as filename
+                            
+                            # Extract session ID from filename (e.g., "2025-12-12T10-30-00_a7f3c2b1.json")
+                            session_id = session_file.stem
+                            
+                            # Export thumbnails as individual files
+                            visual_features = data.get('visual_features') or {}
+                            thumbnails = visual_features.get('thumbnails') or []
+                            thumbnail_frames = visual_features.get('thumbnail_frames') or []
+                            
+                            for i, thumb_data in enumerate(thumbnails):
+                                # Edge cases: None, empty string, not a string
+                                if not thumb_data or not isinstance(thumb_data, str):
+                                    continue
+                                
+                                # Skip fallback/hash identifiers
+                                if thumb_data.startswith('fallback:'):
+                                    continue
+                                
+                                # Skip if too short to be valid base64 image
+                                if len(thumb_data) < 100:
+                                    continue
+                                
+                                # Get frame number safely
+                                frame = thumbnail_frames[i] if i < len(thumbnail_frames) else i
+                                if not isinstance(frame, (int, float)):
+                                    frame = i
+                                
+                                try:
+                                    # Decode base64 and write to ZIP
+                                    thumb_bytes = base64.b64decode(thumb_data)
+                                    # Verify it looks like valid image data
+                                    if len(thumb_bytes) < 50:
+                                        continue
+                                    thumb_filename = f"{session_id}_frame{int(frame):04d}.jpg"
+                                    zf.writestr(f"thumbnails/{thumb_filename}", thumb_bytes)
+                                    thumbnail_count += 1
+                                except Exception as e:
+                                    print(f"AutoSolve: Failed to export thumbnail {i}: {e}")
+                            
+                            # Write session JSON
                             zf.write(session_file, f"sessions/{session_file.name}")
                             session_count += 1
                         except Exception as e:
@@ -949,17 +1090,18 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                 
                 # 4. Create manifest
                 manifest = {
-                    'export_version': 1,
+                    'export_version': 2,  # Bumped version for thumbnail support
                     'export_date': datetime.now().isoformat(),
                     'addon_version': '1.0.0',
                     'session_count': session_count,
                     'behavior_count': behavior_count,
+                    'thumbnail_count': thumbnail_count,
                     'total_tracks': total_tracks,
                 }
                 zf.writestr('manifest.json', json.dumps(manifest, indent=2))
             
             self.report({'INFO'}, 
-                f"Exported {session_count} sessions, {behavior_count} behaviors to {filepath.name}")
+                f"Exported {session_count} sessions, {behavior_count} behaviors, {thumbnail_count} thumbnails to {filepath.name}")
             return {'FINISHED'}
             
         except Exception as e:
@@ -1262,11 +1404,11 @@ class AUTOSOLVE_OT_view_training_stats(Operator):
 
 
 class AUTOSOLVE_OT_smooth_tracks(Operator):
-    """Smooth track markers to reduce jitter."""
+    """Smooth track markers to reduce jitter, then re-solve."""
     
     bl_idname = "autosolve.smooth_tracks"
     bl_label = "Smooth Tracks"
-    bl_description = "Apply smoothing to track marker positions"
+    bl_description = "Apply smoothing to track markers and automatically update the camera solve"
     bl_options = {'REGISTER', 'UNDO'}
     
     @classmethod
@@ -1282,22 +1424,154 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
         settings = context.scene.autosolve
         
         try:
-            from .tracker.smoothing import smooth_track_markers
+            # ═══════════════════════════════════════════════════════════════
+            # 0. Check if camera has baked F-curves (will need re-setup)
+            # ═══════════════════════════════════════════════════════════════
+            camera_has_fcurves = False
+            scene_camera = context.scene.camera
+            if scene_camera and scene_camera.animation_data and scene_camera.animation_data.action:
+                camera_has_fcurves = True
             
+            # ═══════════════════════════════════════════════════════════════
+            # 1. Capture Orientation (Floor/Origin) ONLY if solve was oriented
+            # ═══════════════════════════════════════════════════════════════
+            floor_tracks = []
+            origin_track = None
+            floor_was_set = False
+            
+            recon = clip.tracking.reconstruction
+            if recon.is_valid:
+                # Collect all bundle Z values to determine if floor was actually set
+                z_values = []
+                for track in clip.tracking.tracks:
+                    if track.has_bundle:
+                        z_values.append(track.bundle.z)
+                        
+                        # Check if on Z plane (tolerance 0.05)
+                        if abs(track.bundle.z) < 0.05:
+                            floor_tracks.append(track.name)
+                        
+                        # Check if at origin (tolerance 0.05)
+                        if track.bundle.length < 0.05:
+                            origin_track = track.name
+                
+                # Heuristic: Floor was set if there's a cluster of tracks at Z~0
+                # (at least 3 tracks with Z < 0.05, AND they represent a meaningful portion)
+                if len(floor_tracks) >= 3 and len(z_values) > 0:
+                    # Check that floor tracks aren't just random - 
+                    # min Z should be close to 0 if floor was set
+                    min_z = min(z_values)
+                    if min_z > -0.1:  # Floor plane is near Z=0
+                        floor_was_set = True
+                    else:
+                        print(f"AutoSolve: Floor not detected (min_z={min_z:.2f}), skipping orientation restore")
+                        floor_tracks = []
+                            
+            # ═══════════════════════════════════════════════════════════════
+            # 2. Smooth Tracks (Backend)
+            # ═══════════════════════════════════════════════════════════════
+            from .tracker.smoothing import smooth_track_markers
             strength = settings.track_smooth_factor
             count = smooth_track_markers(clip.tracking, strength)
             
-            if count > 0:
-                self.report({'INFO'}, f"Smoothed {count} markers")
-            else:
+            if count == 0:
                 self.report({'WARNING'}, "No markers were smoothed (tracks too short)")
+                return {'CANCELLED'}
+                
+            # ═══════════════════════════════════════════════════════════════
+            # 3. Prevent Learning (Update snapshot)
+            # ═══════════════════════════════════════════════════════════════
+            global _behavior_recorder
+            if _behavior_recorder and _behavior_recorder.is_monitoring:
+                _behavior_recorder.update_snapshot(clip)
             
+            # ═══════════════════════════════════════════════════════════════
+            # 4. Auto-Solve Camera
+            # ═══════════════════════════════════════════════════════════════
+            try:
+                bpy.ops.clip.solve_camera()
+            except Exception as e:
+                self.report({'ERROR'}, f"Camera solve failed: {e}")
+                return {'CANCELLED'}
+            
+            # ═══════════════════════════════════════════════════════════════
+            # 5. Restore Orientation (only if floor was previously set)
+            # ═══════════════════════════════════════════════════════════════
+            orientation_restored = False
+            if clip.tracking.reconstruction.is_valid and floor_was_set:
+                # Restore Floor
+                if len(floor_tracks) >= 3:
+                    for track in clip.tracking.tracks:
+                        track.select = False
+                    
+                    selected_count = 0
+                    for name in floor_tracks[:10]:  # Limit to 10 tracks for set_plane
+                        t = clip.tracking.tracks.get(name)
+                        if t and t.has_bundle:  # Must still have bundle after re-solve
+                            t.select = True
+                            selected_count += 1
+                            
+                    if selected_count >= 3:
+                        try:
+                            bpy.ops.clip.set_plane(plane='FLOOR')
+                            orientation_restored = True
+                        except Exception as e:
+                            print(f"AutoSolve: Failed to restore floor: {e}")
+                            
+                # Restore Origin
+                if origin_track:
+                    for track in clip.tracking.tracks:
+                        track.select = False
+                    
+                    t = clip.tracking.tracks.get(origin_track)
+                    if t and t.has_bundle:
+                        t.select = True
+                        try:
+                            bpy.ops.clip.set_origin()
+                        except Exception as e:
+                            print(f"AutoSolve: Failed to restore origin: {e}")
+                            
+                # Re-select all tracks for convenience
+                for track in clip.tracking.tracks:
+                    track.select = True
+                
+            # ═══════════════════════════════════════════════════════════════
+            # 6. Update learning snapshot with new solve state
+            # ═══════════════════════════════════════════════════════════════
+            if _behavior_recorder and _behavior_recorder.is_monitoring:
+                if clip.tracking.reconstruction.is_valid:
+                    error = clip.tracking.reconstruction.average_error
+                    _behavior_recorder.update_snapshot(clip, solve_error=error)
+            
+            # ═══════════════════════════════════════════════════════════════
+            # 7. Report result with appropriate messages
+            # ═══════════════════════════════════════════════════════════════
+            if not clip.tracking.reconstruction.is_valid:
+                self.report({'WARNING'}, f"Smoothed {count} markers, but solve failed")
+                return {'FINISHED'}
+            
+            # Build result message
+            msg_parts = [f"Smoothed {count} markers"]
+            
+            error = clip.tracking.reconstruction.average_error
+            msg_parts.append(f"{error:.2f}px")
+            
+            if orientation_restored:
+                msg_parts.append("floor preserved")
+            
+            # Warn about baked camera if applicable
+            if camera_has_fcurves:
+                self.report({'WARNING'}, f"{' | '.join(msg_parts)} — Camera has baked animation, run Setup Scene to update")
+            else:
+                self.report({'INFO'}, " | ".join(msg_parts))
+
             return {'FINISHED'}
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.report({'ERROR'}, f"Smoothing failed: {str(e)}")
             return {'CANCELLED'}
-
 
 
 
@@ -1313,17 +1587,49 @@ classes = (
     AUTOSOLVE_OT_reset_training_data,
     AUTOSOLVE_OT_view_training_stats,
     AUTOSOLVE_OT_smooth_tracks,
-
-
 )
+
+
+@bpy.app.handlers.persistent
+def _save_behavior_on_quit(dummy):
+    """Save pending behavior data when Blender quits or file is saved."""
+    global _behavior_recorder, _behavior_monitor
+    
+    # First, save behavior from ClipStateManager (all clips)
+    try:
+        manager = _get_clip_manager()
+        if manager:
+            manager.clear_all()  # This saves all pending behavior
+    except Exception as e:
+        print(f"AutoSolve: Error clearing clip state on quit: {e}")
+    
+    # Also save from legacy global recorder
+    if _behavior_recorder and _behavior_recorder.is_monitoring:
+        try:
+            behavior = _behavior_recorder.stop_monitoring(None, None)
+            if behavior:
+                _behavior_recorder.save_behavior(behavior)
+                print("AutoSolve: Saved behavior data on quit/save")
+        except Exception as e:
+            print(f"AutoSolve: Error saving behavior on quit: {e}")
+        finally:
+            _behavior_recorder = None
+            _behavior_monitor = None
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    
+    # Register save handler to capture behavior on quit
+    if _save_behavior_on_quit not in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.append(_save_behavior_on_quit)
 
 
 def unregister():
+    # Remove save handler
+    if _save_behavior_on_quit in bpy.app.handlers.save_pre:
+        bpy.app.handlers.save_pre.remove(_save_behavior_on_quit)
+    
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
