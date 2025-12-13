@@ -230,7 +230,6 @@ Each tracking session generates a JSON file with this structure:
     "temporal_motion_profile": [0.012, 0.015, 0.018, 0.02, 0.019]
   },
 
-  // Track Healing (NEW v5): Anchor-based gap interpolation
   "anchor_tracks": [
     { "name": "Track.003", "start_frame": 1, "end_frame": 180, "quality": 0.92 }
   ],
@@ -273,7 +272,6 @@ User behavior is recorded separately for ML training. **This is THE KEY data** f
   "session_id": "20251209_093000",
   "timestamp": "2025-12-09T09:35:00",
 
-  // Session linkage (for multi-attempt analysis)
   "clip_fingerprint": "a7f3c89b2e71d6f0",
   "previous_session_id": "20251209_091500",
   "iteration": 3,
@@ -302,7 +300,6 @@ User behavior is recorded separately for ML training. **This is THE KEY data** f
     "improved": true
   },
 
-  // THE KEY: Track additions (what pros ADD to improve tracking)
   "track_additions": [
     {
       "track_name": "Track.042",
@@ -336,7 +333,6 @@ User behavior is recorded separately for ML training. **This is THE KEY data** f
     }
   ],
 
-  // Quality metrics
   "net_track_change": 2,
   "region_additions": { "center": 2, "bottom-left": 1 }
 }

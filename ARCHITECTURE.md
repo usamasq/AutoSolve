@@ -354,33 +354,52 @@ class ClipState:
 
 ### 7. UI (`ui.py`)
 
-**Panel: `CLIP_PT_autosolve`**
+**Panels:** Phase-based workflow in Movie Clip Editor → Tools (left sidebar) → AutoSolve tab
 
-Location: Movie Clip Editor → Sidebar (N) → AutoSolve tab
+The UI uses a **guided, phase-based workflow** that progressively reveals options as the user completes each step.
 
 **Layout:**
 
 ```
 ┌─────────────────────────────────────┐
 │ AutoSolve                           │
+│  clip_name.mp4  │  240f             │
 ├─────────────────────────────────────┤
-│ Clip Info: filename.mp4             │
-│ Duration: 240 frames                │
-│                                     │
-│ [    Auto-Track & Solve    ]        │
-│                                     │
-│ Options:                            │
-│   Footage Type: [Auto ▼]            │
-│   Tripod Mode: [ ]                  │
-│   Robust Mode: [ ]                  │
-│                                     │
-│ Results:                            │
-│   Error: 0.42 px                    │
-│   Points: 87                        │
-│                                     │
-│ [Setup Scene] [Export Data]         │
+│ ▸ Research Beta (collapsed)         │
+├─────────────────────────────────────┤
+│ ▶ Step 1: Track                     │
+│ ┌─────────────────────────────────┐ │
+│ │ One-click camera tracking       │ │
+│ │ [    Auto-Track & Solve    ]    │ │
+│ │ Settings:                       │ │
+│ │   [Balanced ▼] [Auto ▼]         │ │
+│ │   [Tripod] [Robust] [Batch]     │ │
+│ │ ▸ Region Tools (collapsed)      │ │
+│ └─────────────────────────────────┘ │
+├─────────────────────────────────────┤
+│ ✓ Step 2: Setup Scene (after solve) │
+│ ┌─────────────────────────────────┐ │
+│ │ Excellent quality! (0.42px)     │ │
+│ │ [    Create 3D Scene    ]       │ │
+│ └─────────────────────────────────┘ │
+├─────────────────────────────────────┤
+│ ▶ Step 3: Refine (after scene)      │
+│ ┌─────────────────────────────────┐ │
+│ │ Reduce Jitter:                  │ │
+│ │ Smoothing: [━━━━━●━━━━━]        │ │
+│ │ [Apply Smoothing]               │ │
+│ │ [Re-Track] [Redo Scene]         │ │
+│ └─────────────────────────────────┘ │
 └─────────────────────────────────────┘
 ```
+
+**Phase Logic (`get_workflow_phase`):**
+
+| Condition                           | Phase         |
+| ----------------------------------- | ------------- |
+| No valid solve OR currently solving | `TRACK`       |
+| Valid solve, no tracking camera     | `SCENE_SETUP` |
+| Tracking camera with animation      | `REFINE`      |
 
 ---
 

@@ -1,16 +1,20 @@
 # AutoSolve - Automatic Camera Tracking for Blender
 
-> **A personal project by Usama Bin Shahid**  
-> _with ❤️ for Open Source Community from Rawalpindi, Pakistan 🇵🇰_
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Blender](https://img.shields.io/badge/Blender-4.2%2B-orange.svg)](https://www.blender.org/)
+[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/qUvrXHP9PU)
+[![Support on Gumroad](https://img.shields.io/badge/Support-Gumroad-ff90e8?logo=gumroad&logoColor=white)](https://usamasq.gumroad.com/l/autosolve)
 
-> [!IMPORTANT] > **🧪 Research Beta** - This addon is in active development and features a **learning system** that improves tracking quality over time.
+![AutoSolve - One-Click Camera Tracking](docs/images/Hero.jpg)
+
+> **"We shouldn't have to leave the open-source ecosystem to get a modern, automated workflow."**
 >
-> **How it works:**
+> As a VFX teacher, I built **AutoSolve** because I was tired of seeing students turn to paid or cracked software just to get a simple camera solve.
 >
-> 1.  **Learns Locally:** Uses **statistical learning** (HER) to remember successful settings for your footage.
-> 2.  **Community Driven:** You can **optionally share data** to help train a future **Neural Network**.
->
-> **[Contribute your data](#contribute-training-data)** to help build the best open-source tracking algorithm!
+> **The Goal:** One-click solves that rival industry giants, built 100% for Blender.
+
+> [!NOTE] > **🧪 Research Beta** - This addon features a **learning system** that improves over time.
+> [Contribute your data](#contribute-training-data) to help build the best open-source tracking algorithm!
 
 AutoSolve is a Blender addon that **automates the entire camera tracking workflow** - from feature detection to camera solve. It uses **adaptive learning** to improve tracking quality over time by learning from each session.
 
@@ -35,6 +39,7 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **One-Click Tracking**     | Automatic feature detection, tracking, cleanup, and solve       |
 | **Adaptive Learning**      | Learns optimal settings from your footage over time             |
 | **Smart Detection**        | Balanced marker placement across all screen regions             |
+| **Region Control**         | Draw inclusion/exclusion zones to guide the tracker             |
 | **Bidirectional Tracking** | Starts from mid-clip for better frame coverage                  |
 | **Track Healing**          | Detects drifted tracks and heals gaps with anchor interpolation |
 | **Track Averaging**        | Averages nearby track clusters for noise reduction              |
@@ -62,14 +67,31 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 ---
 
-## Usage
+## Workflow: 3 Simple Steps
 
-1. Open the **VFX Workspace** in Blender
-2. Load footage in the **Movie Clip Editor**
-3. Open the **AutoSolve** panel in the sidebar (N)
-4. Select a **Footage Type** (or leave on AUTO)
-5. Click **Auto-Track & Solve**
-6. Wait for tracking to complete (progress shown in panel)
+AutoSolve replaces complex menus with a guided, phase-based workflow. In Blender's VFX Workspace, open the Movie Clip Editor and load your footage. Open the AutoSolve panel to the left of the Movie Clip Editor.
+
+### Phase 1: Click & Track
+
+Start by selecting your footage type and clicking the big **Play** button. AutoSolve handles the rest—detecting features, tracking forward/backward, cleaning up bad tracks, and solving.
+
+![Phase 1 UI](docs/images/1.jpg)
+
+> **Tip:** Use the **Region Tools** dropdown to draw annotations that guide the tracker to ignore or focus on specific areas.
+
+![Region Tools](docs/images/2.jpg)
+
+### Phase 2: Instant Scene Setup
+
+Once tracking is complete, you'll get an immediate quality report. If you're happy with the results, generate your entire 3D scene (camera, background, and ground plane) with a single click.
+
+![Phase 2 UI](docs/images/3.jpg)
+
+### Phase 3: Refine & Polish
+
+After your scene is set up, unlock professional refinement tools. Apply smoothing to eliminate camera jitter or easily re-track if you need to make adjustments.
+
+![Phase 3 UI](docs/images/4.jpg)
 
 ### Options
 
@@ -86,11 +108,28 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 ---
 
-## How You Can Help
+## Troubleshooting
 
-I'm a solo developer making professional camera tracking accessible to everyone.
+| Problem               | Solution                                                                |
+| --------------------- | ----------------------------------------------------------------------- |
+| **Solve failed**      | Enable **Robust Mode** and try again                                    |
+| **High error (>1px)** | Use **Quality** preset or try **Tripod Mode** for static shots          |
+| **Tracks drifting**   | Use **Region Tools** to exclude problematic areas (sky, water, foliage) |
+| **Jittery camera**    | Apply **Smoothing** in Phase 3 after scene setup                        |
+| **Not enough tracks** | Lower footage has few features—try a different clip section             |
 
-**Join the community:** [Discord](https://discord.gg/qUvrXHP9PU)
+---
+
+## Support the Project
+
+> 💬 **1,000+ upvotes on Reddit** — [Read the post](https://www.reddit.com/r/blender/comments/1pgg0na/im_tired_of_telling_my_students_to_use_other/) that started this project.
+
+AutoSolve is **free and open-source**. If you find it useful:
+
+- ⭐ **Star** this repo on GitHub
+- 📊 **[Contribute tracking data](#contribute-training-data)** — help improve the AI
+- ☕ **[Support on Gumroad](https://usamasq.gumroad.com/l/autosolve)** — pay what you want
+- 💬 **[Join Discord](https://discord.gg/qUvrXHP9PU)** — community discussions
 
 ### 1. Test and Report Issues
 
@@ -177,10 +216,6 @@ autosolve/
 
 ## Planned Features
 
-### In Progress
-
-- [ ] **Community Model Sync** - Download improved defaults from community data
-
 ### Implemented ✅
 
 - [x] **Track Healing** - Detects drifted/dislocated tracks and heals gaps
@@ -248,7 +283,7 @@ Please refer to **[CONTRIBUTING_DATA.md](CONTRIBUTING_DATA.md)** for:
 
 ## Credits
 
-**Developer:** Usama Bin Shahid  
+**Developer:** Usama Bin Shahid — Rawalpindi, Pakistan 🇵🇰  
 **Contact:** usamasq@gmail.com
 
 _Your contributions make this better for everyone!_

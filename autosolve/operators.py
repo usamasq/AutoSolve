@@ -377,7 +377,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     if _state.frame_current % tracker.MONITOR_INTERVAL == 0:
                         tracker.monitor_and_replenish(_state.frame_current, backwards=False)
                     
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
                     # Forward tracking complete, now track BACKWARD from END to cover all markers
@@ -789,7 +790,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
         global _pending_behavior, _pending_behavior_footage_class
         
         settings = context.scene.autosolve
-        clip = context.edit_movieclip
+        clip = getattr(context, "edit_movieclip", None)
+        if clip is None:
+            # Context lost access to clip - use tracker's cached reference
+            clip = _state.tracker.clip if _state.tracker else None
         tracker = _state.tracker
         
         
