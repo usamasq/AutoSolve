@@ -227,7 +227,7 @@ TIERED_SETTINGS = {
 # Quality preset settings - different presets for different speed/accuracy tradeoffs
 QUALITY_PRESET_SETTINGS = {
     'FAST': {
-        'target_tracks': 30,           # More markers for healing candidates
+        'target_tracks': 60,           # 2x for averaging (was 30)
         'pattern_size_mult': 0.85,     # Smaller patterns = faster matching
         'search_size_mult': 0.9,       # Smaller search area = faster
         'correlation': 0.62,           # More lenient = fewer rejects
@@ -238,7 +238,7 @@ QUALITY_PRESET_SETTINGS = {
         'motion_model': 'LocRot',      # Good balance for speed
     },
     'BALANCED': {
-        'target_tracks': 50,           # More markers for better healing
+        'target_tracks': 100,          # 2x for averaging (was 50)
         'pattern_size_mult': 1.0,
         'search_size_mult': 1.0,
         'correlation': 0.70,
@@ -249,7 +249,7 @@ QUALITY_PRESET_SETTINGS = {
         'motion_model': 'LocRotScale', # Handles most camera moves
     },
     'QUALITY': {
-        'target_tracks': 70,           # Many markers for best reconstruction
+        'target_tracks': 140,          # 2x for averaging (was 70)
         'pattern_size_mult': 1.25,     # Larger patterns = more accurate
         'search_size_mult': 1.15,      # Larger search = better tracking
         'correlation': 0.75,           # Stricter matching = cleaner tracks
@@ -384,6 +384,57 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # Log quality configuration
         print(f"AutoSolve: Quality={quality_preset} (targets={self.target_tracks}, "
               f"threshold={self.cleanup_threshold}px, iterations={self.MAX_ITERATIONS})")
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # ANNOTATION PLACEMENT HELPER
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def _get_feature_placement(self) -> str:
+        """
+        Get the placement mode for detect_features based on annotation_mode setting.
+        
+        Returns:
+            'FRAME' - detect everywhere
+            'INSIDE_GPENCIL' - detect only inside annotation
+            'OUTSIDE_GPENCIL' - detect only outside annotation
+        """
+        try:
+            annotation_mode = bpy.context.scene.autosolve.annotation_mode
+            if annotation_mode == 'INCLUDE':
+                return 'INSIDE_GPENCIL'
+            elif annotation_mode == 'EXCLUDE':
+                return 'OUTSIDE_GPENCIL'
+            else:
+                return 'FRAME'
+        except Exception:
+            return 'FRAME'
+    
+    def _has_active_annotation(self) -> bool:
+        """
+        Check if there are active annotations and annotation_mode is set.
+        
+        Returns True when:
+        1. annotation_mode is INCLUDE or EXCLUDE (not NONE)
+        2. There is actual gpencil/annotation data with strokes
+        
+        Used to decide between concentrated vs distributed detection.
+        """
+        try:
+            annotation_mode = bpy.context.scene.autosolve.annotation_mode
+            if annotation_mode == 'NONE':
+                return False
+            
+            # Check for actual gpencil data
+            gpd = bpy.context.annotation_data
+            if gpd and gpd.layers:
+                for layer in gpd.layers:
+                    if layer.frames:
+                        for frame in layer.frames:
+                            if frame.strokes:
+                                return True
+            return False
+        except Exception:
+            return False
     
     # ─────────────────────────────────────────────────────────────────────────
     # FRAME COORDINATE CONVERSION
@@ -1367,7 +1418,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Check if a region is likely to contain non-rigid objects (waves, water, foliage).
         
         This is a PRE-DETECTION check to avoid placing markers on problematic regions.
-        ONLY skips regions with actual probe evidence, not just based on footage type.
+        Uses multiple signals:
+        1. Low success rate in probe (<20%)
+        2. High velocity (>3x average) - fast moving
+        3. HIGH JITTER (NEW) - chaotic motion typical of water/waves
         
         Args:
             region: Region name like 'bottom-center'
@@ -1381,7 +1435,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         probe = self.cached_motion_probe
         region_success = probe.get('region_success', {})
-        velocities = probe.get('velocities', {})
         
         # Check if this region had very low success in the probe
         if region in region_success:
@@ -1389,6 +1442,39 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Handle both dict format (new) and float format (legacy)
             if isinstance(region_data, dict):
                 success_rate = region_data.get('success_rate', 1.0)
+                if region_data.get('total', 0) > 0:
+                    success_rate = region_data.get('success', 0) / region_data['total']
+                
+                # NEW: Check for high jitter (chaotic motion like waves/water)
+                jitters = region_data.get('jitters', [])
+                if jitters:
+                    avg_jitter = sum(jitters) / len(jitters)
+                    # Compare to global average
+                    all_jitters = []
+                    for r, rd in region_success.items():
+                        if isinstance(rd, dict):
+                            all_jitters.extend(rd.get('jitters', []))
+                    
+                    global_avg_jitter = sum(all_jitters) / len(all_jitters) if all_jitters else 0.01
+                    
+                    # High jitter = chaotic motion (water/waves/foliage)
+                    # Region jitter > 2x global average is suspicious
+                    if global_avg_jitter > 0 and avg_jitter > global_avg_jitter * 2:
+                        print(f"AutoSolve: Skipping {region} - high motion variance "
+                              f"({avg_jitter:.4f} >> avg {global_avg_jitter:.4f}) - likely water/waves")
+                        return True
+                
+                # Check velocity variance (inconsistent motion)
+                velocities = region_data.get('velocities', [])
+                if velocities and len(velocities) >= 2:
+                    avg_v = sum(velocities) / len(velocities)
+                    if avg_v > 0:
+                        variance = sum((v - avg_v)**2 for v in velocities) / len(velocities)
+                        coefficient_of_variation = (variance ** 0.5) / avg_v
+                        # High CoV = erratic motion
+                        if coefficient_of_variation > 0.8:
+                            print(f"AutoSolve: Skipping {region} - erratic velocity (CoV={coefficient_of_variation:.2f})")
+                            return True
             else:
                 success_rate = region_data
             
@@ -1398,6 +1484,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 return True
         
         # Check if this region had extremely high velocity (likely non-rigid)
+        velocities = probe.get('velocities', {})
         if region in velocities:
             region_velocity = velocities[region]
             avg_velocity = probe.get('avg_velocity', 0.01)
@@ -1451,7 +1538,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 threshold=threshold,
                 min_distance=50,
                 margin=20,
-                placement='FRAME'
+                placement=self._get_feature_placement()
             )
         except Exception as e:
             print(f"AutoSolve: detect_features failed: {e}")
@@ -1509,6 +1596,66 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         return kept
     
+    def _detect_concentrated_in_annotation(self) -> Dict[str, int]:
+        """
+        Detect features concentrated in annotation region.
+        
+        When annotations are active (INCLUDE or EXCLUDE mode), ignore the
+        9-region distribution and let Blender's placement filter handle
+        concentration. Uses denser detection parameters for better coverage.
+        
+        Returns:
+            Dict mapping region name to count of features (for logging only)
+        """
+        initial_count = len(self.tracking.tracks)
+        
+        # More aggressive detection for denser coverage
+        base_threshold = self.current_settings.get('threshold', 0.3)
+        threshold = base_threshold * DETECTION_THRESHOLD_MULTIPLIER
+        
+        placement = self._get_feature_placement()
+        
+        try:
+            self._run_ops(
+                bpy.ops.clip.detect_features,
+                threshold=threshold,
+                min_distance=15,  # Smaller = more dense coverage
+                margin=16,
+                placement=placement
+            )
+        except Exception as e:
+            print(f"AutoSolve: Concentrated detection failed: {e}")
+            return {r: 0 for r in REGIONS}
+        
+        new_tracks = list(self.tracking.tracks)[initial_count:]
+        
+        if not new_tracks:
+            print("AutoSolve: Concentrated detection found no features")
+            return {r: 0 for r in REGIONS}
+        
+        # Apply settings to all detected tracks (no region-based filtering)
+        clip_frame = self.scene_to_clip_frame(bpy.context.scene.frame_current)
+        result = {r: 0 for r in REGIONS}
+        
+        for track in new_tracks:
+            self._apply_track_settings(track)
+            track.select = False
+            
+            # Count by region for logging
+            marker = track.markers.find_frame(clip_frame)
+            if not marker and len(track.markers) > 0:
+                marker = track.markers[0]
+            if marker:
+                region = get_region(marker.co.x, marker.co.y)
+                result[region] = result.get(region, 0) + 1
+        
+        print(f"AutoSolve: Concentrated detection ({placement}): {len(new_tracks)} markers")
+        
+        # Store for feature extractor
+        self._detected_feature_density = result
+        
+        return result
+    
     def detect_all_regions(self, markers_per_region: int = 3, 
                           skip_regions: Optional[Set[str]] = None) -> Dict[str, int]:
         """
@@ -1519,6 +1666,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         2. Categorizes ALL features by region in one pass
         3. Sorts by QUALITY and keeps top N per region
         
+        NOTE: When annotations are active, uses concentrated detection instead
+        of distributing evenly across regions.
+        
         Args:
             markers_per_region: Target markers per region (default 3)
             skip_regions: Optional set of regions to skip (dead zones, etc.)
@@ -1526,6 +1676,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Returns:
             Dict mapping region name to count of features kept
         """
+        # Annotation-aware: concentrate markers instead of distributing
+        if self._has_active_annotation():
+            return self._detect_concentrated_in_annotation()
+        
         skip_regions = skip_regions or set()
         
         # Add non-rigid regions to skip list
@@ -1556,7 +1710,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 threshold=threshold,
                 min_distance=25,  # Smaller = more candidates to choose from
                 margin=20,        # Slightly larger margin to avoid edge issues
-                placement='FRAME'
+                placement=self._get_feature_placement()
             )
         except Exception as e:
             print(f"AutoSolve: detect_features failed: {e}")
@@ -2060,7 +2214,14 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 if frame_velocities:
                     mean_v = sum(frame_velocities) / len(frame_velocities)
                     variance = sum((v - mean_v)**2 for v in frame_velocities) / len(frame_velocities)
-                    jitters.append(variance ** 0.5)
+                    jitter = variance ** 0.5
+                    jitters.append(jitter)
+                    
+                    # Store per-region jitter (key for water/wave detection)
+                    if region not in region_success:
+                        region_success[region] = {'total': 0, 'success': 0, 'jitters': [], 'velocities': []}
+                    region_success[region].setdefault('jitters', []).append(jitter)
+                    region_success[region].setdefault('velocities', []).append(avg_velocity)
             
             # Track region success
             avg_x = sum(m.co.x for m in markers_sorted) / len(markers_sorted)
@@ -2069,7 +2230,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             
             lifespan = len(markers_sorted)
             if region not in region_success:
-                region_success[region] = {'total': 0, 'success': 0}
+                region_success[region] = {'total': 0, 'success': 0, 'jitters': [], 'velocities': []}
             region_success[region]['total'] += 1
             if lifespan >= probe_frames * 0.7:  # 70% survival
                 region_success[region]['success'] += 1
@@ -2539,7 +2700,143 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     # TRACK HEALING
     # ═══════════════════════════════════════════════════════════════════════════
     
+    def extend_lost_tracks(self, min_extension: int = 10) -> int:
+        """
+        Extend tracks that stopped tracking before the clip ends.
+        
+        This is simpler than full healing - it just re-tracks from where
+        tracking was lost, using more tolerant settings.
+        
+        Args:
+            min_extension: Minimum frames a track must be from clip edges
+                          to be considered "lost" (default: 10 frames)
+        
+        Returns:
+            Number of tracks successfully extended
+        """
+        if not self.clip or not self.tracking:
+            return 0
+        
+        clip_start = self.clip.frame_start
+        clip_end = clip_start + self.clip.frame_duration - 1
+        
+        # Find tracks that stopped early (didn't reach clip edges)
+        lost_tracks = []
+        
+        for track in self.tracking.tracks:
+            try:
+                markers = [m for m in track.markers if not m.mute]
+                if len(markers) < 3:
+                    continue
+                
+                markers_sorted = sorted(markers, key=lambda m: m.frame)
+                first_frame = markers_sorted[0].frame
+                last_frame = markers_sorted[-1].frame
+                
+                # Track stopped before clip end?
+                can_extend_forward = last_frame < (clip_end - min_extension)
+                # Track started after clip start?
+                can_extend_backward = first_frame > (clip_start + min_extension)
+                
+                if can_extend_forward or can_extend_backward:
+                    lost_tracks.append({
+                        'name': track.name,
+                        'first_frame': first_frame,
+                        'last_frame': last_frame,
+                        'extend_forward': can_extend_forward,
+                        'extend_backward': can_extend_backward,
+                        'lifespan': last_frame - first_frame
+                    })
+            except (ReferenceError, AttributeError):
+                continue
+        
+        if not lost_tracks:
+            print("AutoSolve: No lost tracks to extend")
+            return 0
+        
+        # Prioritize shorter tracks (they need extension most)
+        lost_tracks.sort(key=lambda t: t['lifespan'])
+        lost_tracks = lost_tracks[:20]  # Limit for performance
+        
+        print(f"AutoSolve: Extending {len(lost_tracks)} tracks that stopped early...")
+        
+        # Save current settings
+        orig_correlation = self.current_settings.get('correlation', 0.7)
+        orig_search = self.current_settings.get('search_size', 71)
+        
+        # Apply tolerant settings
+        try:
+            if hasattr(self.settings, 'default_correlation_min'):
+                self.settings.default_correlation_min = max(0.4, orig_correlation - 0.2)
+            if hasattr(self.settings, 'default_search_size'):
+                self.settings.default_search_size = int(orig_search * 1.3)
+        except (ReferenceError, AttributeError):
+            pass
+        
+        extended = 0
+        current_frame = bpy.context.scene.frame_current
+        
+        try:
+            for track_info in lost_tracks:
+                track = None
+                for t in self.tracking.tracks:
+                    if t.name == track_info['name']:
+                        track = t
+                        break
+                
+                if not track:
+                    continue
+                
+                # Deselect all, select this track
+                for t in self.tracking.tracks:
+                    t.select = False
+                track.select = True
+                
+                markers_before = len([m for m in track.markers if not m.mute])
+                
+                # Try extending forward
+                if track_info['extend_forward']:
+                    bpy.context.scene.frame_set(track_info['last_frame'])
+                    try:
+                        self._run_ops(bpy.ops.clip.track_markers, backwards=False, sequence=True)
+                    except:
+                        pass
+                
+                # Try extending backward
+                if track_info['extend_backward']:
+                    bpy.context.scene.frame_set(track_info['first_frame'])
+                    try:
+                        self._run_ops(bpy.ops.clip.track_markers, backwards=True, sequence=True)
+                    except:
+                        pass
+                
+                markers_after = len([m for m in track.markers if not m.mute])
+                if markers_after > markers_before:
+                    extended += 1
+        
+        except Exception as e:
+            print(f"AutoSolve: Track extension error: {e}")
+        
+        finally:
+            # Restore settings
+            try:
+                if hasattr(self.settings, 'default_correlation_min'):
+                    self.settings.default_correlation_min = orig_correlation
+                if hasattr(self.settings, 'default_search_size'):
+                    self.settings.default_search_size = orig_search
+                bpy.context.scene.frame_set(current_frame)
+            except (ReferenceError, AttributeError):
+                pass
+        
+        if extended > 0:
+            print(f"AutoSolve: Extended {extended}/{len(lost_tracks)} lost tracks")
+        else:
+            print("AutoSolve: Could not extend any tracks (features may have left frame)")
+        
+        return extended
+    
     def heal_tracks(self) -> int:
+
         """
         Find and heal track gaps using anchor-based interpolation.
         
@@ -2580,7 +2877,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         candidates = self.healer.find_healing_candidates(self.tracking)
         
         if not candidates:
-            print("AutoSolve: No healing candidates found")
+            # Message already printed by healer
             return 0
         
         # Update healing stats
@@ -2592,6 +2889,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         attempted = 0
         gap_frames_total = 0
         match_scores_total = 0.0
+        below_threshold = 0
         
         for candidate in candidates:
             if candidate.match_score >= self.healer.MIN_MATCH_SCORE:
@@ -2618,6 +2916,8 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     healed += 1
                     gap_frames_total += candidate.gap_frames
                     match_scores_total += candidate.match_score
+            else:
+                below_threshold += 1
         
         # Update healing stats
         if self.recorder and self.recorder.current_session and attempted > 0:
@@ -2627,9 +2927,21 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             stats['avg_gap_frames'] = round(gap_frames_total / healed, 1) if healed > 0 else 0.0
             stats['avg_match_score'] = round(match_scores_total / healed, 3) if healed > 0 else 0.0
         
+        # Improved logging
         if healed > 0:
             print(f"AutoSolve: Healed {healed}/{attempted} track gaps "
                   f"({100*healed/attempted:.0f}% success rate)")
+        elif attempted > 0:
+            print(f"AutoSolve: Healing attempted {attempted} gaps but none succeeded")
+        elif below_threshold > 0:
+            print(f"AutoSolve: {below_threshold} candidates found but none met score threshold "
+                  f"(need >= {self.healer.MIN_MATCH_SCORE}, best: {candidates[0].match_score:.2f})")
+        
+        # Also try to merge overlapping track segments via averaging
+        merged = self.healer.merge_overlapping_segments(self.tracking)
+        if merged > 0:
+            print(f"AutoSolve: Merged {merged} overlapping track segments via averaging")
+            healed += merged  # Count merges as heals
         
         return healed
 
@@ -2886,7 +3198,194 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         except:
             pass
     
-    def preserve_good_tracks(self, min_lifespan: int = None, max_error: float = 5.0) -> int:
+    def identify_user_tracks(self) -> List[str]:
+        """
+        Identify tracks that appear to be user-placed.
+        
+        User-placed tracks typically have:
+        - Few markers (1-5) - just placed, not fully tracked yet
+        - OR are marked as locked
+        
+        Returns:
+            List of track names that are user-placed
+        """
+        user_tracks = []
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            
+            # Tracks with few markers (1-5) are likely user-placed
+            if 1 <= len(markers) <= 5:
+                user_tracks.append(track.name)
+            # Locked tracks should be preserved
+            elif hasattr(track, 'lock') and track.lock:
+                user_tracks.append(track.name)
+        
+        if user_tracks:
+            print(f"AutoSolve: Identified {len(user_tracks)} user-placed tracks (will protect)")
+        
+        return user_tracks
+    
+    def refine_struggling_tracks(self, user_tracks: set = None) -> int:
+        """
+        Attempt to re-track struggling tracks with more tolerant settings.
+        
+        This is called before deletion to give tracks a second chance.
+        Struggling tracks are those with:
+        - Short lifespan (< min_lifespan)
+        - High error (> 5px if solve exists)
+        
+        Args:
+            user_tracks: Optional pre-computed set of user track names
+        
+        Returns:
+            Number of tracks that were successfully extended
+        """
+        # Use provided user_tracks or compute (avoids duplicate calls)
+        if user_tracks is None:
+            user_tracks = set(self.identify_user_tracks())
+        
+        # Safety check
+        if not self.tracking or len(self.tracking.tracks) == 0:
+            return 0
+        
+        has_solve = self.tracking.reconstruction.is_valid
+        min_lifespan = max(3, self.min_lifespan // 2)
+        
+        # Identify struggling tracks
+        struggling = []
+        for track in self.tracking.tracks:
+            try:
+                markers = [m for m in track.markers if not m.mute]
+                if len(markers) < 2:
+                    continue
+                
+                markers_sorted = sorted(markers, key=lambda m: m.frame)
+                lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+                
+                is_struggling = False
+                
+                # Short lifespan
+                if lifespan < min_lifespan:
+                    is_struggling = True
+                
+                # High error (only if solve exists)
+                if has_solve and track.has_bundle and track.average_error > 5.0:
+                    is_struggling = True
+                
+                if is_struggling:
+                    struggling.append({
+                        'name': track.name,
+                        'last_frame': markers_sorted[-1].frame,
+                        'first_frame': markers_sorted[0].frame,
+                        'lifespan': lifespan,
+                        'is_user_track': track.name in user_tracks
+                    })
+            except (ReferenceError, AttributeError):
+                # Track may have been deleted
+                continue
+        
+        if not struggling:
+            return 0
+        
+        # Prioritize user tracks, limit to prevent slowdown
+        struggling.sort(key=lambda t: (not t['is_user_track'], -t['lifespan']))
+        struggling = struggling[:15]  # Limit for UX
+        
+        user_count = sum(1 for t in struggling if t['is_user_track'])
+        print(f"AutoSolve: Refining {len(struggling)} struggling tracks ({user_count} user-placed)...")
+        
+        # Save current settings
+        orig_correlation = self.current_settings.get('correlation', 0.7)
+        orig_search = self.current_settings.get('search_size', 71)
+        
+        # Apply more tolerant settings for re-tracking
+        tolerant_correlation = max(0.4, orig_correlation - 0.2)
+        tolerant_search = int(orig_search * 1.3)
+        
+        try:
+            if hasattr(self.settings, 'default_correlation_min'):
+                self.settings.default_correlation_min = tolerant_correlation
+            if hasattr(self.settings, 'default_search_size'):
+                self.settings.default_search_size = tolerant_search
+        except (ReferenceError, AttributeError):
+            pass
+        
+        extended = 0
+        current_frame = bpy.context.scene.frame_current
+        
+        # Batch refine: select all struggling tracks, then track as batch
+        try:
+            # Deselect all
+            for t in self.tracking.tracks:
+                t.select = False
+            
+            # Select struggling tracks
+            struggling_names = {t['name'] for t in struggling}
+            for t in self.tracking.tracks:
+                if t.name in struggling_names:
+                    t.select = True
+            
+            # Get markers before
+            markers_before = {}
+            for t in self.tracking.tracks:
+                if t.name in struggling_names:
+                    markers_before[t.name] = len([m for m in t.markers if not m.mute])
+            
+            # Find optimal frame range for batch tracking
+            min_frame = min(t['first_frame'] for t in struggling)
+            max_frame = max(t['last_frame'] for t in struggling)
+            
+            # Track forward from middle
+            mid_frame = (min_frame + max_frame) // 2
+            bpy.context.scene.frame_set(mid_frame)
+            
+            # Use sequence tracking (more efficient)
+            self._run_ops(bpy.ops.clip.track_markers, backwards=False, sequence=True)
+            
+            # Track backward
+            bpy.context.scene.frame_set(mid_frame)
+            self._run_ops(bpy.ops.clip.track_markers, backwards=True, sequence=True)
+            
+            # Count extensions
+            user_extended = []
+            for t in self.tracking.tracks:
+                if t.name in struggling_names:
+                    markers_after = len([m for m in t.markers if not m.mute])
+                    if markers_after > markers_before.get(t.name, 0):
+                        extended += 1
+                        # Track user track improvements for logging
+                        info = next((s for s in struggling if s['name'] == t.name), None)
+                        if info and info['is_user_track']:
+                            user_extended.append(f"'{t.name}' ({markers_before[t.name]}→{markers_after})")
+            
+            # Log user track improvements (limited to prevent spam)
+            if user_extended:
+                if len(user_extended) <= 3:
+                    print(f"AutoSolve: Extended user tracks: {', '.join(user_extended)}")
+                else:
+                    print(f"AutoSolve: Extended {len(user_extended)} user tracks")
+            
+        except Exception as e:
+            print(f"AutoSolve: Track refinement error (continuing): {e}")
+        finally:
+            # Always restore settings and frame
+            try:
+                if hasattr(self.settings, 'default_correlation_min'):
+                    self.settings.default_correlation_min = orig_correlation
+                if hasattr(self.settings, 'default_search_size'):
+                    self.settings.default_search_size = orig_search
+                bpy.context.scene.frame_set(current_frame)
+            except (ReferenceError, AttributeError):
+                pass
+        
+        if extended > 0:
+            print(f"AutoSolve: Successfully refined {extended}/{len(struggling)} tracks")
+        
+        return extended
+    
+
+    def preserve_good_tracks(self, min_lifespan: int = None, max_error: float = 5.0, refine: bool = True) -> int:
         """
         Keep good existing tracks, only remove problematic ones.
         
@@ -2897,6 +3396,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             min_lifespan: Minimum frames for track to be considered good.
                          Defaults to self.min_lifespan // 2 (lenient).
             max_error: Maximum reprojection error to keep (only applies if solve exists)
+            refine: If True, attempt to refine struggling tracks before deleting
             
         Returns:
             Number of tracks preserved
@@ -2904,10 +3404,19 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         if min_lifespan is None:
             min_lifespan = max(3, self.min_lifespan // 2)
         
+        # STEP 1: Identify user tracks first (shared with refinement)
+        user_tracks = set(self.identify_user_tracks())
+        
+        # STEP 2: Try to refine struggling tracks (give them a chance)
+        if refine:
+            self.refine_struggling_tracks(user_tracks=user_tracks)
+
+        
         has_solve = self.tracking.reconstruction.is_valid
         
         good_tracks = []
         bad_tracks = []
+        protected_tracks = []
         
         for track in self.tracking.tracks:
             markers = [m for m in track.markers if not m.mute]
@@ -2915,6 +3424,11 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             if len(markers) >= 2:
                 markers_sorted = sorted(markers, key=lambda m: m.frame)
                 lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            
+            # User-placed tracks are always protected
+            if track.name in user_tracks:
+                protected_tracks.append(track.name)
+                continue
             
             # Criteria for keeping a track:
             # 1. Has sufficient lifespan
@@ -2930,20 +3444,27 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             else:
                 bad_tracks.append(track.name)
         
-        # Delete bad tracks
+        # Delete bad tracks (but NEVER user tracks)
         if bad_tracks:
             for track in self.tracking.tracks:
                 track.select = track.name in bad_tracks
             
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
-                print(f"AutoSolve: Removed {len(bad_tracks)} poor tracks, preserved {len(good_tracks)} good tracks")
+                msg = f"AutoSolve: Removed {len(bad_tracks)} poor tracks, preserved {len(good_tracks)} good tracks"
+                if protected_tracks:
+                    msg += f", protected {len(protected_tracks)} user tracks"
+                print(msg)
             except:
                 pass
         else:
-            print(f"AutoSolve: Preserved all {len(good_tracks)} existing tracks")
+            msg = f"AutoSolve: Preserved all {len(good_tracks)} existing tracks"
+            if protected_tracks:
+                msg += f" + {len(protected_tracks)} user tracks"
+            print(msg)
         
-        return len(good_tracks)
+        return len(good_tracks) + len(protected_tracks)
+
     
     def count_active_tracks(self, frame: int) -> int:
         """Count tracks active at frame."""
@@ -3162,16 +3683,25 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Apply best keyframes if they're different from defaults
         keyframe_a, keyframe_b = best_pair
-        current_a = getattr(camera, 'keyframe_a', 1)
-        current_b = getattr(camera, 'keyframe_b', clip_end)
+        avg_parallax_percent = best_parallax * 100 if best_parallax < 1 else best_parallax
         
-        if keyframe_a != current_a or keyframe_b != current_b:
-            camera.keyframe_a = keyframe_a
-            camera.keyframe_b = keyframe_b
-            avg_parallax_percent = best_parallax * 100 if best_parallax < 1 else best_parallax
-            print(f"AutoSolve: Selected keyframes {keyframe_a} and {keyframe_b} "
+        # Blender 5.0+ removed keyframe_a/keyframe_b from MovieTrackingCamera
+        # The solver now handles keyframe selection automatically
+        if hasattr(camera, 'keyframe_a') and hasattr(camera, 'keyframe_b'):
+            current_a = getattr(camera, 'keyframe_a', 1)
+            current_b = getattr(camera, 'keyframe_b', clip_end)
+            
+            if keyframe_a != current_a or keyframe_b != current_b:
+                camera.keyframe_a = keyframe_a
+                camera.keyframe_b = keyframe_b
+                print(f"AutoSolve: Selected keyframes {keyframe_a} and {keyframe_b} "
+                      f"({best_common_count} common tracks, {avg_parallax_percent:.1f}% avg parallax)")
+                return True
+        else:
+            # Blender 5.0+: keyframe selection is automatic, just log for info
+            print(f"AutoSolve: Optimal keyframes analysis: frames {keyframe_a} and {keyframe_b} "
                   f"({best_common_count} common tracks, {avg_parallax_percent:.1f}% avg parallax)")
-            return True
+            return True  # Analysis completed successfully
         
         return False
     
@@ -3203,9 +3733,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Helper to toggle refinement options safely across Blender versions
         def set_refinement(enable: bool):
-            # refine_focal_length, refine_k1, refine_k2 are standard properties
+            # refine_focal_length, refine_principal_point, refine_k1, refine_k2 are standard properties
             # Some versions might bundle them differently, but these are top-level on settings
-            props = ['refine_focal_length', 'refine_k1', 'refine_k2']
+            props = ['refine_focal_length', 'refine_principal_point', 'refine_k1', 'refine_k2']
             count = 0
             for p in props:
                 if hasattr(self.settings, p):
@@ -3215,7 +3745,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
 
         # Store original refinement state
         original_refinement = {}
-        for p in ['refine_focal_length', 'refine_k1', 'refine_k2']:
+        for p in ['refine_focal_length', 'refine_principal_point', 'refine_k1', 'refine_k2']:
             if hasattr(self.settings, p):
                 original_refinement[p] = getattr(self.settings, p)
 

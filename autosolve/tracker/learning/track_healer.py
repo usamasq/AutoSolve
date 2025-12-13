@@ -152,13 +152,13 @@ class TrackHealer:
     5. Insert markers to heal the gap
     """
     
-    # Configuration
-    MAX_GAP_FRAMES = 30             # Max gap size to attempt healing
-    MIN_MATCH_SCORE = 0.7           # Minimum score to heal
-    MIN_ANCHOR_TRACKS = 3           # Need at least 3 anchors
-    MIN_ANCHOR_LIFESPAN = 50        # Anchor must span 50+ frames
-    SPATIAL_TOLERANCE = 0.05        # 5% of frame for position matching
-    VELOCITY_TOLERANCE = 0.01       # Velocity matching tolerance
+    # Configuration (relaxed for more aggressive healing)
+    MAX_GAP_FRAMES = 50             # Max gap size to attempt healing (was 30)
+    MIN_MATCH_SCORE = 0.5           # Minimum score to heal (was 0.7)
+    MIN_ANCHOR_TRACKS = 2           # Need at least 2 anchors (was 3)
+    MIN_ANCHOR_LIFESPAN = 30        # Anchor must span 30+ frames (was 50)
+    SPATIAL_TOLERANCE = 0.08        # 8% of frame for position matching (was 5%)
+    VELOCITY_TOLERANCE = 0.02       # Velocity matching tolerance (was 0.01)
     
     def __init__(self):
         self.anchors: List[AnchorTrack] = []
@@ -233,7 +233,7 @@ class TrackHealer:
         self.anchors.sort(key=lambda a: a.quality_score, reverse=True)
         
         print(f"AutoSolve: Found {len(self.anchors)} anchor tracks "
-              f"(min lifespan: {min_lifespan})")
+              f"(min lifespan: {min_lifespan}, need {self.MIN_ANCHOR_TRACKS}+ for healing)")
         
         return self.anchors
     
@@ -322,10 +322,14 @@ class TrackHealer:
                 if candidate.match_score >= self.MIN_MATCH_SCORE * 0.5:  # Keep marginal candidates for training
                     self.candidates.append(candidate)
         
-        # Sort by score
+        # Sort by score (best first)
         self.candidates.sort(key=lambda c: c.match_score, reverse=True)
         
-        print(f"AutoSolve: Found {len(self.candidates)} healing candidates")
+        if not self.candidates:
+            print("AutoSolve: No healing candidates found (no broken tracks or gaps too large)")
+        else:
+            print(f"AutoSolve: Found {len(self.candidates)} healing candidates "
+                  f"(need score >= {self.MIN_MATCH_SCORE} to heal)")
         
         return self.candidates
     
@@ -733,3 +737,28 @@ class TrackHealer:
     def clear_training_data(self):
         """Clear collected training data."""
         self.training_data.clear()
+    
+    def merge_overlapping_segments(self, tracking, min_overlap: int = 5) -> int:
+        """
+        Find and average track segments with significant frame overlap.
+        
+        When two tracks have overlapping frame ranges (>= min_overlap frames)
+        AND are spatially close, they likely represent the same feature
+        tracked twice. Averaging them produces a more accurate combined track.
+        
+        This is called during the healing phase to merge redundant tracks.
+        
+        Args:
+            tracking: bpy.types.MovieTracking object
+            min_overlap: Minimum overlapping frames required (default: 5)
+            
+        Returns:
+            Number of track pairs merged
+        """
+        try:
+            from ..averaging import merge_overlapping_segments as merge_fn
+            return merge_fn(tracking, min_overlap)
+        except Exception as e:
+            print(f"AutoSolve: merge_overlapping_segments failed: {e}")
+            return 0
+

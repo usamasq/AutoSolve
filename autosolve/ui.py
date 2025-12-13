@@ -279,8 +279,9 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             row.prop(settings, "footage_type", text="")
             
             row = col.row(align=True)
-            row.prop(settings, "tripod_mode", toggle=True)
-            row.prop(settings, "robust_mode", toggle=True)
+            row.prop(settings, "tripod_mode", toggle=True, text="Tripod")
+            row.prop(settings, "robust_mode", toggle=True, text="Robust")
+            row.prop(settings, "batch_tracking", toggle=True, text="Batch")
         
         else:
             # ══════════════════════════════════════════════
@@ -306,8 +307,9 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             row.prop(settings, "footage_type", text="")
             
             row = col.row(align=True)
-            row.prop(settings, "tripod_mode", toggle=True)
-            row.prop(settings, "robust_mode", toggle=True)
+            row.prop(settings, "tripod_mode", toggle=True, text="Tripod")
+            row.prop(settings, "robust_mode", toggle=True, text="Robust")
+            row.prop(settings, "batch_tracking", toggle=True, text="Batch")
             
             row = outer_box.row(align=True)
             row.scale_y = 1.4
@@ -315,11 +317,11 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             row.operator("autosolve.run_solve", text="Re-Track", icon='FILE_REFRESH')
 
 
-class AUTOSOLVE_PT_phase1_advanced(Panel):
-    """Advanced tracking options."""
+class AUTOSOLVE_PT_region_tools(Panel):
+    """Region exclusion tools for problematic areas."""
     
-    bl_label = "Advanced Options"
-    bl_idname = "AUTOSOLVE_PT_phase1_advanced"
+    bl_label = "Region Tools"
+    bl_idname = "AUTOSOLVE_PT_region_tools"
     bl_space_type = 'CLIP_EDITOR'
     bl_region_type = 'TOOLS'
     bl_category = "AutoSolve"
@@ -334,13 +336,26 @@ class AUTOSOLVE_PT_phase1_advanced(Panel):
         layout = self.layout
         settings = context.scene.autosolve
         
-        # Single outer box
         outer_box = layout.box()
+        
+        # Help text
         col = outer_box.column(align=True)
-        col.prop(settings, "batch_tracking")
-        col.prop(settings, "smooth_tracks")
-        if settings.smooth_tracks:
-            col.prop(settings, "track_smooth_factor", slider=True)
+        col.scale_y = 0.8
+        col.label(text="Highlight focus areas", icon='INFO')
+        
+        outer_box.separator()
+        
+        # Annotation mode toggle (the key setting)
+        outer_box.label(text="Annotation Mode:")
+        outer_box.prop(settings, "annotation_mode", text="")
+        
+        outer_box.separator()
+        
+        # Draw annotation button (pencil mode)
+        row = outer_box.row(align=True)
+        row.operator("gpencil.annotate", text="Draw", icon='GREASEPENCIL').mode = 'DRAW'
+        row.operator("gpencil.annotate", text="Eraser", icon='PANEL_CLOSE').mode = 'ERASER'
+        row.operator("autosolve.clear_annotations", text="", icon='X')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -490,7 +505,7 @@ classes = (
     AUTOSOLVE_PT_main_panel,
     AUTOSOLVE_PT_research_panel,
     AUTOSOLVE_PT_phase1_tracking,
-    AUTOSOLVE_PT_phase1_advanced,
+    AUTOSOLVE_PT_region_tools,
     AUTOSOLVE_PT_phase2_scene,
     AUTOSOLVE_PT_phase3_refine,
 )

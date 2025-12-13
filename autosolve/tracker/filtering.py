@@ -584,6 +584,40 @@ class FilteringMixin:
             except:
                 pass
     
+    def average_clustered_tracks(self, proximity_threshold_px: int = 15) -> int:
+        """
+        Average nearby tracks to create stable anchor points.
+        
+        Finds clusters of 2-3 tracks within the proximity threshold and
+        averages them into single high-quality tracks. This reduces noise
+        and improves solve stability.
+        
+        Args:
+            proximity_threshold_px: Minimum distance in pixels (default: 15)
+            
+        Returns:
+            Number of averaged anchor tracks created
+        """
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return 0
+        
+        try:
+            from .averaging import TrackAverager
+            
+            # Convert pixel threshold to normalized coords
+            width = self.clip.size[0]
+            proximity_norm = proximity_threshold_px / width
+            
+            averager = TrackAverager(proximity_threshold=proximity_norm)
+            created = averager.create_anchor_tracks(self.tracking, keep_originals=False)
+            
+            return created
+            
+        except Exception as e:
+            print(f"AutoSolve: average_clustered_tracks failed: {e}")
+            return 0
+    
     def cleanup_tracks(self, min_frames: int = 5, spike_multiplier: float = 8.0,
                        jitter_threshold: float = 0.6, coherence_threshold: float = 0.4):
         """
@@ -610,7 +644,10 @@ class FilteringMixin:
                 coherence_threshold=coherence_threshold
             )
         
-        # 4. Deduplicate (coverage-aware)
+        # 4. Average clustered tracks → creates stable anchors from nearby tracks
+        self.average_clustered_tracks(proximity_threshold_px=15)
+        
+        # 5. Deduplicate (coverage-aware)
         self.deduplicate_tracks(min_distance_px=30)
         
         final = len(self.tracking.tracks)

@@ -116,7 +116,26 @@ class AutoSolveSettings(PropertyGroup):
         subtype='FACTOR',
     )
     
-
+    # ═══════════════════════════════════════════════════════════
+    # REGION EXCLUSION OPTIONS
+    # ═══════════════════════════════════════════════════════════
+    
+    annotation_mode: EnumProperty(
+        name="Annotation Mode",
+        description="How to use drawn annotations during feature detection",
+        items=[
+            ('NONE', "Ignore", 
+             "Detect features everywhere (ignore annotations)", 
+             'X', 0),
+            ('EXCLUDE', "Exclude Region", 
+             "Detect features OUTSIDE drawn annotations (skip water, sky, etc.)", 
+             'SELECT_SUBTRACT', 1),
+            ('INCLUDE', "Include Only", 
+             "Detect features ONLY INSIDE drawn annotations", 
+             'SELECT_SET', 2),
+        ],
+        default='NONE',
+    )
     
     # ═══════════════════════════════════════════════════════════
     # TRAINING DATA OPTIONS

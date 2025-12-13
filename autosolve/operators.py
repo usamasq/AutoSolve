@@ -455,7 +455,11 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if segments_cleaned > 0:
                     print(f"AutoSolve: Cleaned bad segments in {segments_cleaned} tracks")
                 
-                # Step 3: Attempt to heal gaps using anchor-based interpolation
+                # Step 3: Extend tracks that stopped early (re-track from where they stopped)
+                extended = tracker.extend_lost_tracks()
+                
+                # Step 4: Attempt to heal gaps using anchor-based interpolation
+                # (joins separate tracks that represent the same point)
                 healed = tracker.heal_tracks()
                 if healed > 0:
                     print(f"AutoSolve: Healed {healed} track gaps")
@@ -1622,9 +1626,91 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
 
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# REGION DETECTION OPERATORS (Annotation-based)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AUTOSOLVE_OT_detect_inside_annotation(Operator):
+    """Detect features only INSIDE drawn annotation regions."""
+    
+    bl_idname = "autosolve.detect_inside_annotation"
+    bl_label = "Detect Inside"
+    bl_description = "Detect tracking markers only inside annotation regions"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.edit_movieclip is not None
+    
+    def execute(self, context):
+        try:
+            # Use Blender's detect with placement=INSIDE_GPENCIL
+            bpy.ops.clip.detect_features(
+                threshold=0.4,
+                min_distance=50,
+                margin=16,
+                placement='INSIDE_GPENCIL'
+            )
+            self.report({'INFO'}, "Features detected inside annotation")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'WARNING'}, f"Detection failed: {e}. Draw an annotation first.")
+            return {'CANCELLED'}
+
+
+class AUTOSOLVE_OT_detect_outside_annotation(Operator):
+    """Detect features only OUTSIDE drawn annotation regions."""
+    
+    bl_idname = "autosolve.detect_outside_annotation"
+    bl_label = "Detect Outside"
+    bl_description = "Detect tracking markers only outside annotation regions (exclude annotated area)"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.edit_movieclip is not None
+    
+    def execute(self, context):
+        try:
+            # Use Blender's detect with placement=OUTSIDE_GPENCIL
+            bpy.ops.clip.detect_features(
+                threshold=0.4,
+                min_distance=50,
+                margin=16,
+                placement='OUTSIDE_GPENCIL'
+            )
+            self.report({'INFO'}, "Features detected outside annotation (annotated area excluded)")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'WARNING'}, f"Detection failed: {e}. Draw an annotation first.")
+            return {'CANCELLED'}
+
+
+class AUTOSOLVE_OT_clear_annotations(Operator):
+    """Clear all annotation strokes."""
+    
+    bl_idname = "autosolve.clear_annotations"
+    bl_label = "Clear Annotations"
+    bl_description = "Clear all drawn annotations"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        return context.annotation_data is not None
+    
+    def execute(self, context):
+        try:
+            bpy.ops.gpencil.data_unlink()
+            self.report({'INFO'}, "Annotations cleared")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'WARNING'}, f"Could not clear: {e}")
+            return {'CANCELLED'}
+
 
 
 # Registration
+
 classes = (
     AUTOSOLVE_OT_run_solve,
     AUTOSOLVE_OT_setup_scene,
@@ -1634,6 +1720,10 @@ classes = (
     AUTOSOLVE_OT_reset_training_data,
     AUTOSOLVE_OT_view_training_stats,
     AUTOSOLVE_OT_smooth_tracks,
+    # Region detection operators
+    AUTOSOLVE_OT_detect_inside_annotation,
+    AUTOSOLVE_OT_detect_outside_annotation,
+    AUTOSOLVE_OT_clear_annotations,
 )
 
 
