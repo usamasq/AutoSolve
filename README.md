@@ -37,6 +37,7 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **Smart Detection**        | Balanced marker placement across all screen regions             |
 | **Bidirectional Tracking** | Starts from mid-clip for better frame coverage                  |
 | **Track Healing**          | Detects drifted tracks and heals gaps with anchor interpolation |
+| **Track Averaging**        | Averages nearby track clusters for noise reduction              |
 | **Quality Prediction**     | Estimates solve quality before running solver                   |
 | **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes          |
 | **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.            |
@@ -138,11 +139,13 @@ autosolve/
 ├── operators.py         # Main operators (Auto-Track & Solve, training tools)
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
+├── clip_state.py       # Multi-clip state manager
 └── tracker/             # Core tracking engine
     ├── smart_tracker.py      # Main tracking orchestrator with learning
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── validation.py         # ValidationMixin - pre-solve validation
-    ├── filtering.py          # FilteringMixin - track cleanup methods
+    ├── filtering.py          # FilteringMixin - track cleanup & averaging
+    ├── averaging.py          # TrackAverager - cluster averaging for noise reduction
     ├── smoothing.py          # Track smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
@@ -152,6 +155,7 @@ autosolve/
         ├── feature_extractor.py       # Visual feature extraction
         ├── behavior_recorder.py       # User behavior recording
         ├── failure_diagnostics.py     # Failure analysis & fixes
+        ├── track_healer.py            # Gap healing with anchor interpolation
         └── pretrained_model.json      # Bundled community defaults
 ```
 
@@ -180,6 +184,7 @@ autosolve/
 ### Implemented ✅
 
 - [x] **Track Healing** - Detects drifted/dislocated tracks and heals gaps
+- [x] **Track Averaging** - Averages nearby track clusters for noise reduction
 - [x] **Zoom Detection** - Identifies zoom/dolly motion from radial velocities
 - [x] **UI for footage type selection** - Dropdown in panel
 - [x] **Setup Tracking Scene** - Auto-create camera and background

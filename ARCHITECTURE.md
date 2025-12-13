@@ -27,7 +27,8 @@ autosolve/
     ├── smart_tracker.py      # Main tracking orchestrator with learning
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── validation.py         # ValidationMixin - pre-solve validation
-    ├── filtering.py          # FilteringMixin - track cleanup & healing
+    ├── filtering.py          # FilteringMixin - track cleanup & averaging
+    ├── averaging.py          # TrackAverager - cluster averaging for noise reduction
     ├── smoothing.py          # Track smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
@@ -142,6 +143,7 @@ class FilteringMixin:
     def filter_spikes()               # Remove velocity outliers
     def filter_motion_spikes()        # Blender's filter_tracks for drift
     def clean_bad_segments()          # DELETE_SEGMENTS for gap creation
+    def average_clustered_tracks()    # Average nearby tracks for noise reduction
     def deduplicate_tracks()          # Coverage-aware deduplication
     def filter_non_rigid_motion()     # Remove waves/water/foliage tracks
     def filter_high_error()           # Remove high reprojection error (2.0px)
@@ -181,6 +183,26 @@ def smooth_track_markers(tracking, strength)  # Gaussian weighted-average smooth
 
 - **Track Smoothing:** Gaussian weighted moving average. Window size 3-7 based on strength. Preserves endpoints.
 
+#### `tracker/averaging.py`
+
+**Purpose:** Track averaging for noise reduction and segment merging.
+
+```python
+class TrackAverager:
+    def find_track_clusters(tracking)        # Find nearby track clusters
+    def average_cluster(tracking, cluster)   # Average cluster using bpy.ops.clip.average_tracks
+    def create_anchor_tracks(tracking)       # Main entry: create averaged anchors
+
+def merge_overlapping_segments(tracking)     # Merge tracks with frame overlap
+```
+
+**Strategy: Track More → Refine**
+
+```
+TRACK 2× MORE → AVERAGE CLUSTERS → HEAL GAPS → CLEAN → HIGH-QUALITY TRACKS
+    100 tracks  →       50        →    55     →   40  →  40 refined
+```
+
 ---
 
 ### 3. Learning System (`tracker/learning/`)
@@ -189,14 +211,15 @@ def smooth_track_markers(tracking, strength)  # Gaussian weighted-average smooth
 
 **Modules:**
 
-| File                     | Purpose                                   |
-| ------------------------ | ----------------------------------------- |
-| `session_recorder.py`    | Collects session & frame telemetry        |
-| `settings_predictor.py`  | Predicts optimal settings                 |
-| `failure_diagnostics.py` | Diagnoses failures & recommends fixes     |
-| `feature_extractor.py`   | Extracts visual features (density, stats) |
-| `behavior_recorder.py`   | Records user behavior patterns            |
-| `pretrained_model.json`  | Bundled defaults from community data      |
+| File                     | Purpose                                     |
+| ------------------------ | ------------------------------------------- |
+| `session_recorder.py`    | Collects session & frame telemetry          |
+| `settings_predictor.py`  | Predicts optimal settings                   |
+| `failure_diagnostics.py` | Diagnoses failures & recommends fixes       |
+| `feature_extractor.py`   | Extracts visual features (density, stats)   |
+| `behavior_recorder.py`   | Records user behavior patterns              |
+| `track_healer.py`        | Gap healing & segment merging via averaging |
+| `pretrained_model.json`  | Bundled defaults from community data        |
 
 #### Session Recorder
 
@@ -254,6 +277,7 @@ SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL → REFINE → COMPLETE
 1. `filter_motion_spikes()` - Detect drifted/dislocated markers
 2. `clean_bad_segments()` - Remove only bad portions (5.0px threshold)
 3. `heal_tracks()` - Anchor-based gap interpolation
+4. `merge_overlapping_segments()` - Average overlapping track segments
 
 **Adaptive Tracking Features:**
 
