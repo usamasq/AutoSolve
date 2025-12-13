@@ -2,7 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Blender](https://img.shields.io/badge/Blender-4.2%2B-orange.svg)](https://www.blender.org/)
-[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/qUvrXHP9PU)
+[![Discord](https://img.shields.io/badge/Discord-Join-7289da?logo=discord&logoColor=white)](https://discord.gg/qUvrXHP9PU)
 [![Support on Gumroad](https://img.shields.io/badge/Support-Gumroad-ff90e8?logo=gumroad&logoColor=white)](https://usamasq.gumroad.com/l/autosolve)
 
 ![AutoSolve - One-Click Camera Tracking](docs/images/Hero.jpg)
