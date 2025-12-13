@@ -2,7 +2,7 @@
 
 > **One-click automated camera tracking using Blender's native tracking system**
 
-> [!NOTE] > **🧪 Research Beta** - This architecture is actively evolving. The learning system improves with community data contributions.
+> [!NOTE] > **🚀 Beta Release** - Features are locked. The learning system improves with community data contributions.
 
 ---
 
@@ -19,7 +19,7 @@ AutoSolve is a Blender extension that automates the manual camera tracking workf
 ```
 autosolve/
 ├── __init__.py          # Package registration
-├── operators.py         # Main operators (Analyze & Solve, training tools)
+├── operators.py         # Main operators (Auto-Track & Solve, training tools)
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
 ├── clip_state.py       # Multi-clip state manager
@@ -27,7 +27,7 @@ autosolve/
     ├── smart_tracker.py      # Main tracking orchestrator with learning
     ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── validation.py         # ValidationMixin - pre-solve validation
-    ├── filtering.py          # FilteringMixin - track cleanup methods
+    ├── filtering.py          # FilteringMixin - track cleanup & healing
     ├── smoothing.py          # Track smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
     ├── utils.py              # Utility functions (get_region, etc.)
@@ -37,6 +37,7 @@ autosolve/
         ├── feature_extractor.py       # Visual feature extraction
         ├── behavior_recorder.py       # User behavior recording
         ├── failure_diagnostics.py     # Failure analysis & fixes
+        ├── track_healer.py            # Gap healing with anchor interpolation
         └── pretrained_model.json      # Bundled community defaults
 ```
 
@@ -139,10 +140,12 @@ class FilteringMixin:
     def cleanup_tracks()              # Unified cleanup pipeline
     def filter_short_tracks()         # Remove short-lived tracks
     def filter_spikes()               # Remove velocity outliers
+    def filter_motion_spikes()        # Blender's filter_tracks for drift
+    def clean_bad_segments()          # DELETE_SEGMENTS for gap creation
     def deduplicate_tracks()          # Coverage-aware deduplication
     def filter_non_rigid_motion()     # Remove waves/water/foliage tracks
-    def filter_high_error()           # Remove high reprojection error
-    def _get_region_for_pos()         # Region lookup helper
+    def filter_high_error()           # Remove high reprojection error (2.0px)
+    def mark_healing_pending()        # Preserve short tracks for healing
 ```
 
 #### `tracker/constants.py`
@@ -242,9 +245,15 @@ Clip → Predict Settings → Track → IF FAILS: Diagnose → Fix → Retry
 ```
 LOAD_LEARNING → CONFIGURE → DETECT →
 TRACK_FORWARD (adaptive) → TRACK_BACKWARD (adaptive) →
-ANALYZE → RETRY_DECISION → CLEANUP →
+HEAL_TRACKS → ANALYZE → RETRY_DECISION → FILTER_SHORT →
 SOLVE_DRAFT → FILTER_ERROR → SOLVE_FINAL → REFINE → COMPLETE
 ```
+
+**HEAL_TRACKS Phase:**
+
+1. `filter_motion_spikes()` - Detect drifted/dislocated markers
+2. `clean_bad_segments()` - Remove only bad portions (5.0px threshold)
+3. `heal_tracks()` - Anchor-based gap interpolation
 
 **Adaptive Tracking Features:**
 
@@ -334,18 +343,18 @@ Location: Movie Clip Editor → Sidebar (N) → AutoSolve tab
 │ Clip Info: filename.mp4             │
 │ Duration: 240 frames                │
 │                                     │
-│ [    Analyze & Solve    ]          │
+│ [    Auto-Track & Solve    ]        │
 │                                     │
 │ Options:                            │
-│   Footage Type: [Auto ▼]           │
-│   Tripod Mode: [ ]                 │
-│   Robust Mode: [ ]                 │
+│   Footage Type: [Auto ▼]            │
+│   Tripod Mode: [ ]                  │
+│   Robust Mode: [ ]                  │
 │                                     │
 │ Results:                            │
-│   Error: 0.42 px                   │
+│   Error: 0.42 px                    │
 │   Points: 87                        │
 │                                     │
-│ [Setup Scene] [Export Data]        │
+│ [Setup Scene] [Export Data]         │
 └─────────────────────────────────────┘
 ```
 
@@ -573,7 +582,7 @@ if should_retry(analysis):
 ### Manual Testing
 
 1. Load test footage in Movie Clip Editor
-2. Click "Analyze & Solve"
+2. Click "Auto-Track & Solve"
 3. Verify reconstruction validity
 4. Check reprojection error < 2.0px
 

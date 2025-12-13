@@ -227,7 +227,7 @@ TIERED_SETTINGS = {
 # Quality preset settings - different presets for different speed/accuracy tradeoffs
 QUALITY_PRESET_SETTINGS = {
     'FAST': {
-        'target_tracks': 20,           # Fewer markers = faster
+        'target_tracks': 30,           # More markers for healing candidates
         'pattern_size_mult': 0.85,     # Smaller patterns = faster matching
         'search_size_mult': 0.9,       # Smaller search area = faster
         'correlation': 0.62,           # More lenient = fewer rejects
@@ -238,23 +238,23 @@ QUALITY_PRESET_SETTINGS = {
         'motion_model': 'LocRot',      # Good balance for speed
     },
     'BALANCED': {
-        'target_tracks': 35,
+        'target_tracks': 50,           # More markers for better healing
         'pattern_size_mult': 1.0,
         'search_size_mult': 1.0,
         'correlation': 0.70,
         'cleanup_threshold': 2.5,
-        'min_lifespan': 12,
+        'min_lifespan': 8,
         'max_iterations': 3,
         'replenish_count': 1,
         'motion_model': 'LocRotScale', # Handles most camera moves
     },
     'QUALITY': {
-        'target_tracks': 50,           # More markers = better reconstruction
+        'target_tracks': 70,           # Many markers for best reconstruction
         'pattern_size_mult': 1.25,     # Larger patterns = more accurate
         'search_size_mult': 1.15,      # Larger search = better tracking
         'correlation': 0.75,           # Stricter matching = cleaner tracks
         'cleanup_threshold': 1.5,      # Low error tolerance
-        'min_lifespan': 15,            # Longer track requirement
+        'min_lifespan': 10,            # Longer track requirement
         'max_iterations': 4,           # More retry iterations
         'replenish_count': 2,          # More markers per replenish
         'motion_model': 'LocRotScale', # Best quality - handles all transforms
@@ -370,6 +370,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Region confidence scores (probabilistic dead zones)
         self.region_confidence: Dict[str, float] = {r: 0.5 for r in REGIONS}
+        
+        # Track healing (enabled by default)
+        self.enable_healing: bool = True
+        self.healer = None  # Lazy init in heal_tracks()
         
         # Try to load cached probe from disk
         self._try_load_cached_probe()
@@ -2532,6 +2536,104 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         return removed
 
     # ═══════════════════════════════════════════════════════════════════════════
+    # TRACK HEALING
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def heal_tracks(self) -> int:
+        """
+        Find and heal track gaps using anchor-based interpolation.
+        
+        Uses complete "anchor" tracks to estimate motion during gaps and
+        reconnect broken tracks that likely represent the same real-world point.
+        
+        Returns:
+            Number of gaps successfully healed
+        """
+        if not self.enable_healing:
+            return 0
+        
+        # Lazy init healer
+        if self.healer is None:
+            from .learning.track_healer import TrackHealer
+            self.healer = TrackHealer()
+        
+        # Find anchor tracks (complete, high-quality reference tracks)
+        anchors = self.healer.find_anchor_tracks(self.tracking)
+        
+        if len(anchors) < self.healer.MIN_ANCHOR_TRACKS:
+            print(f"AutoSolve: Only {len(anchors)} anchors found - need {self.healer.MIN_ANCHOR_TRACKS}+ for healing")
+            return 0
+        
+        # Record anchors for session data
+        if self.recorder and self.recorder.current_session:
+            self.recorder.current_session.anchor_tracks = [
+                {
+                    'name': a.name,
+                    'start_frame': a.start_frame,
+                    'end_frame': a.end_frame,
+                    'quality': round(a.quality_score, 3)
+                }
+                for a in anchors[:10]  # Top 10
+            ]
+        
+        # Find healing candidates
+        candidates = self.healer.find_healing_candidates(self.tracking)
+        
+        if not candidates:
+            print("AutoSolve: No healing candidates found")
+            return 0
+        
+        # Update healing stats
+        if self.recorder and self.recorder.current_session:
+            self.recorder.current_session.healing_stats['candidates_found'] = len(candidates)
+        
+        # Heal candidates above threshold
+        healed = 0
+        attempted = 0
+        gap_frames_total = 0
+        match_scores_total = 0.0
+        
+        for candidate in candidates:
+            if candidate.match_score >= self.healer.MIN_MATCH_SCORE:
+                attempted += 1
+                
+                # Interpolate positions
+                positions = self.healer.interpolate_with_anchors(candidate, anchors)
+                
+                # Attempt to heal
+                success = self.healer.heal_track(candidate, self.tracking, anchors)
+                
+                # Collect training data
+                training_data = self.healer.collect_training_data(
+                    candidate, anchors, positions, success
+                )
+                
+                # Record for session
+                if self.recorder and self.recorder.current_session:
+                    self.recorder.current_session.healing_attempts.append(
+                        training_data.to_dict()
+                    )
+                
+                if success:
+                    healed += 1
+                    gap_frames_total += candidate.gap_frames
+                    match_scores_total += candidate.match_score
+        
+        # Update healing stats
+        if self.recorder and self.recorder.current_session and attempted > 0:
+            stats = self.recorder.current_session.healing_stats
+            stats['heals_attempted'] = attempted
+            stats['heals_successful'] = healed
+            stats['avg_gap_frames'] = round(gap_frames_total / healed, 1) if healed > 0 else 0.0
+            stats['avg_match_score'] = round(match_scores_total / healed, 3) if healed > 0 else 0.0
+        
+        if healed > 0:
+            print(f"AutoSolve: Healed {healed}/{attempted} track gaps "
+                  f"({100*healed/attempted:.0f}% success rate)")
+        
+        return healed
+
+    # ═══════════════════════════════════════════════════════════════════════════
     # TEMPORAL DEAD ZONES AND ITERATIVE REFINEMENT
     # ═══════════════════════════════════════════════════════════════════════════
     
@@ -2784,6 +2886,65 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         except:
             pass
     
+    def preserve_good_tracks(self, min_lifespan: int = None, max_error: float = 5.0) -> int:
+        """
+        Keep good existing tracks, only remove problematic ones.
+        
+        On retry or new autotrack, this preserves investment in good tracks
+        while clearing tracks that didn't contribute to the solve.
+        
+        Args:
+            min_lifespan: Minimum frames for track to be considered good.
+                         Defaults to self.min_lifespan // 2 (lenient).
+            max_error: Maximum reprojection error to keep (only applies if solve exists)
+            
+        Returns:
+            Number of tracks preserved
+        """
+        if min_lifespan is None:
+            min_lifespan = max(3, self.min_lifespan // 2)
+        
+        has_solve = self.tracking.reconstruction.is_valid
+        
+        good_tracks = []
+        bad_tracks = []
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            lifespan = 0
+            if len(markers) >= 2:
+                markers_sorted = sorted(markers, key=lambda m: m.frame)
+                lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            
+            # Criteria for keeping a track:
+            # 1. Has sufficient lifespan
+            # 2. If solve exists, has acceptable error OR hasn't been solved yet
+            is_good = lifespan >= min_lifespan
+            
+            if has_solve and track.has_bundle:
+                if track.average_error > max_error:
+                    is_good = False
+            
+            if is_good and len(markers) >= 2:
+                good_tracks.append(track.name)
+            else:
+                bad_tracks.append(track.name)
+        
+        # Delete bad tracks
+        if bad_tracks:
+            for track in self.tracking.tracks:
+                track.select = track.name in bad_tracks
+            
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+                print(f"AutoSolve: Removed {len(bad_tracks)} poor tracks, preserved {len(good_tracks)} good tracks")
+            except:
+                pass
+        else:
+            print(f"AutoSolve: Preserved all {len(good_tracks)} existing tracks")
+        
+        return len(good_tracks)
+    
     def count_active_tracks(self, frame: int) -> int:
         """Count tracks active at frame."""
         count = 0
@@ -2914,6 +3075,105 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     # Footage types that benefit from non-rigid motion filtering
     NON_RIGID_FOOTAGE_TYPES = {'DRONE', 'OUTDOOR', 'ACTION', 'HANDHELD'}
     
+    
+    def select_optimal_keyframes(self) -> bool:
+        """
+        Select optimal keyframes for camera solve based on parallax.
+        
+        The solver requires keyframes with:
+        1. Maximum average track displacement (parallax)
+        2. At least 8 common tracks on both frames
+        3. Sufficient temporal separation (20% of clip duration)
+        
+        This fixes "POINT BEHIND CAMERA" errors caused by poor keyframe selection.
+        
+        Returns:
+            True if keyframes were updated, False if kept defaults
+        """
+        camera = self.clip.tracking.camera
+        clip_start = 1
+        clip_end = self.clip.frame_duration
+        min_separation = max(10, int(self.clip.frame_duration * 0.2))  # 20% of clip
+        
+        # Collect all frames with track counts
+        frame_tracks = {}  # frame -> list of (track_name, x, y)
+        
+        for track in self.tracking.tracks:
+            markers = [m for m in track.markers if not m.mute]
+            for marker in markers:
+                if marker.frame not in frame_tracks:
+                    frame_tracks[marker.frame] = []
+                frame_tracks[marker.frame].append((track.name, marker.co.x, marker.co.y))
+        
+        if len(frame_tracks) < 2:
+            print("AutoSolve: Not enough frames with tracks for keyframe selection")
+            return False
+        
+        # Find frames with at least 8 tracks
+        valid_frames = [f for f, tracks in frame_tracks.items() if len(tracks) >= 8]
+        if len(valid_frames) < 2:
+            print("AutoSolve: Not enough frames with 8+ tracks")
+            return False
+        
+        valid_frames.sort()
+        
+        # Find best pair with maximum parallax
+        best_parallax = 0
+        best_pair = (valid_frames[0], valid_frames[-1])
+        best_common_count = 0
+        
+        # Sample frames efficiently (every 10% of clip)
+        sample_step = max(1, len(valid_frames) // 10)
+        sample_frames = valid_frames[::sample_step]
+        if valid_frames[-1] not in sample_frames:
+            sample_frames.append(valid_frames[-1])
+        
+        for i, frame_a in enumerate(sample_frames):
+            for frame_b in sample_frames[i+1:]:
+                # Check separation
+                if frame_b - frame_a < min_separation:
+                    continue
+                
+                # Find common tracks
+                tracks_a = {t[0]: (t[1], t[2]) for t in frame_tracks[frame_a]}
+                tracks_b = {t[0]: (t[1], t[2]) for t in frame_tracks[frame_b]}
+                common_tracks = set(tracks_a.keys()) & set(tracks_b.keys())
+                
+                if len(common_tracks) < 8:
+                    continue
+                
+                # Calculate average displacement (parallax)
+                total_disp = 0
+                for track_name in common_tracks:
+                    xa, ya = tracks_a[track_name]
+                    xb, yb = tracks_b[track_name]
+                    disp = ((xb - xa)**2 + (yb - ya)**2)**0.5
+                    total_disp += disp
+                
+                avg_parallax = total_disp / len(common_tracks)
+                
+                # Prefer more parallax AND more common tracks
+                score = avg_parallax * (1 + len(common_tracks) / 50)
+                
+                if score > best_parallax:
+                    best_parallax = score
+                    best_pair = (frame_a, frame_b)
+                    best_common_count = len(common_tracks)
+        
+        # Apply best keyframes if they're different from defaults
+        keyframe_a, keyframe_b = best_pair
+        current_a = getattr(camera, 'keyframe_a', 1)
+        current_b = getattr(camera, 'keyframe_b', clip_end)
+        
+        if keyframe_a != current_a or keyframe_b != current_b:
+            camera.keyframe_a = keyframe_a
+            camera.keyframe_b = keyframe_b
+            avg_parallax_percent = best_parallax * 100 if best_parallax < 1 else best_parallax
+            print(f"AutoSolve: Selected keyframes {keyframe_a} and {keyframe_b} "
+                  f"({best_common_count} common tracks, {avg_parallax_percent:.1f}% avg parallax)")
+            return True
+        
+        return False
     
     def solve_camera(self, tripod_mode: bool = False) -> bool:
         """
@@ -3062,7 +3322,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     def analyze_and_learn(self) -> Dict:
         """Analyze tracks and learn from results."""
-        min_life = 5 if self.robust_mode else 8
+        # Use same min_lifespan as cleanup_tracks for consistency
+        # In robust mode, use a lower threshold (half of normal)
+        min_life = max(5, self.min_lifespan // 2) if self.robust_mode else self.min_lifespan
         self.last_analysis = self.analyzer.analyze_tracks(self.tracking, min_life)
         self.analyzer.iteration = self.iteration
         

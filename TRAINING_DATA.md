@@ -228,6 +228,35 @@ Each tracking session generates a JSON file with this structure:
       }
     },
     "temporal_motion_profile": [0.012, 0.015, 0.018, 0.02, 0.019]
+  },
+
+  // Track Healing (NEW v5): Anchor-based gap interpolation
+  "anchor_tracks": [
+    { "name": "Track.003", "start_frame": 1, "end_frame": 180, "quality": 0.92 }
+  ],
+  "healing_attempts": [
+    {
+      "gap_start_frame": 50,
+      "gap_end_frame": 65,
+      "gap_start_pos": [0.52, 0.48],
+      "gap_end_pos": [0.54, 0.46],
+      "anchor_count": 4,
+      "interpolated_positions": [
+        [0.52, 0.47],
+        [0.53, 0.47],
+        [0.53, 0.46]
+      ],
+      "method_used": "anchor_weighted",
+      "post_heal_error": 0.42,
+      "heal_success": true
+    }
+  ],
+  "healing_stats": {
+    "candidates_found": 5,
+    "heals_attempted": 3,
+    "heals_successful": 2,
+    "avg_gap_frames": 15.0,
+    "avg_match_score": 0.82
   }
 }
 ```
@@ -585,7 +614,7 @@ When "Learn from My Edits" is enabled, these features are extracted:
 ### 1. Data Collection
 
 ```
-User clicks "Analyze & Solve"
+User clicks "Auto-Track & Solve"
          │
          ▼
 SessionRecorder.start_session()

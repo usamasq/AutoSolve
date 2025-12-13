@@ -482,6 +482,94 @@ class FeatureExtractor:
         
         # Compute contrast stats from velocity variance
         self._compute_contrast_stats(tracking_data)
+        
+        # Compute zoom detection from radial velocities
+        self._compute_zoom_detection(tracking_data)
+    
+    def _compute_zoom_detection(self, tracking_data: Dict):
+        """
+        Detect zoom/dolly motion from radial velocity patterns.
+        
+        Zoom creates radial motion: tracks move away from (zoom in) or 
+        toward (zoom out) the center of the frame. This analyzes velocity
+        vectors relative to each track's position from center.
+        
+        Sets:
+            features.zoom_detected: bool
+            features.zoom_direction: 'ZOOM_IN', 'ZOOM_OUT', or 'NONE'
+            features.zoom_scale_ratio: float (> 1.0 = zoom in, < 1.0 = zoom out)
+        """
+        # Get motion vectors if available
+        motion_vectors = tracking_data.get('motion_vectors', [])
+        frame_samples = tracking_data.get('frame_samples', [])
+        
+        if not motion_vectors and not frame_samples:
+            return
+        
+        # Calculate radial velocity component for each track
+        # Radial = velocity component pointing away from center
+        radial_velocities = []
+        
+        # Try to get position and velocity data
+        if frame_samples:
+            for sample in frame_samples:
+                if not isinstance(sample, dict):
+                    continue
+                # Sample should have track positions and velocities
+                tracks = sample.get('track_positions', [])
+                velocities = sample.get('track_velocities', [])
+                
+                for i, pos in enumerate(tracks):
+                    if i >= len(velocities) or not pos or not velocities[i]:
+                        continue
+                    
+                    # Position relative to center (normalized coords)
+                    cx, cy = 0.5, 0.5
+                    dx_pos = pos[0] - cx
+                    dy_pos = pos[1] - cy
+                    
+                    # Velocity
+                    vx, vy = velocities[i]
+                    
+                    # Distance from center
+                    dist = (dx_pos**2 + dy_pos**2)**0.5
+                    if dist < 0.01:  # Too close to center
+                        continue
+                    
+                    # Unit vector from center
+                    ux, uy = dx_pos / dist, dy_pos / dist
+                    
+                    # Radial velocity = dot product of velocity with unit radial
+                    radial_v = vx * ux + vy * uy
+                    radial_velocities.append(radial_v)
+        
+        if not radial_velocities:
+            return
+        
+        # Analyze radial velocities
+        avg_radial = sum(radial_velocities) / len(radial_velocities)
+        
+        # Threshold for detecting significant zoom
+        ZOOM_THRESHOLD = 0.003  # Adjust based on testing
+        
+        if avg_radial > ZOOM_THRESHOLD:
+            # Positive radial = moving away from center = zoom in
+            self.features.zoom_detected = True
+            self.features.zoom_direction = "ZOOM_IN"
+            # Estimate scale ratio (rough approximation)
+            self.features.zoom_scale_ratio = 1.0 + abs(avg_radial) * 10
+            
+        elif avg_radial < -ZOOM_THRESHOLD:
+            # Negative radial = moving toward center = zoom out
+            self.features.zoom_detected = True
+            self.features.zoom_direction = "ZOOM_OUT"
+            self.features.zoom_scale_ratio = 1.0 / (1.0 + abs(avg_radial) * 10)
+            
+        else:
+            # No significant zoom
+            self.features.zoom_detected = False
+            self.features.zoom_direction = "NONE"
+            self.features.zoom_scale_ratio = 1.0
     
     def _compute_contrast_stats(self, tracking_data: Dict):
         """

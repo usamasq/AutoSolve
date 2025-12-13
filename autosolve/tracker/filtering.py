@@ -22,6 +22,163 @@ from mathutils import Vector
 class FilteringMixin:
     """Mixin providing track filtering methods for SmartTracker."""
     
+    # Flag to preserve short tracks during healing phase
+    _healing_pending: bool = False
+    
+    def mark_healing_pending(self, pending: bool = True):
+        """
+        Mark that healing phase is pending.
+        
+        When True, short tracks won't be filtered - they may be healing candidates
+        (track segments that can be joined to form complete tracks).
+        """
+        self._healing_pending = pending
+        if pending:
+            print("AutoSolve: Preserving short tracks for healing phase")
+    
+    def filter_motion_spikes(self, threshold: float = 5.0, action: str = 'MUTE') -> int:
+        """
+        Use Blender's built-in filter_tracks to detect and handle motion spikes.
+        
+        This catches:
+        - Sudden dislocations (track jumps to different feature)
+        - Gradual drift (track slowly moves off target)
+        - Erratic motion (jittery tracking that doesn't match scene motion)
+        
+        Args:
+            threshold: Sensitivity (lower = more aggressive). Default 5.0
+            action: 'MUTE' to mute bad markers, 'DELETE' to remove bad tracks
+                    
+        Returns:
+            Number of tracks affected
+        """
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return 0
+        
+        # Count tracks before
+        tracks_before = sum(1 for t in self.tracking.tracks 
+                          if len([m for m in t.markers if not m.mute]) >= 2)
+        
+        # Select all tracks for filtering
+        self.select_all_tracks()
+        
+        try:
+            # Blender's filter_tracks detects "weirdly looking spikes in motion curves"
+            self._run_ops(bpy.ops.clip.filter_tracks, track_threshold=threshold)
+            
+            # Count tracks after (filter_tracks mutes problem markers)
+            tracks_after = sum(1 for t in self.tracking.tracks 
+                              if len([m for m in t.markers if not m.mute]) >= 2)
+            
+            affected = tracks_before - tracks_after
+            
+            if affected > 0:
+                print(f"AutoSolve: Blender filter_tracks detected {affected} drifted/spiked tracks "
+                      f"(threshold={threshold})")
+                
+                # Record for ML training
+                if hasattr(self, 'recorder') and self.recorder:
+                    current_frame = bpy.context.scene.frame_current
+                    for track in self.tracking.tracks:
+                        active_markers = [m for m in track.markers if not m.mute]
+                        if len(active_markers) < 2 and len(list(track.markers)) >= 2:
+                            # This track was affected
+                            marker = list(track.markers)[0] if list(track.markers) else None
+                            if marker:
+                                self.recorder.record_track_failure(
+                                    track.name, current_frame,
+                                    marker.co.x, marker.co.y, "MOTION_SPIKE"
+                                )
+            
+            return affected
+            
+        except Exception as e:
+            print(f"AutoSolve: filter_tracks failed: {e}")
+            return 0
+    
+    def clean_bad_segments(self, max_error: float = 3.0, min_frames: int = 3) -> int:
+        """
+        Remove only bad SEGMENTS of tracks, preserving good portions.
+        
+        Uses Blender's clean_tracks with DELETE_SEGMENTS action to:
+        - Remove segments with high reprojection error
+        - Keep the good parts of tracks intact
+        - Create gaps that can be filled by heal_tracks()
+        
+        This is much better than deleting entire tracks!
+        
+        Args:
+            max_error: Maximum reprojection error threshold (default 3.0)
+            min_frames: Minimum consecutive good frames to keep (default 3)
+            
+        Returns:
+            Number of tracks that had segments removed
+        """
+        current = len(self.tracking.tracks)
+        if current < self.SAFE_MIN_TRACKS:
+            return 0
+        
+        # Count total markers before
+        markers_before = sum(
+            len([m for m in t.markers if not m.mute]) 
+            for t in self.tracking.tracks
+        )
+        
+        self.select_all_tracks()
+        
+        try:
+            # DELETE_SEGMENTS removes only bad portions, keeping good parts
+            self._run_ops(
+                bpy.ops.clip.clean_tracks, 
+                frames=min_frames, 
+                error=max_error, 
+                action='DELETE_SEGMENTS'
+            )
+            
+            # Count markers after
+            markers_after = sum(
+                len([m for m in t.markers if not m.mute]) 
+                for t in self.tracking.tracks
+            )
+            
+            removed = markers_before - markers_after
+            
+            if removed > 0:
+                # Count how many tracks were affected (have fewer markers now)
+                affected_tracks = 0
+                for track in self.tracking.tracks:
+                    markers = [m for m in track.markers if not m.mute]
+                    all_markers = list(track.markers)
+                    if len(markers) < len(all_markers):
+                        affected_tracks += 1
+                
+                print(f"AutoSolve: Cleaned {removed} bad markers from {affected_tracks} tracks "
+                      f"(max_error={max_error}px)")
+                
+                # Record for ML training
+                if hasattr(self, 'recorder') and self.recorder:
+                    current_frame = bpy.context.scene.frame_current
+                    for track in self.tracking.tracks:
+                        active = [m for m in track.markers if not m.mute]
+                        all_m = list(track.markers)
+                        if len(active) < len(all_m) and len(active) >= min_frames:
+                            # This track had segments removed but wasn't deleted
+                            self.recorder.record_track_failure(
+                                track.name, current_frame,
+                                active[0].co.x if active else 0,
+                                active[0].co.y if active else 0,
+                                "SEGMENT_CLEANED"
+                            )
+                
+                return affected_tracks
+            
+            return 0
+            
+        except Exception as e:
+            print(f"AutoSolve: clean_bad_segments failed: {e}")
+            return 0
+    
     def filter_short_tracks(self, min_frames: int = 5):
         """Filter short tracks with safeguards."""
         current = len(self.tracking.tracks)
@@ -345,7 +502,11 @@ class FilteringMixin:
             self.select_all_tracks()
     
     def filter_high_error(self, max_error: float = 3.0):
-        """Filter high error tracks."""
+        """Filter high error tracks while preserving keyframe coverage.
+        
+        Blender's solver requires at least 8 tracks visible on BOTH keyframes.
+        This method respects that constraint in addition to ABSOLUTE_MIN_TRACKS.
+        """
         if not self.tracking.reconstruction.is_valid:
             return
         
@@ -353,10 +514,48 @@ class FilteringMixin:
         if current < self.SAFE_MIN_TRACKS:
             return
         
+        # Get keyframe positions from tracking camera settings
+        camera = self.clip.tracking.camera if hasattr(self.clip.tracking, 'camera') else None
+        keyframe_a = getattr(camera, 'keyframe_a', 1) if camera else 1
+        keyframe_b = getattr(camera, 'keyframe_b', 30) if camera else self.clip.frame_duration
+        
+        # Helper to check if track has active markers on both keyframes
+        def covers_keyframes(track):
+            """Check if track has non-muted markers on BOTH keyframes."""
+            has_a = False
+            has_b = False
+            for m in track.markers:
+                if m.mute:
+                    continue
+                if m.frame == keyframe_a:
+                    has_a = True
+                if m.frame == keyframe_b:
+                    has_b = True
+                if has_a and has_b:
+                    return True
+            return False
+        
+        # Count tracks covering keyframes before filtering
+        keyframe_tracks = [t.name for t in self.tracking.tracks if covers_keyframes(t)]
+        keyframe_count = len(keyframe_tracks)
+        
         to_delete = [t.name for t in self.tracking.tracks
                     if t.has_bundle and t.average_error > max_error]
         
-        max_can = current - self.ABSOLUTE_MIN_TRACKS
+        # Calculate max deletable considering BOTH total count and keyframe coverage
+        max_by_total = current - self.ABSOLUTE_MIN_TRACKS
+        
+        # Count how many keyframe-covering tracks are in to_delete list
+        keyframe_deletions = [n for n in to_delete if n in keyframe_tracks]
+        max_by_keyframes = keyframe_count - 8  # Need at least 8 tracks on both keyframes
+        
+        # Apply the more restrictive limit
+        max_can = min(max_by_total, max(0, max_by_keyframes))
+        
+        if max_can <= 0:
+            print(f"AutoSolve: Skipping high-error filter (need to preserve keyframe coverage)")
+            return
+        
         if len(to_delete) > max_can:
             errors = [(t.name, t.average_error) for t in self.tracking.tracks if t.has_bundle]
             errors.sort(key=lambda x: x[1], reverse=True)
@@ -395,8 +594,11 @@ class FilteringMixin:
         """
         initial = len(self.tracking.tracks)
         
-        # 1. Filter short tracks
-        self.filter_short_tracks(min_frames=min_frames)
+        # 1. Filter short tracks (skip if healing is pending)
+        if getattr(self, '_healing_pending', False):
+            print("AutoSolve: Skipping short track filter (healing pending)")
+        else:
+            self.filter_short_tracks(min_frames=min_frames)
         
         # 2. Filter velocity spikes
         self.filter_spikes(limit_multiplier=spike_multiplier)

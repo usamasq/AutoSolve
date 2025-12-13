@@ -51,6 +51,24 @@ class TrackTelemetry:
     # High confidence = smooth motion, Low confidence = jerky/hunting motion
     trajectory_confidence: List[float] = field(default_factory=list)  # [0.98, 0.95, 0.72, ...]
     avg_confidence: float = 1.0  # Average confidence across all samples
+    
+    # ML Enhancement v5: Endpoint signatures for track healing/re-identification
+    start_signature: Dict = field(default_factory=lambda: {
+        'position': [0.0, 0.0],
+        'velocity': [0.0, 0.0],
+        'acceleration': [0.0, 0.0],
+        'confidence': 1.0,
+    })
+    end_signature: Dict = field(default_factory=lambda: {
+        'position': [0.0, 0.0],
+        'velocity': [0.0, 0.0],
+        'acceleration': [0.0, 0.0],
+        'confidence': 1.0,
+    })
+    
+    # Is this track a good anchor for healing other tracks?
+    is_anchor_candidate: bool = False
+    anchor_quality: float = 0.0  # 0-1 quality as reference track
 
 
 @dataclass
@@ -208,6 +226,21 @@ class SessionData:
         'is_uniform_scale': False,       # True if zoom-like, False if dolly-like
         'radial_convergence': 0.0,       # -1=converging (zoom in), +1=diverging (zoom out)
         'confidence': 0.0,               # Detection confidence (0-1)
+    })
+    
+    # ML Enhancement v5: Track healing telemetry
+    anchor_tracks: List[Dict] = field(default_factory=list)
+    # Format: [{"name": str, "start_frame": int, "end_frame": int, "quality": float}]
+    
+    healing_attempts: List[Dict] = field(default_factory=list)
+    # Full InterpolationTrainingData for each healing attempt
+    
+    healing_stats: Dict = field(default_factory=lambda: {
+        'candidates_found': 0,
+        'heals_attempted': 0,
+        'heals_successful': 0,
+        'avg_gap_frames': 0.0,
+        'avg_match_score': 0.0,
     })
 
 

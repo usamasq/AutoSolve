@@ -1,14 +1,14 @@
 # AutoSolve - Automatic Camera Tracking for Blender
 
 > **A personal project by Usama Bin Shahid**  
-> _Dedicated to my students, with ❤️ from Pakistan 🇵🇰_
+> _with ❤️ for Open Source Community from Rawalpindi, Pakistan 🇵🇰_
 
 > [!IMPORTANT] > **🧪 Research Beta** - This addon is in active development and features a **learning system** that improves tracking quality over time.
 >
 > **How it works:**
 >
-> 1.  **Learns Locally:** It uses **statistical learning** to remember your successful settings and apply them to future tracking sessions.
-> 2.  **Community Driven:** You can **optionally share your data** to help us train a future **Neural Network** that will be even smarter.
+> 1.  **Learns Locally:** Uses **statistical learning** (HER) to remember successful settings for your footage.
+> 2.  **Community Driven:** You can **optionally share data** to help train a future **Neural Network**.
 >
 > **[Contribute your data](#contribute-training-data)** to help build the best open-source tracking algorithm!
 
@@ -30,16 +30,18 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 ## Features
 
-| Feature                    | Description                                               |
-| -------------------------- | --------------------------------------------------------- |
-| **One-Click Tracking**     | Automatic feature detection, tracking, cleanup, and solve |
-| **Adaptive Learning**      | Learns optimal settings from your footage over time       |
-| **Smart Detection**        | Balanced marker placement across all screen regions       |
-| **Bidirectional Tracking** | Starts from mid-clip for better frame coverage            |
-| **Quality Prediction**     | Estimates solve quality before running solver             |
-| **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes    |
-| **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.      |
-| **Smoothing**              | Reduces jitter with track motion smoothing                |
+| Feature                    | Description                                                     |
+| -------------------------- | --------------------------------------------------------------- |
+| **One-Click Tracking**     | Automatic feature detection, tracking, cleanup, and solve       |
+| **Adaptive Learning**      | Learns optimal settings from your footage over time             |
+| **Smart Detection**        | Balanced marker placement across all screen regions             |
+| **Bidirectional Tracking** | Starts from mid-clip for better frame coverage                  |
+| **Track Healing**          | Detects drifted tracks and heals gaps with anchor interpolation |
+| **Quality Prediction**     | Estimates solve quality before running solver                   |
+| **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes          |
+| **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.            |
+| **Zoom Detection**         | Detects zoom/dolly motion from radial velocity patterns         |
+| **Smoothing**              | Reduces jitter with track motion smoothing                      |
 
 ---
 
@@ -65,7 +67,7 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 2. Load footage in the **Movie Clip Editor**
 3. Open the **AutoSolve** panel in the sidebar (N)
 4. Select a **Footage Type** (or leave on AUTO)
-5. Click **Analyze & Solve**
+5. Click **Auto-Track & Solve**
 6. Wait for tracking to complete (progress shown in panel)
 
 ### Options
@@ -133,7 +135,7 @@ cd AutoSolve
 ```
 autosolve/
 ├── __init__.py          # Package registration
-├── operators.py         # Main operators (Analyze & Solve, training tools)
+├── operators.py         # Main operators (Auto-Track & Solve, training tools)
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
 └── tracker/             # Core tracking engine
@@ -173,21 +175,22 @@ autosolve/
 
 ### In Progress
 
-- [ ] **Retry with diagnosis** - Automatic retry using failure analysis
-- [ ] **Community Model Sync** - Download improved defaults
+- [ ] **Community Model Sync** - Download improved defaults from community data
 
 ### Implemented ✅
 
+- [x] **Track Healing** - Detects drifted/dislocated tracks and heals gaps
+- [x] **Zoom Detection** - Identifies zoom/dolly motion from radial velocities
 - [x] **UI for footage type selection** - Dropdown in panel
 - [x] **Setup Tracking Scene** - Auto-create camera and background
 - [x] **Multi-frame Feature Density** - Temporal texture analysis
 - [x] **Per-Marker Quality Tracking** - Survival prediction data
-- [x] **Real-time Motion Estimation** - Zoom & motion confidence analysis
+- [x] **Real-time Motion Estimation** - Motion confidence analysis
+- [x] **Behavior Learning** - Learns from user corrections (2+ samples)
 
 ### Future Roadmap
 
 - [ ] **Community Model Sync** - Download aggregated best settings
-- [ ] **Retry with diagnosis** - Automatic retry loops based on failure type
 - [ ] **XGBoost Settings Model** - Lightweight ML model when >500 sessions collected
 - [ ] **Deep Learning (Long Term)** - LSTM/RNN for trajectory prediction (>10k sessions)
 

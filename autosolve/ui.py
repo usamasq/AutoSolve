@@ -259,7 +259,7 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
                 outer_box.separator()
                 outer_box.label(text="Or start fresh:", icon='INFO')
                 row = outer_box.row()
-                row.operator("autosolve.run_solve", text="Auto-Track Everything", icon='TRACKING')
+                row.operator("autosolve.run_solve", text="Auto-Track", icon='TRACKING')
             else:
                 # Fresh clip - full auto workflow
                 outer_box.label(text="One-click camera tracking", icon='LIGHT')
@@ -267,7 +267,7 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
                 
                 row = outer_box.row()
                 row.scale_y = 2.0
-                row.operator("autosolve.run_solve", text="Analyze & Solve", icon='PLAY')
+                row.operator("autosolve.run_solve", text="Auto-Track & Solve", icon='PLAY')
             
             outer_box.separator()
             

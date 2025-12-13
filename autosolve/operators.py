@@ -79,7 +79,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
     """Adaptive learning auto-tracking."""
     
     bl_idname = "autosolve.run_solve"
-    bl_label = "Analyze & Solve"
+    bl_label = "Auto-Track & Solve"
     bl_description = "Full automatic tracking: analyzes footage, detects features, and solves camera (clears existing tracks)"
     bl_options = {'REGISTER'}
     
@@ -264,7 +264,14 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         _state.user_learned = user_learned  # Store for later use
                         print(f"AutoSolve: Learned from {user_learned['total_templates']} user templates")
                 
-                tracker.clear_tracks()
+                # On retry or when existing tracks exist, preserve good ones
+                # On first fresh run, clear all to start clean
+                if _state.iteration > 0 or (len(tracker.tracking.tracks) > 0 and _state.iteration == 0):
+                    preserved = tracker.preserve_good_tracks()
+                    _state.preserved_tracks = preserved
+                else:
+                    tracker.clear_tracks()
+                    _state.preserved_tracks = 0
                 
                 # Pre-tracking validation
                 is_valid, issues = tracker.validate_pre_tracking()
@@ -288,17 +295,29 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 settings.solve_progress = 0.05
                 settings.solve_status = "Detecting features..."
                 
-                # Unified smart detection (uses cached probe, learned settings)
-                # Calculate markers_per_region from quality-based target_tracks
-                # 9 regions, so target_tracks / 9 gives markers per region
-                markers_per_region = max(2, tracker.target_tracks // 9)
-                num = tracker.detect_features_smart(
-                    markers_per_region=markers_per_region,
-                    use_cached_probe=(_state.iteration > 0)  # Cache on retry
-                )
+                # Account for preserved tracks when detecting new ones
+                preserved = getattr(_state, 'preserved_tracks', 0)
+                existing_tracks = len(tracker.tracking.tracks)
                 
-                if num < 8:
-                    self.report({'WARNING'}, f"Only {num} features detected")
+                # Calculate markers_per_region from quality-based target_tracks
+                # Reduce target if we already have preserved tracks
+                effective_target = max(tracker.target_tracks - existing_tracks, 0)
+                markers_per_region = max(1, effective_target // 9) if effective_target > 0 else 0
+                
+                if markers_per_region > 0:
+                    num = tracker.detect_features_smart(
+                        markers_per_region=markers_per_region,
+                        use_cached_probe=(_state.iteration > 0)  # Cache on retry
+                    )
+                    total_tracks = existing_tracks + num
+                    print(f"AutoSolve: Total tracks: {total_tracks} ({existing_tracks} preserved + {num} new)")
+                else:
+                    num = 0
+                    total_tracks = existing_tracks
+                    print(f"AutoSolve: Using {existing_tracks} preserved tracks (target already met)")
+                
+                if total_tracks < 8:
+                    self.report({'WARNING'}, f"Only {total_tracks} total tracks")
                     if _state.iteration < tracker.MAX_ITERATIONS:
                         _state.phase = 'RETRY_DECISION'
                     else:
@@ -307,7 +326,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         return self._finish(context, success=False)
                     return {'RUNNING_MODAL'}
                 
-                print(f"AutoSolve: Smart detection - {num} balanced markers")
+                print(f"AutoSolve: Ready with {total_tracks} tracks")
                 tracker.select_all_tracks()
                 
                 _state.phase = 'TRACK_FORWARD'
@@ -386,9 +405,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     )
                     print(f"AutoSolve: Batch tracked {frames} frames backward")
                     
-                    # Cleanup and go directly to ANALYZE
-                    tracker.cleanup_tracks()
-                    _state.phase = 'ANALYZE'
+                    # Go to healing phase
+                    _state.phase = 'HEAL_TRACKS'
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 
@@ -410,12 +428,44 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     return {'RUNNING_MODAL'}
                 else:
                     # Bidirectional tracking complete!
-                    # Cleanup and go directly to ANALYZE (skip MID_REPLENISH and other phases)
-                    tracker.cleanup_tracks()
-                    _state.phase = 'ANALYZE'
+                    # Go to healing phase
+                    _state.phase = 'HEAL_TRACKS'
                     return {'RUNNING_MODAL'}
             
-            # Adaptive monitoring now handles replenishment during tracking
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: HEAL TRACKS (Filter spikes + Clean segments + Gap healing)
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'HEAL_TRACKS':
+                settings.solve_status = "Filtering & healing tracks..."
+                settings.solve_progress = 0.62
+                
+                # Mark healing pending to preserve short tracks (they may be candidates)
+                tracker.mark_healing_pending(True)
+                
+                # Step 1: Use Blender's filter_tracks to detect drift/dislocation
+                # This mutes markers with motion spikes
+                spikes_found = tracker.filter_motion_spikes(threshold=5.0)
+                if spikes_found > 0:
+                    print(f"AutoSolve: Filtered {spikes_found} tracks with motion spikes")
+                
+                # Step 2: Use Blender's clean_tracks with DELETE_SEGMENTS to remove
+                # only the bad portions of tracks (creates gaps for healing)
+                # Use loose threshold (5.0px) - strict filtering happens in FILTER_ERROR
+                segments_cleaned = tracker.clean_bad_segments(max_error=5.0, min_frames=3)
+                if segments_cleaned > 0:
+                    print(f"AutoSolve: Cleaned bad segments in {segments_cleaned} tracks")
+                
+                # Step 3: Attempt to heal gaps using anchor-based interpolation
+                healed = tracker.heal_tracks()
+                if healed > 0:
+                    print(f"AutoSolve: Healed {healed} track gaps")
+                
+                # Don't call cleanup_tracks here - it happens in FILTER_SHORT phase
+                # Just mark healing done so short tracks can be filtered
+                tracker.mark_healing_pending(False)
+                
+                _state.phase = 'ANALYZE'
+                return {'RUNNING_MODAL'}
             
             
             # ═══════════════════════════════════════════════════════════════
@@ -586,7 +636,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 settings.solve_status = "Refining..."
                 settings.solve_progress = 0.85
                 
-                tracker.filter_high_error(max_error=3.0)
+                # Strict threshold (2.0px) - now we have actual solve errors to compare
+                tracker.filter_high_error(max_error=2.0)
                 
                 _state.phase = 'SOLVE_FINAL'
                 context.area.tag_redraw()
@@ -608,6 +659,9 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     # Record failure before cancelling
                     tracker.save_session_results(success=False, solve_error=999.0)
                     return self._finish(context, success=False)
+                
+                # Select optimal keyframes based on parallax BEFORE solving
+                tracker.select_optimal_keyframes()
                 
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
                 
@@ -634,8 +688,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         tracker.current_settings['motion_model'] = 'Affine'
                         
                         # Reset and restart from detection with more markers
+                        # Preserve good tracks instead of clearing all
                         _state.iteration += 1
-                        tracker.clear_tracks()
+                        preserved = tracker.preserve_good_tracks()
+                        _state.preserved_tracks = preserved
                         _state.phase = 'DETECT'
                         context.area.tag_redraw()
                         return {'RUNNING_MODAL'}

@@ -6,11 +6,11 @@ AutoSolve - One-click camera tracking for Blender.
 
 This extension provides automated camera tracking using Blender's native
 tracking system. It replaces Blender's manual tracking workflow with a single
-"Analyze & Solve" button.
+"Auto-Track & Solve" button.
 """
 
 bl_info = {
-    "name": "AutoSolve",
+    "name": "Auto-Track & Solve",
     "author": "Usama Bin Shahid",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),

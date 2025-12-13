@@ -305,8 +305,8 @@ class SettingsPredictor:
         Apply learned adjustments from user behavior.
         
         Only applies if:
-        - 3+ similar behaviors observed
-        - 0.7+ confidence (improvements were consistent)
+        - 2+ similar behaviors observed
+        - 0.5+ confidence (improvements were consistent)
         """
         adjusted = settings.copy()
         applied = []
@@ -981,8 +981,8 @@ class SettingsPredictor:
         and uses this to improve future predictions.
         
         Only applies adjustments when:
-        - 3+ similar behaviors observed
-        - Confidence >= 0.7 (improvements were consistent)
+        - 2+ similar behaviors observed
+        - Confidence >= 0.5 (improvements were consistent)
         
         Args:
             footage_class: Footage classification (e.g., 'HD_30fps')
@@ -1075,12 +1075,13 @@ class SettingsPredictor:
         inc_pattern = self.model['behavior_patterns'].get(inc_key, {})
         dec_pattern = self.model['behavior_patterns'].get(dec_key, {})
         
-        # Need 3+ observations and 0.7+ confidence
-        if inc_pattern.get('count', 0) >= 3 and inc_pattern.get('confidence', 0) >= 0.7:
+        # Lowered thresholds: 2+ observations and 0.5+ confidence (was 3/0.7)
+        # More aggressive learning from user behavior
+        if inc_pattern.get('count', 0) >= 2 and inc_pattern.get('confidence', 0) >= 0.5:
             print(f"AutoSolve: Applying learned adjustment for {setting_name} (increase)")
             return inc_pattern.get('avg_delta', 0)
         
-        if dec_pattern.get('count', 0) >= 3 and dec_pattern.get('confidence', 0) >= 0.7:
+        if dec_pattern.get('count', 0) >= 2 and dec_pattern.get('confidence', 0) >= 0.5:
             print(f"AutoSolve: Applying learned adjustment for {setting_name} (decrease)")
             return dec_pattern.get('avg_delta', 0)
         
