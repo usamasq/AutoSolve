@@ -1,7 +1,7 @@
 # AutoSolve - Automatic Camera Tracking for Blender
 
 > **A personal project by Usama Bin Shahid**  
-> _with ❤️ for Open Source Community from Rawalpindi, Pakistan 🇵🇰_
+> _with ❤️ for Blender Community from Rawalpindi, Pakistan 🇵🇰_
 
 > [!IMPORTANT] > **🧪 Research Beta** - This addon is in active development and features a **learning system** that improves tracking quality over time.
 >
