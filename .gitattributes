@@ -1,0 +1,9 @@
+# Exclude documentation and config files from the zip
+docs/ export-ignore
+ARCHITECTURE.md export-ignore
+TRAINING_DATA.md export-ignore
+CONTRIBUTING_DATA.md export-ignore
+.gitignore export-ignore
+.gitattributes export-ignore
+
+# Keep README.md and LICENSE as they are standard

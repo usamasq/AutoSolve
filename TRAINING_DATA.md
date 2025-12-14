@@ -64,6 +64,8 @@ The data schema allows for three tiers of AI advancement based on data volume:
 - **End-to-End Control:** Neural network that actively drives the tracker, adjusting parameters per-frame.
 - **Visual Saliency (CNN):** Input raw pixels → Output exact feature placement map (requires image data export).
 
+![ML Data Categorization](docs/images/ml_data_categorization.jpg)
+
 ---
 
 ## Data Storage Location
@@ -626,6 +628,8 @@ SessionRecorder.end_session()
          ▼
 SettingsPredictor.update_model()
 ```
+
+![Data Collection Pipeline](docs/images/data_collection_pipeline.jpg)
 
 ### 2. Model Update Algorithm
 

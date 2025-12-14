@@ -42,6 +42,8 @@ autosolve/
         └── pretrained_model.json      # Bundled community defaults
 ```
 
+![Component Architecture](docs/images/component_architecture.jpg)
+
 ---
 
 ## Core Components
@@ -256,6 +258,8 @@ TRACK 2× MORE → AVERAGE CLUSTERS → HEAL GAPS → CLEAN → HIGH-QUALITY TRA
 Clip → Predict Settings → Track → IF FAILS: Diagnose → Fix → Retry
      → Record Session → Update Model
 ```
+
+![HER Learning Loop](docs/images/her_learning_loop.jpg)
 
 ---
 
