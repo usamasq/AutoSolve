@@ -17,6 +17,7 @@
 > [Contribute your data](#contribute-training-data) to help build the best open-source tracking algorithm!
 
 AutoSolve is a Blender addon that **automates the entire camera tracking workflow** - from feature detection to camera solve. It uses **adaptive learning** to improve tracking quality over time by learning from each session.
+[Watch Launch Video](https://youtu.be/NzI5vurW5C4)
 
 ## What It Does
 
