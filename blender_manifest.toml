@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "autosolve"
 name = "AutoSolve"
-version = "0.1.0"
+version = "0.1.1"
 tagline = "One-click automated camera tracking for Blender"
 maintainer = "Usama Bin Shahid <usamasq@gmail.com>"
 type = "add-on"
