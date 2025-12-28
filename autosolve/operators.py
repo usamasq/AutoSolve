@@ -1175,7 +1175,7 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                 manifest = {
                     'export_version': 2,  # Bumped for edits and contributor_id
                     'export_date': datetime.now().isoformat(),
-                    'addon_version': '0.1.0',
+                    'addon_version': '0.1.1',
                     'session_count': session_count,
                     'behavior_count': behavior_count,
                     'edit_count': edit_count,

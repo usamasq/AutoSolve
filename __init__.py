@@ -12,7 +12,7 @@ tracking system. It replaces Blender's manual tracking workflow with a single
 bl_info = {
     "name": "Auto-Track & Solve",
     "author": "Usama Bin Shahid",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (4, 2, 0),
     "location": "Clip Editor > Sidebar > AutoSolve",
     "description": "One-click automated camera tracking for Blender",
