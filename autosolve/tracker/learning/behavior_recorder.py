@@ -301,7 +301,8 @@ class BehaviorRecorder:
         filename = f"{behavior.session_id}.json"
         filepath = self.data_dir / filename
         
-        with open(filepath, 'w') as f:
+        # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
+        with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(asdict(behavior), f, indent=2)
         
         print(f"AutoSolve: Saved behavior to {filename}")
