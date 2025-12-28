@@ -3976,7 +3976,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                         )
                         
                         # CRITICAL FIX: Explicitly compute post-tracking features
-                        # valid tracking data is now available, so we must update edge density and histograms
                         if tracking_data:
                             self.feature_extractor.compute_from_tracking(tracking_data)
                             
@@ -3991,23 +3990,34 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                             
                             self.feature_extractor.compute_flow_histograms(vectors)
                             print("AutoSolve: Re-computed visual features from final tracking data")
+                        
+                        # Record even if partial compute succeeded
+                        self.recorder.record_visual_features(self.feature_extractor.to_dict())
                             
                     except Exception as fe:
-                        print(f"AutoSolve: Feature extraction failed: {fe}")
-                    self.recorder.record_visual_features(self.feature_extractor.to_dict())
+                        print(f"AutoSolve: Feature extraction recording failed: {fe}")
                     
                 # 5. Record Adaptation History
-                if hasattr(self, 'adaptation_history') and self.adaptation_history:
-                    summary = self.get_adaptation_summary()
-                    self.recorder.record_adaptation_history(summary)
+                try:
+                    if hasattr(self, 'adaptation_history') and self.adaptation_history:
+                        summary = self.get_adaptation_summary()
+                        self.recorder.record_adaptation_history(summary)
+                except Exception as ae:
+                    print(f"AutoSolve: Adaptation recording failed: {ae}")
                 
-                # 6. Record Tracks & Solve metrics
-                self.recorder.record_tracks(self.tracking)
+                # 6. Record Tracks & Solve metrics (CRITICAL STEP)
+                try:
+                    self.recorder.record_tracks(self.tracking)
+                except Exception as te:
+                    print(f"AutoSolve: Track recording failed: {te}")
+
+                # 7. Finalize and SAVE (CRITICAL)
                 self.recorder.finalize_session(
                     success=success,
                     solve_error=solve_error,
                     bundle_count=self.get_bundle_count()
                 )
+                print(f"AutoSolve: Requesting session finalization (success={success})")
                 
             except Exception as e:
                 import traceback

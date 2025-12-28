@@ -55,7 +55,8 @@ class SettingsPredictor:
         # First try user's model
         if self.model_path.exists():
             try:
-                with open(self.model_path) as f:
+                # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
+                with open(self.model_path, encoding='utf-8') as f:
                     model = json.load(f)
             except Exception as e:
                 print(f"AutoSolve: Error loading model: {e}")
@@ -65,7 +66,8 @@ class SettingsPredictor:
             pretrained_path = Path(__file__).parent / 'pretrained_model.json'
             if pretrained_path.exists():
                 try:
-                    with open(pretrained_path) as f:
+                    # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
+                    with open(pretrained_path, encoding='utf-8') as f:
                         print("AutoSolve: Using pretrained model")
                         model = json.load(f)
                 except Exception as e:
@@ -101,10 +103,12 @@ class SettingsPredictor:
         
         try:
             # Write to temp file first, then rename (atomic on most filesystems)
+            # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
             with tempfile.NamedTemporaryFile(
                 mode='w', 
                 suffix='.json', 
                 dir=self.data_dir, 
+                encoding='utf-8',
                 delete=False
             ) as tmp:
                 json.dump(self.model, tmp, indent=2)

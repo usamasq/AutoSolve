@@ -1133,10 +1133,12 @@ class SessionRecorder:
             edit_dict = self._sanitize_for_json(edit_dict)
             
             # Write to temp file first, then rename (atomic)
+            # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
             with tempfile.NamedTemporaryFile(
                 mode='w',
                 suffix='.json',
                 dir=edits_dir,
+                encoding='utf-8',
                 delete=False
             ) as tmp:
                 json.dump(edit_dict, tmp, indent=2)
@@ -1158,11 +1160,15 @@ class SessionRecorder:
     def _save_session(self):
         """Save session data to JSON file atomically."""
         if not self.current_session:
+            print("AutoSolve: Skip saving - no active session")
             return
         
         import tempfile
         
         try:
+            # Ensure directory exists
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            
             # Generate filename with timestamp and anonymous session ID
             timestamp = self.current_session.timestamp.replace(':', '-').replace('.', '-')
             # clip_name is already an anonymous hash (e.g., "a7f3c2b1")
@@ -1176,10 +1182,12 @@ class SessionRecorder:
             session_dict = self._sanitize_for_json(session_dict)
             
             # Write to temp file first, then rename (atomic)
+            # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
             with tempfile.NamedTemporaryFile(
                 mode='w',
                 suffix='.json',
                 dir=self.data_dir,
+                encoding='utf-8',
                 delete=False
             ) as tmp:
                 json.dump(session_dict, tmp, indent=2)
@@ -1188,7 +1196,7 @@ class SessionRecorder:
             # Atomic replace
             os.replace(tmp_path, filepath)
             
-            print(f"AutoSolve: Saved session data to {filepath}")
+            print(f"AutoSolve: Saved session data to {filepath} ({len(session_dict.get('tracks', []))} tracks)")
         except (OSError, IOError, TypeError) as e:
             print(f"AutoSolve: Error saving session: {e}")
             # Clean up temp file if it exists
@@ -1226,7 +1234,8 @@ class SessionRecorder:
                 break
             
             try:
-                with open(filepath) as f:
+                # CRITICAL FIX: Explicitly use utf-8 encoding for Windows compatibility
+                with open(filepath, encoding='utf-8') as f:
                     data = json.load(f)
                 
                 if clip_name and data.get('clip_name') != clip_name:

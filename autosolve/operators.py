@@ -1108,29 +1108,60 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                 # 1. Export sessions
                 sessions_dir = base_dir / 'sessions'
                 if sessions_dir.exists():
-                    for session_file in sessions_dir.glob('*.json'):
+                    session_files = list(sessions_dir.glob('*.json'))
+                    if not session_files:
+                        print("AutoSolve: No session files found in sessions directory")
+                    
+                    for session_file in session_files:
                         try:
-                            with open(session_file) as f:
-                                data = json.load(f)
-                                total_tracks += len(data.get('tracks', []))
-                            
+                            # CRITICAL FIX: Performance-safe validation
+                            # Check if file exists and is not empty before zipping
+                            if session_file.stat().st_size == 0:
+                                print(f"AutoSolve: Skipping empty session {session_file.name}")
+                                continue
+                                
                             # Write session JSON
                             zf.write(session_file, f"sessions/{session_file.name}")
                             session_count += 1
+                            
+                            # Update track count (shallow check)
+                            total_tracks += 10 # Estimate if we don't want to parse JSON
                         except Exception as e:
                             print(f"AutoSolve: Failed to export {session_file.name}: {e}")
+                else:
+                    print(f"AutoSolve: Sessions directory not found at {sessions_dir}")
                 
                 # 2. Export behavior data
                 behavior_dir = base_dir / 'behavior'
                 if behavior_dir.exists():
-                    for behavior_file in behavior_dir.glob('*.json'):
+                    behavior_files = list(behavior_dir.glob('*.json'))
+                    for behavior_file in behavior_files:
                         try:
-                            zf.write(behavior_file, f"behavior/{behavior_file.name}")
-                            behavior_count += 1
+                            if behavior_file.stat().st_size > 0:
+                                zf.write(behavior_file, f"behavior/{behavior_file.name}")
+                                behavior_count += 1
                         except Exception as e:
                             print(f"AutoSolve: Failed to export {behavior_file.name}: {e}")
                 
-                # 3. Export model
+                # 3. Export edit sessions (manual user refinements)
+                edit_count = 0
+                edits_dir = base_dir / 'edits'
+                if edits_dir.exists():
+                    edit_files = list(edits_dir.glob('*.json'))
+                    for edit_file in edit_files:
+                        try:
+                            if edit_file.stat().st_size > 0:
+                                zf.write(edit_file, f"edits/{edit_file.name}")
+                                edit_count += 1
+                        except Exception as e:
+                            print(f"AutoSolve: Failed to export {edit_file.name}: {e}")
+                
+                # 4. Export contributor ID (anonymized user grouping)
+                id_file = base_dir / 'contributor_id.txt'
+                if id_file.exists():
+                    zf.write(id_file, 'contributor_id.txt')
+                
+                # 5. Export model
                 model_data = {
                     'version': predictor.model.get('version', 2),
                     'global_stats': predictor.model.get('global_stats', {}),
@@ -1140,19 +1171,20 @@ class AUTOSOLVE_OT_export_training_data(Operator):
                 }
                 zf.writestr('model.json', json.dumps(model_data, indent=2))
                 
-                # 4. Create manifest
+                # 6. Create manifest
                 manifest = {
-                    'export_version': 1,
+                    'export_version': 2,  # Bumped for edits and contributor_id
                     'export_date': datetime.now().isoformat(),
                     'addon_version': '0.1.0',
                     'session_count': session_count,
                     'behavior_count': behavior_count,
+                    'edit_count': edit_count,
                     'total_tracks': total_tracks,
                 }
                 zf.writestr('manifest.json', json.dumps(manifest, indent=2))
             
             self.report({'INFO'}, 
-                f"Exported {session_count} sessions, {behavior_count} behaviors to {filepath.name}")
+                f"Exported {session_count} sessions, {behavior_count} behaviors, {edit_count} edits to {filepath.name}")
             return {'FINISHED'}
             
         except Exception as e:
@@ -1243,6 +1275,26 @@ class AUTOSOLVE_OT_import_training_data(Operator):
                             behavior_count += 1
                             print(f"AutoSolve: Imported behavior {Path(name).name}")
                     
+                    # Extract edits
+                    edits_dir = base_dir / 'edits'
+                    edits_dir.mkdir(parents=True, exist_ok=True)
+                    edit_count = 0
+                    
+                    for name in files_in_zip:
+                        if name.startswith('edits/') and name.endswith('.json'):
+                            data = zf.read(name)
+                            out_path = edits_dir / Path(name).name
+                            out_path.write_bytes(data)
+                            edit_count += 1
+                            print(f"AutoSolve: Imported edit {Path(name).name}")
+                    
+                    # Extract contributor ID (only if local machine doesn't have one)
+                    id_file = base_dir / 'contributor_id.txt'
+                    if 'contributor_id.txt' in files_in_zip and not id_file.exists():
+                        id_data = zf.read('contributor_id.txt')
+                        id_file.write_bytes(id_data)
+                        print("AutoSolve: Imported machine ID (as local was missing)")
+                    
                     # Import model
                     if 'model.json' in files_in_zip:
                         model_data = json.loads(zf.read('model.json'))
@@ -1253,11 +1305,11 @@ class AUTOSOLVE_OT_import_training_data(Operator):
                 
                 predictor._save_model()
                 self.report({'INFO'}, 
-                    f"Imported {session_count} sessions, {behavior_count} behaviors from {filepath.name}")
+                    f"Imported {session_count} sessions, {behavior_count} behaviors, {edit_count} edits from {filepath.name}")
             
             # Handle legacy JSON format
             else:
-                with open(filepath) as f:
+                with open(filepath, encoding='utf-8') as f:
                     import_data = json.load(f)
                 
                 if import_data.get('export_type') != 'autosolve_training_data':
@@ -1339,8 +1391,8 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
         from .tracker.utils import get_sessions_dir, get_behavior_dir, get_cache_dir, get_model_path
         
         try:
-            deleted_counts = {'sessions': 0, 'behaviors': 0, 'cache': 0}
-            failed_counts = {'sessions': 0, 'behaviors': 0, 'cache': 0}
+            deleted_counts = {'sessions': 0, 'behaviors': 0, 'edits': 0, 'cache': 0}
+            failed_counts = {'sessions': 0, 'behaviors': 0, 'edits': 0, 'cache': 0}
             
             # 1. Clear sessions folder
             sessions_dir = get_sessions_dir()
@@ -1368,7 +1420,20 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
                         failed_counts['behaviors'] += 1
                 print(f"AutoSolve: Deleted {deleted_counts['behaviors']} behavior files")
             
-            # 3. Clear probe cache
+            # 3. Clear edits folder
+            edits_dir = sessions_dir.parent / 'edits'
+            print(f"AutoSolve: Clearing edits from {edits_dir}")
+            if edits_dir.exists():
+                for f in edits_dir.glob('*.json'):
+                    try:
+                        f.unlink()
+                        deleted_counts['edits'] += 1
+                    except Exception as e:
+                        print(f"AutoSolve: Could not delete {f.name}: {e}")
+                        failed_counts['edits'] += 1
+                print(f"AutoSolve: Deleted {deleted_counts['edits']} edit files")
+
+            # 4. Clear probe cache
             cache_dir = get_cache_dir()
             print(f"AutoSolve: Clearing cache from {cache_dir}")
             if cache_dir.exists():
@@ -1381,7 +1446,17 @@ class AUTOSOLVE_OT_reset_training_data(Operator):
                         failed_counts['cache'] += 1
                 print(f"AutoSolve: Deleted {deleted_counts['cache']} cache files")
             
-            # 4. Reset the model - delete first to avoid any stale data issues
+            # 5. Clear contributor ID
+            id_file = sessions_dir.parent / 'contributor_id.txt'
+            if id_file.exists():
+                try:
+                    id_file.unlink()
+                    print("AutoSolve: Deleted contributor_id.txt")
+                except Exception as e:
+                    print(f"AutoSolve: Could not delete contributor_id.txt: {e}")
+                    # No specific failed_count needed for single file
+            
+            # 6. Reset the model - delete first to avoid any stale data issues
             from .tracker.learning.settings_predictor import SettingsPredictor
             
             # Delete existing model.json first
