@@ -395,7 +395,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'TRACK_BACKWARD':
                 # Check if user wants batch tracking (faster, no progress feedback)
-                if settings.batch_tracking and _state.frame_current == _state.frame_end:
+                if settings.batch_tracking:
                     settings.solve_status = "Batch tracking backward..."
                     settings.solve_progress = 0.55
                     
@@ -1635,13 +1635,15 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
                         track.select = False
                     
                     selected_count = 0
-                    for name in floor_tracks[:10]:  # Limit to 10 tracks for set_plane
+                    for name in floor_tracks:
                         t = clip.tracking.tracks.get(name)
                         if t and t.has_bundle:  # Must still have bundle after re-solve
                             t.select = True
                             selected_count += 1
+                            if selected_count == 3:
+                                break
                             
-                    if selected_count >= 3:
+                    if selected_count == 3:
                         try:
                             bpy.ops.clip.set_plane(plane='FLOOR')
                             orientation_restored = True

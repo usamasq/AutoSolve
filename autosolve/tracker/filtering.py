@@ -545,21 +545,43 @@ class FilteringMixin:
         # Calculate max deletable considering BOTH total count and keyframe coverage
         max_by_total = current - self.ABSOLUTE_MIN_TRACKS
         
-        # Count how many keyframe-covering tracks are in to_delete list
-        keyframe_deletions = [n for n in to_delete if n in keyframe_tracks]
-        max_by_keyframes = keyframe_count - 8  # Need at least 8 tracks on both keyframes
+        # Separate candidates into keyframe-critical and non-critical
+        critical_candidates = [n for n in to_delete if n in keyframe_tracks]
+        safe_candidates = [n for n in to_delete if n not in keyframe_tracks]
         
-        # Apply the more restrictive limit
-        max_can = min(max_by_total, max(0, max_by_keyframes))
+        # Determine how many critical (keyframe) tracks we can afford to lose
+        # Must keep at least 8 keyframe tracks
+        max_critical_loss = max(0, keyframe_count - 8)
         
-        if max_can <= 0:
-            print(f"AutoSolve: Skipping high-error filter (need to preserve keyframe coverage)")
-            return
+        # If we have more critical candidates than we can lose, sort them by error and keep the worst
+        if len(critical_candidates) > max_critical_loss:
+            # We need error values to sort
+            critical_errors = []
+            for t in self.tracking.tracks:
+                if t.name in critical_candidates and t.has_bundle:
+                    critical_errors.append((t.name, t.average_error))
+
+            # Sort by error descending (worst first)
+            critical_errors.sort(key=lambda x: x[1], reverse=True)
+
+            # Keep only the worst 'max_critical_loss' tracks
+            critical_candidates = [n for n, _ in critical_errors[:max_critical_loss]]
+
+        # Combine lists: all safe candidates + allowed critical candidates
+        final_to_delete = safe_candidates + critical_candidates
         
-        if len(to_delete) > max_can:
-            errors = [(t.name, t.average_error) for t in self.tracking.tracks if t.has_bundle]
-            errors.sort(key=lambda x: x[1], reverse=True)
-            to_delete = [n for n, _ in errors[:max_can]]
+        # Finally, apply the global minimum track count limit
+        if len(final_to_delete) > max_by_total:
+             # Sort combined list by error
+            final_errors = []
+            for t in self.tracking.tracks:
+                if t.name in final_to_delete and t.has_bundle:
+                    final_errors.append((t.name, t.average_error))
+
+            final_errors.sort(key=lambda x: x[1], reverse=True)
+            final_to_delete = [n for n, _ in final_errors[:max_by_total]]
+
+        to_delete = final_to_delete
         
         for track in self.tracking.tracks:
             track.select = track.name in to_delete
