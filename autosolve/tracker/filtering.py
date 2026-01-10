@@ -298,8 +298,8 @@ class FilteringMixin:
         width = self.clip.size[0]
         min_dist_norm = 15 / width
         
-        # Collect track positions
-        track_positions = {}
+        # Collect track positions and group by region
+        tracks_by_region = {}
         current_frame = bpy.context.scene.frame_current
         clip_frame = self.scene_to_clip_frame(current_frame)
         
@@ -311,37 +311,42 @@ class FilteringMixin:
                     marker = markers[0]
             
             if marker:
-                track_positions[track.name] = (marker.co.x, marker.co.y)
+                pos = (marker.co.x, marker.co.y)
+                region = self._get_region_for_pos(pos[0], pos[1])
+
+                if region not in tracks_by_region:
+                    tracks_by_region[region] = []
+                tracks_by_region[region].append((track.name, pos))
         
         # Find duplicates to remove
         to_delete = set()
-        track_list = list(track_positions.items())
         
-        for i, (name1, pos1) in enumerate(track_list):
-            if name1 in to_delete:
+        # Only check saturated regions
+        for region in saturated_regions:
+            if region not in tracks_by_region:
                 continue
             
-            region1 = self._get_region_for_pos(pos1[0], pos1[1])
-            if region1 not in saturated_regions:
-                continue
+            region_tracks = tracks_by_region[region]
             
-            for j, (name2, pos2) in enumerate(track_list[i+1:], i+1):
-                if name2 in to_delete:
+            # Check pairs within the same region
+            for i, (name1, pos1) in enumerate(region_tracks):
+                if name1 in to_delete:
                     continue
                 
-                region2 = self._get_region_for_pos(pos2[0], pos2[1])
-                if region2 != region1:
-                    continue
-                
-                dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
-                if dist < min_dist_norm:
-                    track1 = self.tracking.tracks.get(name1)
-                    track2 = self.tracking.tracks.get(name2)
+                for j in range(i + 1, len(region_tracks)):
+                    name2, pos2 = region_tracks[j]
+                    if name2 in to_delete:
+                        continue
                     
-                    if track1 and track2:
-                        len1 = len([m for m in track1.markers if not m.mute])
-                        len2 = len([m for m in track2.markers if not m.mute])
-                        to_delete.add(name1 if len1 < len2 else name2)
+                    dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+                    if dist < min_dist_norm:
+                        track1 = self.tracking.tracks.get(name1)
+                        track2 = self.tracking.tracks.get(name2)
+
+                        if track1 and track2:
+                            len1 = len([m for m in track1.markers if not m.mute])
+                            len2 = len([m for m in track2.markers if not m.mute])
+                            to_delete.add(name1 if len1 < len2 else name2)
         
         # Safety check
         max_delete = min(len(to_delete), current // 10, current - self.SAFE_MIN_TRACKS)
