@@ -162,7 +162,7 @@ class AUTOSOLVE_PT_main_panel(Panel):
         # Clip info - compact header with fingerprint indicator
         row = layout.row()
         row.label(text=clip.name, icon='SEQUENCE')
-        row.label(text=f"{clip.frame_duration}f")
+        row.label(text=f"{clip.size[0]}x{clip.size[1]} | {clip.frame_duration}f")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -355,7 +355,7 @@ class AUTOSOLVE_PT_region_tools(Panel):
         row = outer_box.row(align=True)
         row.operator("gpencil.annotate", text="Draw", icon='GREASEPENCIL').mode = 'DRAW'
         row.operator("gpencil.annotate", text="Eraser", icon='PANEL_CLOSE').mode = 'ERASER'
-        row.operator("autosolve.clear_annotations", text="", icon='X')
+        row.operator("autosolve.clear_annotations", text="Clear", icon='X')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
