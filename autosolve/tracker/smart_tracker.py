@@ -2012,19 +2012,22 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             
             # Apply region-specific settings
             old_settings = self.current_settings.copy()
-            self.current_settings.update({
-                'pattern_size': settings.get('pattern_size', 15),
-                'search_size': settings.get('search_size', 71),
-                'correlation': settings.get('correlation', 0.70),
-            })
-            self.configure_settings()
             
-            detected = self.detect_in_region(region, count)
-            total += detected
-            
-            # Restore base settings
-            self.current_settings = old_settings
-            self.configure_settings()
+            try:
+                self.current_settings.update({
+                    'pattern_size': settings.get('pattern_size', 15),
+                    'search_size': settings.get('search_size', 71),
+                    'correlation': settings.get('correlation', 0.70),
+                })
+                self.configure_settings()
+
+                detected = self.detect_in_region(region, count)
+                total += detected
+
+            finally:
+                # Restore base settings
+                self.current_settings = old_settings
+                self.configure_settings()
             
             if detected > 0:
                 print(f"AutoSolve: {region}: {detected} markers (learned settings)")
@@ -2139,6 +2142,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # NOTE: Don't clear tracks here - let existing tracks be analyzed if any
         # This prevents wasting user-placed markers
         
+        # Track existing tracks so we don't delete them later
+        existing_tracks = set(t.name for t in self.tracking.tracks)
+
         # Probe settings: very aggressive to catch motion
         probe_settings = {
             'pattern_size': 21,
@@ -2167,7 +2173,18 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         if probe_count < 3:
             print(f"AutoSolve: Probe failed - only {probe_count} markers placed")
-            self.clear_tracks()
+
+            # Select only probe tracks for deletion
+            for track in self.tracking.tracks:
+                if track.name not in existing_tracks:
+                    track.select = True
+                else:
+                    track.select = False
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except:
+                pass
+
             return result
         
         # Track forward for 20 frames
@@ -2293,8 +2310,16 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         except Exception as e:
             print(f"AutoSolve: Visual feature extraction skipped: {e}")
         
-        # Clear probe tracks
-        self.clear_tracks()
+        # Clear probe tracks (only the new ones)
+        for track in self.tracking.tracks:
+            if track.name not in existing_tracks:
+                track.select = True
+            else:
+                track.select = False
+        try:
+            self._run_ops(bpy.ops.clip.delete_track)
+        except:
+            pass
         
         # Restore frame
         bpy.context.scene.frame_set(original_frame)
