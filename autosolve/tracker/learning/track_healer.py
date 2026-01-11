@@ -647,7 +647,24 @@ class TrackHealer:
                 marker.co = Vector((pos[0], pos[1]))
                 marker.mute = False
             
-            # TODO: Optionally merge track_b into track_a and delete track_b
+            # Find track B
+            track_b = None
+            for t in tracking.tracks:
+                if t.name == candidate.track_b_name:
+                    track_b = t
+                    break
+
+            # Merge track_b into track_a and delete track_b
+            if track_b:
+                for marker_b in track_b.markers:
+                    marker_a = track_a.markers.find_frame(marker_b.frame)
+                    if not marker_a:
+                        marker_a = track_a.markers.insert_frame(marker_b.frame)
+
+                    marker_a.co = marker_b.co
+                    marker_a.mute = marker_b.mute
+
+                tracking.tracks.remove(track_b)
             
             print(f"AutoSolve: Healed gap {candidate.track_a_name} → {candidate.track_b_name} "
                   f"({candidate.gap_frames} frames)")
