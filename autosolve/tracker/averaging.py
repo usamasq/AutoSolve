@@ -100,7 +100,7 @@ class TrackAverager:
     
     def _cluster_by_proximity(self, positions: Dict[str, Tuple[float, float]]) -> List[List[str]]:
         """
-        Cluster tracks by spatial proximity using union-find.
+        Cluster tracks by spatial proximity using union-find with spatial hashing.
         
         Args:
             positions: Dict of track_name -> (x, y) normalized position
@@ -121,18 +121,40 @@ class TrackAverager:
             if px != py:
                 parent[px] = py
         
-        # Check all pairs
-        names = list(positions.keys())
-        for i, name1 in enumerate(names):
-            pos1 = positions[name1]
-            for name2 in names[i+1:]:
-                pos2 = positions[name2]
-                
-                # Compute distance
-                dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
-                
-                if dist < self.proximity:
-                    union(name1, name2)
+        # Grid hashing for O(N) neighbor search
+        grid = defaultdict(list)
+        cell_size = self.proximity
+
+        for name, pos in positions.items():
+            cx = int(pos[0] / cell_size)
+            cy = int(pos[1] / cell_size)
+            grid[(cx, cy)].append((name, pos))
+
+        # Check neighbors
+        for (cx, cy), entries in grid.items():
+            # Check within cell
+            for i in range(len(entries)):
+                name1, pos1 = entries[i]
+                # Check against other items in same cell
+                for j in range(i + 1, len(entries)):
+                    name2, pos2 = entries[j]
+
+                    dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+                    if dist < self.proximity:
+                        union(name1, name2)
+
+            # Check neighbor cells (only forward directions to avoid duplicates)
+            # Right, Down, Down-Right, Down-Left
+            neighbor_offsets = [(1, 0), (0, 1), (1, 1), (-1, 1)]
+            for dx, dy in neighbor_offsets:
+                neighbor_key = (cx + dx, cy + dy)
+                if neighbor_key in grid:
+                    neighbor_entries = grid[neighbor_key]
+                    for name1, pos1 in entries:
+                        for name2, pos2 in neighbor_entries:
+                            dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+                            if dist < self.proximity:
+                                union(name1, name2)
         
         # Collect clusters
         clusters_dict = defaultdict(list)
@@ -279,26 +301,62 @@ def merge_overlapping_segments(tracking, min_overlap: int = 5) -> int:
     SPATIAL_THRESHOLD = 0.02  # 2% of frame
     merge_candidates: List[Tuple[str, str]] = []
     
-    names = list(track_info.keys())
-    for i, name1 in enumerate(names):
-        info1 = track_info[name1]
-        for name2 in names[i+1:]:
-            info2 = track_info[name2]
-            
-            # Check temporal overlap
-            overlap_start = max(info1['start'], info2['start'])
-            overlap_end = min(info1['end'], info2['end'])
-            overlap = overlap_end - overlap_start
-            
-            if overlap < min_overlap:
-                continue
-            
-            # Check spatial proximity
-            pos1, pos2 = info1['position'], info2['position']
-            spatial_dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
-            
-            if spatial_dist < SPATIAL_THRESHOLD:
-                merge_candidates.append((name1, name2))
+    # Use grid hashing to avoid O(N^2)
+    grid = defaultdict(list)
+    cell_size = SPATIAL_THRESHOLD
+
+    for name, info in track_info.items():
+        pos = info['position']
+        cx = int(pos[0] / cell_size)
+        cy = int(pos[1] / cell_size)
+        grid[(cx, cy)].append((name, info))
+
+    # Check neighbors in grid
+    for (cx, cy), entries in grid.items():
+        # Check within same cell
+        for i in range(len(entries)):
+            name1, info1 = entries[i]
+            for j in range(i + 1, len(entries)):
+                name2, info2 = entries[j]
+
+                # Check temporal overlap
+                overlap_start = max(info1['start'], info2['start'])
+                overlap_end = min(info1['end'], info2['end'])
+                overlap = overlap_end - overlap_start
+
+                if overlap < min_overlap:
+                    continue
+
+                # Check spatial proximity
+                pos1, pos2 = info1['position'], info2['position']
+                dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+
+                if dist < SPATIAL_THRESHOLD:
+                    merge_candidates.append((name1, name2))
+
+        # Check neighbor cells (forward directions only)
+        neighbor_offsets = [(1, 0), (0, 1), (1, 1), (-1, 1)]
+        for dx, dy in neighbor_offsets:
+            neighbor_key = (cx + dx, cy + dy)
+            if neighbor_key in grid:
+                neighbor_entries = grid[neighbor_key]
+                for name1, info1 in entries:
+                    for name2, info2 in neighbor_entries:
+
+                        # Check temporal overlap
+                        overlap_start = max(info1['start'], info2['start'])
+                        overlap_end = min(info1['end'], info2['end'])
+                        overlap = overlap_end - overlap_start
+
+                        if overlap < min_overlap:
+                            continue
+
+                        # Check spatial proximity
+                        pos1, pos2 = info1['position'], info2['position']
+                        dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+
+                        if dist < SPATIAL_THRESHOLD:
+                            merge_candidates.append((name1, name2))
     
     if not merge_candidates:
         return 0
