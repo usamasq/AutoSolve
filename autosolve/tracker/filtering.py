@@ -14,6 +14,7 @@ Contains methods for filtering tracks based on various quality criteria:
 
 import math
 from typing import Dict, List
+from collections import defaultdict
 
 import bpy
 from mathutils import Vector
@@ -298,6 +299,9 @@ class FilteringMixin:
         width = self.clip.size[0]
         min_dist_norm = 15 / width
         
+        if min_dist_norm <= 0:
+            return
+
         # Collect track positions and group by region
         tracks_by_region = {}
         current_frame = bpy.context.scene.frame_current
@@ -328,25 +332,49 @@ class FilteringMixin:
             
             region_tracks = tracks_by_region[region]
             
-            # Check pairs within the same region
-            for i, (name1, pos1) in enumerate(region_tracks):
-                if name1 in to_delete:
-                    continue
-                
-                for j in range(i + 1, len(region_tracks)):
-                    name2, pos2 = region_tracks[j]
-                    if name2 in to_delete:
-                        continue
-                    
-                    dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
-                    if dist < min_dist_norm:
-                        track1 = self.tracking.tracks.get(name1)
-                        track2 = self.tracking.tracks.get(name2)
+            # Use spatial hashing for O(N) neighbor search instead of O(N^2)
+            grid = defaultdict(list)
+            cell_size = min_dist_norm
 
-                        if track1 and track2:
-                            len1 = len([m for m in track1.markers if not m.mute])
-                            len2 = len([m for m in track2.markers if not m.mute])
-                            to_delete.add(name1 if len1 < len2 else name2)
+            for name, pos in region_tracks:
+                cx = math.floor(pos[0] / cell_size)
+                cy = math.floor(pos[1] / cell_size)
+                grid[(cx, cy)].append((name, pos))
+
+            def check_and_mark(n1, p1, n2, p2):
+                """Helper to check distance and mark track for deletion."""
+                if n1 in to_delete or n2 in to_delete:
+                    return
+
+                d = ((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2) ** 0.5
+                if d < min_dist_norm:
+                    t1 = self.tracking.tracks.get(n1)
+                    t2 = self.tracking.tracks.get(n2)
+
+                    if t1 and t2:
+                        l1 = len([m for m in t1.markers if not m.mute])
+                        l2 = len([m for m in t2.markers if not m.mute])
+                        to_delete.add(n1 if l1 < l2 else n2)
+
+            # Check neighbors
+            # Sort keys for deterministic iteration order
+            for (cx, cy), entries in sorted(grid.items()):
+                # 1. Check pairs within the same cell
+                for i in range(len(entries)):
+                    name1, pos1 = entries[i]
+                    for j in range(i + 1, len(entries)):
+                        name2, pos2 = entries[j]
+                        check_and_mark(name1, pos1, name2, pos2)
+
+                # 2. Check neighbor cells (East, South, SE, SW)
+                neighbor_offsets = [(1, 0), (0, 1), (1, 1), (-1, 1)]
+                for dx, dy in neighbor_offsets:
+                    neighbor_key = (cx + dx, cy + dy)
+                    if neighbor_key in grid:
+                        neighbor_entries = grid[neighbor_key]
+                        for name1, pos1 in entries:
+                            for name2, pos2 in neighbor_entries:
+                                check_and_mark(name1, pos1, name2, pos2)
         
         # Safety check
         max_delete = min(len(to_delete), current // 10, current - self.SAFE_MIN_TRACKS)
