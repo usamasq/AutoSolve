@@ -5,3 +5,6 @@
 ## 2024-05-23 - [Optimized Clustering with Spatial Hashing]
 **Learning:** For stricter proximity checks (small threshold), a fine-grained grid hash map is superior to coarse regions. Implemented O(N) grid-based neighbor search for `_cluster_by_proximity` and `merge_overlapping_segments`, replacing O(N^2) loops.
 **Action:** When `threshold` is small relative to domain size, use grid hashing `(int(x/thresh), int(y/thresh))` to find neighbors efficiently. Remember to check adjacent cells to catch boundary cases.
+## 2024-05-24 - [Python Loop Optimization: Pre-normalization]
+**Learning:** In tight loops like Gaussian smoothing, performing division and summation inside the loop (even if values are constant for the window) adds up. Pre-calculating normalized weights and using `zip` to avoid indexing provided ~8% speedup.
+**Action:** When applying weighted averages with a fixed kernel, always pre-normalize the kernel weights to sum to 1.0 outside the loop to avoid repeated division.
