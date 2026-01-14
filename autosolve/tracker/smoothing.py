@@ -6,6 +6,7 @@ Track marker smoothing utilities.
 Reduces jitter in marker positions before running the camera solve.
 Uses Gaussian weighting to smooth track marker coordinates across frames.
 """
+import math
 import bpy
 from typing import List, Tuple, Optional
 from mathutils import Vector
@@ -39,6 +40,13 @@ def smooth_track_markers(tracking, strength: float = 0.5) -> int:
     
     half_window = window_size // 2
     markers_smoothed = 0
+
+    # Precompute Gaussian weights for the window to avoid repeated calculations
+    # in the inner loop.
+    gaussian_weights = [
+        _gaussian_weight(j, half_window)
+        for j in range(-half_window, half_window + 1)
+    ]
     
     for track in tracking.tracks:
         markers = [m for m in track.markers if not m.mute]
@@ -62,10 +70,10 @@ def smooth_track_markers(tracking, strength: float = 0.5) -> int:
             weighted_x = 0.0
             weighted_y = 0.0
             
-            for j in range(-half_window, half_window + 1):
+            for offset_idx, j in enumerate(range(-half_window, half_window + 1)):
                 neighbor = markers_sorted[i + j]
                 # Gaussian weight: closer = higher weight
-                weight = _gaussian_weight(j, half_window)
+                weight = gaussian_weights[offset_idx]
                 weighted_x += neighbor.co.x * weight
                 weighted_y += neighbor.co.y * weight
                 total_weight += weight
@@ -95,7 +103,6 @@ def smooth_track_markers(tracking, strength: float = 0.5) -> int:
 
 def _gaussian_weight(distance: int, sigma: int) -> float:
     """Calculate Gaussian weight for a given distance from center."""
-    import math
     return math.exp(-(distance ** 2) / (2 * sigma ** 2))
 
 
