@@ -43,9 +43,21 @@ def smooth_track_markers(tracking, strength: float = 0.5) -> int:
 
     # Precompute Gaussian weights for the window to avoid repeated calculations
     # in the inner loop.
-    gaussian_weights = [
+    raw_weights = [
         _gaussian_weight(j, half_window)
         for j in range(-half_window, half_window + 1)
+    ]
+    total_raw_weight = sum(raw_weights)
+    if total_raw_weight == 0:
+        return 0
+
+    # Precompute (offset, normalized_weight) tuples to avoid:
+    # 1. Repeated sum calculation (total_weight is constant for the window)
+    # 2. Repeated division (we normalize upfront)
+    # 3. Inner loop indexing/enumeration
+    window_data = [
+        (j, w / total_raw_weight)
+        for j, w in zip(range(-half_window, half_window + 1), raw_weights)
     ]
     
     for track in tracking.tracks:
@@ -66,25 +78,16 @@ def smooth_track_markers(tracking, strength: float = 0.5) -> int:
                 continue
             
             # Gaussian-weighted average of surrounding markers
-            total_weight = 0.0
             weighted_x = 0.0
             weighted_y = 0.0
             
-            for offset_idx, j in enumerate(range(-half_window, half_window + 1)):
-                neighbor = markers_sorted[i + j]
-                # Gaussian weight: closer = higher weight
-                weight = gaussian_weights[offset_idx]
+            for offset, weight in window_data:
+                neighbor = markers_sorted[i + offset]
                 weighted_x += neighbor.co.x * weight
                 weighted_y += neighbor.co.y * weight
-                total_weight += weight
             
-            if total_weight > 0:
-                new_x = weighted_x / total_weight
-                new_y = weighted_y / total_weight
-                smoothed_positions.append((marker.frame, new_x, new_y))
-                markers_smoothed += 1
-            else:
-                smoothed_positions.append((marker.frame, marker.co.x, marker.co.y))
+            smoothed_positions.append((marker.frame, weighted_x, weighted_y))
+            markers_smoothed += 1
         
         # Apply smoothed positions
         for frame, new_x, new_y in smoothed_positions:
