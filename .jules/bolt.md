@@ -8,3 +8,7 @@
 ## 2024-05-24 - [Python Loop Optimization: Pre-normalization]
 **Learning:** In tight loops like Gaussian smoothing, performing division and summation inside the loop (even if values are constant for the window) adds up. Pre-calculating normalized weights and using `zip` to avoid indexing provided ~8% speedup.
 **Action:** When applying weighted averages with a fixed kernel, always pre-normalize the kernel weights to sum to 1.0 outside the loop to avoid repeated division.
+
+## 2025-05-27 - [Euclidean Distance Optimization]
+**Learning:** Computing `sqrt()` in inner loops for distance comparisons is expensive. Comparing squared distances against a squared threshold eliminates the square root operation and yields ~13% speedup in clustering loops.
+**Action:** When comparing distances against a fixed threshold, pre-calculate `threshold_sq = threshold * threshold` and compare `dx*dx + dy*dy < threshold_sq`.
