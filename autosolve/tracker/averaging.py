@@ -125,6 +125,9 @@ class TrackAverager:
         grid = defaultdict(list)
         cell_size = self.proximity
 
+        # Precompute squared threshold to avoid sqrt in loop
+        proximity_sq = self.proximity * self.proximity
+
         for name, pos in positions.items():
             cx = int(pos[0] / cell_size)
             cy = int(pos[1] / cell_size)
@@ -139,8 +142,8 @@ class TrackAverager:
                 for j in range(i + 1, len(entries)):
                     name2, pos2 = entries[j]
 
-                    dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
-                    if dist < self.proximity:
+                    dist_sq = (pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2
+                    if dist_sq < proximity_sq:
                         union(name1, name2)
 
             # Check neighbor cells (only forward directions to avoid duplicates)
@@ -152,13 +155,13 @@ class TrackAverager:
                     neighbor_entries = grid[neighbor_key]
                     for name1, pos1 in entries:
                         for name2, pos2 in neighbor_entries:
-                            dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
-                            if dist < self.proximity:
+                            dist_sq = (pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2
+                            if dist_sq < proximity_sq:
                                 union(name1, name2)
         
         # Collect clusters
         clusters_dict = defaultdict(list)
-        for name in names:
+        for name in positions:
             root = find(name)
             clusters_dict[root].append(name)
         
@@ -299,6 +302,7 @@ def merge_overlapping_segments(tracking, min_overlap: int = 5) -> int:
     
     # Find overlapping pairs that are also spatially close
     SPATIAL_THRESHOLD = 0.02  # 2% of frame
+    spatial_threshold_sq = SPATIAL_THRESHOLD * SPATIAL_THRESHOLD
     merge_candidates: List[Tuple[str, str]] = []
     
     # Use grid hashing to avoid O(N^2)
@@ -329,9 +333,9 @@ def merge_overlapping_segments(tracking, min_overlap: int = 5) -> int:
 
                 # Check spatial proximity
                 pos1, pos2 = info1['position'], info2['position']
-                dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+                dist_sq = (pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2
 
-                if dist < SPATIAL_THRESHOLD:
+                if dist_sq < spatial_threshold_sq:
                     merge_candidates.append((name1, name2))
 
         # Check neighbor cells (forward directions only)
@@ -353,9 +357,9 @@ def merge_overlapping_segments(tracking, min_overlap: int = 5) -> int:
 
                         # Check spatial proximity
                         pos1, pos2 = info1['position'], info2['position']
-                        dist = ((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2) ** 0.5
+                        dist_sq = (pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2
 
-                        if dist < SPATIAL_THRESHOLD:
+                        if dist_sq < spatial_threshold_sq:
                             merge_candidates.append((name1, name2))
     
     if not merge_candidates:
