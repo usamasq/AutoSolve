@@ -277,24 +277,38 @@ def merge_overlapping_segments(tracking, min_overlap: int = 5) -> int:
     track_info: Dict[str, Dict] = {}
     
     for track in tracking.tracks:
-        markers = [m for m in track.markers if not m.mute]
-        if len(markers) < 3:
+        # Optimized: Single pass to find start/end frames and calculate average position
+        # Avoids O(M log M) sorting and intermediate list creation
+        start_frame = float('inf')
+        end_frame = float('-inf')
+        sum_x = 0.0
+        sum_y = 0.0
+        count = 0
+        
+        for m in track.markers:
+            if m.mute:
+                continue
+
+            f = m.frame
+            if f < start_frame: start_frame = f
+            if f > end_frame: end_frame = f
+
+            sum_x += m.co.x
+            sum_y += m.co.y
+            count += 1
+        
+        if count < 3:
             continue
-        
-        markers_sorted = sorted(markers, key=lambda m: m.frame)
-        start_frame = markers_sorted[0].frame
-        end_frame = markers_sorted[-1].frame
-        
-        # Get average position
-        avg_x = sum(m.co.x for m in markers_sorted) / len(markers_sorted)
-        avg_y = sum(m.co.y for m in markers_sorted) / len(markers_sorted)
+
+        avg_x = sum_x / count
+        avg_y = sum_y / count
         
         track_info[track.name] = {
             'start': start_frame,
             'end': end_frame,
             'lifespan': end_frame - start_frame,
             'position': (avg_x, avg_y),
-            'marker_count': len(markers_sorted),
+            'marker_count': count,
         }
     
     if len(track_info) < 2:
