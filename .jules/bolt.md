@@ -12,3 +12,7 @@
 ## 2025-05-27 - [Euclidean Distance Optimization]
 **Learning:** Computing `sqrt()` in inner loops for distance comparisons is expensive. Comparing squared distances against a squared threshold eliminates the square root operation and yields ~13% speedup in clustering loops.
 **Action:** When comparing distances against a fixed threshold, pre-calculate `threshold_sq = threshold * threshold` and compare `dx*dx + dy*dy < threshold_sq`.
+
+## 2026-01-16 - [Sorting Overhead in Track Statistics]
+**Learning:** Calling `sorted(track.markers, key=lambda m: m.frame)` to compute min/max frames or average position introduces O(M log M) overhead per track. For statistical aggregations, a single linear pass O(M) is ~60% faster.
+**Action:** Use manual min/max/sum accumulation in a single loop over `track.markers` instead of `sorted()` when order is not strictly required for the calculation.
