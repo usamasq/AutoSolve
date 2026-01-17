@@ -16,3 +16,7 @@
 ## 2026-01-16 - [Sorting Overhead in Track Statistics]
 **Learning:** Calling `sorted(track.markers, key=lambda m: m.frame)` to compute min/max frames or average position introduces O(M log M) overhead per track. For statistical aggregations, a single linear pass O(M) is ~60% faster.
 **Action:** Use manual min/max/sum accumulation in a single loop over `track.markers` instead of `sorted()` when order is not strictly required for the calculation.
+
+## 2026-06-15 - [Blender API Lookup vs Iteration]
+**Learning:** Iterating through `track.markers` (Python list) to check for existence at a frame is O(N) and slow. `track.markers.find_frame(frame)` uses C-side lookup (likely O(1) or O(log N)) and is ~9x faster.
+**Action:** Always prefer `collection.find_frame()` or similar API lookup methods over manual Python iteration for Blender data collections.
