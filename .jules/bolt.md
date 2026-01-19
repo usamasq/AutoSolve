@@ -16,3 +16,7 @@
 ## 2026-01-16 - [Sorting Overhead in Track Statistics]
 **Learning:** Calling `sorted(track.markers, key=lambda m: m.frame)` to compute min/max frames or average position introduces O(M log M) overhead per track. For statistical aggregations, a single linear pass O(M) is ~60% faster.
 **Action:** Use manual min/max/sum accumulation in a single loop over `track.markers` instead of `sorted()` when order is not strictly required for the calculation.
+
+## 2026-01-16 - [Robust Vector Mocking]
+**Learning:** When mocking `mathutils.Vector` for Blender add-on testing, the mock must support both attribute access (`.x`, `.y`) and sequence protocol (`__getitem__`, `__len__`, iteration). Codebases often mix `vector.x` and `Vector(vector)` (which iterates), so a dual-compatible mock is essential for verifying logic without changing source code.
+**Action:** Use a `MockVector` class that implements both `__getattr__`/properties and `__getitem__`/`__iter__` when creating standalone verification scripts.
