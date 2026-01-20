@@ -319,6 +319,9 @@ class FilteringMixin:
         if min_dist_norm <= 0:
             return
 
+        # Pre-calculate squared threshold to avoid sqrt in loops
+        min_dist_norm_sq = min_dist_norm * min_dist_norm
+
         # Collect track positions and group by region
         tracks_by_region = {}
         current_frame = bpy.context.scene.frame_current
@@ -363,8 +366,9 @@ class FilteringMixin:
                 if n1 in to_delete or n2 in to_delete:
                     return
 
-                d = ((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2) ** 0.5
-                if d < min_dist_norm:
+                # Optimized: Compare squared distances to avoid expensive sqrt()
+                d_sq = (p1[0] - p2[0])**2 + (p1[1] - p2[1])**2
+                if d_sq < min_dist_norm_sq:
                     t1 = self.tracking.tracks.get(n1)
                     t2 = self.tracking.tracks.get(n2)
 
