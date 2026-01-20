@@ -211,13 +211,30 @@ class FilteringMixin:
         count = 0
         
         for track in self.tracking.tracks:
-            markers = [m for m in track.markers if not m.mute]
-            if len(markers) < 2:
+            # Optimized: Single pass to find min/max frames
+            # Avoids O(M log M) sorting and intermediate list creation
+            min_frame = float('inf')
+            max_frame = float('-inf')
+            min_marker = None
+            max_marker = None
+            active_count = 0
+
+            for m in track.markers:
+                if m.mute:
+                    continue
+                active_count += 1
+                if m.frame < min_frame:
+                    min_frame = m.frame
+                    min_marker = m
+                if m.frame > max_frame:
+                    max_frame = m.frame
+                    max_marker = m
+
+            if active_count < 2 or not min_marker:
                 continue
             
-            markers.sort(key=lambda x: x.frame)
-            displacement = (Vector(markers[-1].co) - Vector(markers[0].co)).length
-            duration = abs(markers[-1].frame - markers[0].frame)
+            displacement = (Vector(max_marker.co) - Vector(min_marker.co)).length
+            duration = abs(max_frame - min_frame)
             
             if duration > 0:
                 speed = displacement / duration

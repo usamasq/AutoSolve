@@ -6,3 +6,5 @@
 /Tasks.md
 /test_gpu_renderer.py
 /verify_install.py
+__pycache__/
+*.pyc
