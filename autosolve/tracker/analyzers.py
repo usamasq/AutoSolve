@@ -219,20 +219,43 @@ class CoverageAnalyzer:
         }
         
         for track in tracking.tracks:
-            markers = [m for m in track.markers if not m.mute]
-            if len(markers) < 2:
+            # OPTIMIZED: Single pass for filtering, min/max frame, and coordinate sum
+            # Avoids O(M log M) sorting and repeated iteration
+            min_frame = float('inf')
+            max_frame = float('-inf')
+            sum_x = 0.0
+            sum_y = 0.0
+            count = 0
+
+            active_markers = []
+
+            for m in track.markers:
+                if m.mute:
+                    continue
+
+                # Manual min/max is faster than built-ins for simple scalar comparisons
+                if m.frame < min_frame:
+                    min_frame = m.frame
+                if m.frame > max_frame:
+                    max_frame = m.frame
+
+                sum_x += m.co.x
+                sum_y += m.co.y
+                count += 1
+                active_markers.append(m)
+
+            if count < 2:
                 continue
             
-            markers_sorted = sorted(markers, key=lambda m: m.frame)
-            lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
+            lifespan = max_frame - min_frame
             
             # Get region from average position
-            avg_x = sum(m.co.x for m in markers) / len(markers)
-            avg_y = sum(m.co.y for m in markers) / len(markers)
+            avg_x = sum_x / count
+            avg_y = sum_y / count
             region = get_region(avg_x, avg_y)
             
             # Update coverage for each segment this track spans
-            for marker in markers:
+            for marker in active_markers:
                 segment = self._get_segment(marker.frame)
                 if segment in self.coverage[region]:
                     self.coverage[region][segment].track_count += 1
