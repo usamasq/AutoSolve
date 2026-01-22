@@ -324,6 +324,8 @@ class FilteringMixin:
 
         # Collect track positions and group by region
         tracks_by_region = {}
+        # Pre-calculate track lengths to avoid O(M) in nested loops
+        track_lengths = {}
         current_frame = bpy.context.scene.frame_current
         clip_frame = self.scene_to_clip_frame(current_frame)
         
@@ -341,6 +343,9 @@ class FilteringMixin:
                 if region not in tracks_by_region:
                     tracks_by_region[region] = []
                 tracks_by_region[region].append((track.name, pos))
+
+                # Cache length once per track
+                track_lengths[track.name] = len([m for m in track.markers if not m.mute])
         
         # Find duplicates to remove
         to_delete = set()
@@ -369,13 +374,10 @@ class FilteringMixin:
                 # Optimized: Compare squared distances to avoid expensive sqrt()
                 d_sq = (p1[0] - p2[0])**2 + (p1[1] - p2[1])**2
                 if d_sq < min_dist_norm_sq:
-                    t1 = self.tracking.tracks.get(n1)
-                    t2 = self.tracking.tracks.get(n2)
-
-                    if t1 and t2:
-                        l1 = len([m for m in t1.markers if not m.mute])
-                        l2 = len([m for m in t2.markers if not m.mute])
-                        to_delete.add(n1 if l1 < l2 else n2)
+                    # Use pre-calculated lengths O(1) instead of recalculating O(M)
+                    l1 = track_lengths.get(n1, 0)
+                    l2 = track_lengths.get(n2, 0)
+                    to_delete.add(n1 if l1 < l2 else n2)
 
             # Check neighbors
             # Sort keys for deterministic iteration order
