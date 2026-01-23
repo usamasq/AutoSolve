@@ -20,3 +20,7 @@
 ## 2026-01-16 - [Robust Vector Mocking]
 **Learning:** When mocking `mathutils.Vector` for Blender add-on testing, the mock must support both attribute access (`.x`, `.y`) and sequence protocol (`__getitem__`, `__len__`, iteration). Codebases often mix `vector.x` and `Vector(vector)` (which iterates), so a dual-compatible mock is essential for verifying logic without changing source code.
 **Action:** Use a `MockVector` class that implements both `__getattr__`/properties and `__getitem__`/`__iter__` when creating standalone verification scripts.
+
+## 2026-01-17 - [Pre-calculated Properties in Nested Loops]
+**Learning:** In Python, repeated property access or list comprehensions (e.g., `len([m for m in track.markers])`) inside nested loops accumulate significant overhead. Pre-calculating these values into a dictionary (O(1) lookup) during the initial pass improved deduplication performance by ~27%.
+**Action:** Always pre-calculate invariant properties (like list lengths or derived stats) into a dictionary before entering nested comparison loops (O(N^2) or O(Nk)).
