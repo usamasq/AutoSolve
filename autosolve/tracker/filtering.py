@@ -449,39 +449,55 @@ class FilteringMixin:
             
             markers.sort(key=lambda x: x.frame)
             
-            velocities = []
-            for i in range(1, len(markers)):
-                dx = markers[i].co.x - markers[i-1].co.x
-                dy = markers[i].co.y - markers[i-1].co.y
-                velocities.append((dx, dy))
-            
-            if not velocities:
+            # Optimized: Calculate average velocity from endpoints (O(1))
+            # Avoids constructing velocities list O(M) and summing it O(M)
+            duration = len(markers) - 1
+            if duration < 1:
                 continue
-            
-            avg_dx = sum(v[0] for v in velocities) / len(velocities)
-            avg_dy = sum(v[1] for v in velocities) / len(velocities)
+
+            avg_dx = (markers[-1].co.x - markers[0].co.x) / duration
+            avg_dy = (markers[-1].co.y - markers[0].co.y) / duration
             motion_vec = (avg_dx, avg_dy)
             motion_vectors.append(motion_vec)
             
+            # Pre-calculate magnitude to avoid repeated sqrt later
+            mv_mag = (avg_dx**2 + avg_dy**2)**0.5
+
             jitter = 0.0
-            if len(velocities) >= 2:
-                vel_changes = []
-                for i in range(1, len(velocities)):
-                    change_x = abs(velocities[i][0] - velocities[i-1][0])
-                    change_y = abs(velocities[i][1] - velocities[i-1][1])
-                    vel_changes.append((change_x**2 + change_y**2)**0.5)
+            # Optimized: Calculate jitter on the fly without intermediate lists
+            if duration >= 2:
+                sum_vel_changes = 0.0
+                count_vel_changes = 0
+
+                # Need previous velocity to compare with current
+                prev_dx = markers[1].co.x - markers[0].co.x
+                prev_dy = markers[1].co.y - markers[0].co.y
+
+                for i in range(2, len(markers)):
+                    curr_dx = markers[i].co.x - markers[i-1].co.x
+                    curr_dy = markers[i].co.y - markers[i-1].co.y
+
+                    change_x = abs(curr_dx - prev_dx)
+                    change_y = abs(curr_dy - prev_dy)
+
+                    # Still need sqrt for magnitude of change vector
+                    sum_vel_changes += (change_x**2 + change_y**2)**0.5
+                    count_vel_changes += 1
+
+                    prev_dx = curr_dx
+                    prev_dy = curr_dy
                 
-                if vel_changes:
-                    avg_mag = (avg_dx**2 + avg_dy**2)**0.5
-                    if avg_mag > 0.0001:
-                        jitter = (sum(vel_changes) / len(vel_changes)) / avg_mag
+                if count_vel_changes > 0:
+                    if mv_mag > 0.0001:
+                        jitter = (sum_vel_changes / count_vel_changes) / mv_mag
                     else:
-                        jitter = sum(vel_changes) / len(vel_changes) * 100
+                        jitter = sum_vel_changes / count_vel_changes * 100
             
             track_data[track.name] = {
                 'motion_vec': motion_vec,
                 'jitter': jitter,
                 'coherence': 0.0,
+                'mv_mag': mv_mag,  # Store for later reuse
             }
         
         if len(motion_vectors) < 5:
@@ -492,17 +508,21 @@ class FilteringMixin:
         angles.sort()
         median_angle = angles[len(angles) // 2]
         
-        magnitudes = [(v[0]**2 + v[1]**2)**0.5 for v in motion_vectors]
+        # Optimized: Use pre-calculated magnitudes from track_data
+        # Note: We reconstruct list from track_data values since motion_vectors list doesn't have the mag
+        magnitudes = [d['mv_mag'] for d in track_data.values()]
         magnitudes.sort()
         median_mag = magnitudes[len(magnitudes) // 2]
         
         camera_motion = (math.cos(median_angle) * median_mag, math.sin(median_angle) * median_mag)
-        camera_mag = (camera_motion[0]**2 + camera_motion[1]**2)**0.5
+        # Optimized: Avoid sqrt, camera_mag IS median_mag by definition
+        camera_mag = median_mag
         
         # Compute coherence for each track
         for name, data in track_data.items():
             mv = data['motion_vec']
-            mv_mag = (mv[0]**2 + mv[1]**2)**0.5
+            # Optimized: Use stored magnitude
+            mv_mag = data['mv_mag']
             
             if camera_mag < 0.0001 or mv_mag < 0.0001:
                 data['coherence'] = 1.0
