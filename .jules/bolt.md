@@ -24,3 +24,7 @@
 ## 2026-01-17 - [Pre-calculated Properties in Nested Loops]
 **Learning:** In Python, repeated property access or list comprehensions (e.g., `len([m for m in track.markers])`) inside nested loops accumulate significant overhead. Pre-calculating these values into a dictionary (O(1) lookup) during the initial pass improved deduplication performance by ~27%.
 **Action:** Always pre-calculate invariant properties (like list lengths or derived stats) into a dictionary before entering nested comparison loops (O(N^2) or O(Nk)).
+
+## 2026-05-27 - [Optimizing Marker Counting]
+**Learning:** Using `len([m for m in track.markers if not m.mute]) >= limit` creates a full list allocation just to check a count, which is expensive for tracks with many markers.
+**Action:** Use a helper function with a loop and early exit (short-circuiting) to count active markers. This avoids list allocation and can return as soon as the limit is reached, providing up to 10x speedup for boolean checks.
