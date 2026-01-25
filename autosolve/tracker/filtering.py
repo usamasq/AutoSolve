@@ -19,6 +19,8 @@ from collections import defaultdict
 import bpy
 from mathutils import Vector
 
+from .utils import count_active_markers
+
 
 class FilteringMixin:
     """Mixin providing track filtering methods for SmartTracker."""
@@ -59,7 +61,7 @@ class FilteringMixin:
         
         # Count tracks before
         tracks_before = sum(1 for t in self.tracking.tracks 
-                          if len([m for m in t.markers if not m.mute]) >= 2)
+                          if count_active_markers(t, limit=2) >= 2)
         
         # Select all tracks for filtering
         self.select_all_tracks()
@@ -70,7 +72,7 @@ class FilteringMixin:
             
             # Count tracks after (filter_tracks mutes problem markers)
             tracks_after = sum(1 for t in self.tracking.tracks 
-                              if len([m for m in t.markers if not m.mute]) >= 2)
+                              if count_active_markers(t, limit=2) >= 2)
             
             affected = tracks_before - tracks_after
             
@@ -122,7 +124,7 @@ class FilteringMixin:
         
         # Count total markers before
         markers_before = sum(
-            len([m for m in t.markers if not m.mute]) 
+            count_active_markers(t)
             for t in self.tracking.tracks
         )
         
@@ -139,7 +141,7 @@ class FilteringMixin:
             
             # Count markers after
             markers_after = sum(
-                len([m for m in t.markers if not m.mute]) 
+                count_active_markers(t)
                 for t in self.tracking.tracks
             )
             
@@ -185,7 +187,7 @@ class FilteringMixin:
         current = len(self.tracking.tracks)
         
         survivors = sum(1 for t in self.tracking.tracks
-                       if len([m for m in t.markers if not m.mute]) >= min_frames)
+                       if count_active_markers(t, limit=min_frames) >= min_frames)
         
         if survivors < self.SAFE_MIN_TRACKS:
             print(f"AutoSolve: Skipping filter (would leave {survivors})")
@@ -345,7 +347,7 @@ class FilteringMixin:
                 tracks_by_region[region].append((track.name, pos))
 
                 # Cache length once per track
-                track_lengths[track.name] = len([m for m in track.markers if not m.mute])
+                track_lengths[track.name] = count_active_markers(track)
         
         # Find duplicates to remove
         to_delete = set()

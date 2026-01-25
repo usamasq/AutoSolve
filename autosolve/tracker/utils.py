@@ -302,3 +302,22 @@ def calculate_track_velocity(markers) -> float:
         total_displacement += (dx**2 + dy**2) ** 0.5
     
     return total_displacement / len(sorted_markers)
+
+def count_active_markers(track, limit: Optional[int] = None) -> int:
+    """
+    Count active (non-muted) markers in a track.
+
+    Args:
+        track: Blender MovieTrack object
+        limit: Optional limit to stop counting early (e.g., if checking >= 2)
+
+    Returns:
+        Number of active markers (up to limit if specified)
+    """
+    count = 0
+    for m in track.markers:
+        if not m.mute:
+            count += 1
+            if limit and count >= limit:
+                return count
+    return count
