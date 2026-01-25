@@ -345,9 +345,6 @@ class FilteringMixin:
                 if region not in tracks_by_region:
                     tracks_by_region[region] = []
                 tracks_by_region[region].append((track.name, pos))
-
-                # Cache length once per track
-                track_lengths[track.name] = count_active_markers(track)
         
         # Find duplicates to remove
         to_delete = set()
@@ -358,6 +355,14 @@ class FilteringMixin:
                 continue
             
             region_tracks = tracks_by_region[region]
+
+            # Optimized: Populate track_lengths ONLY for tracks in this saturated region
+            # This avoids calculating lengths (O(M)) for all tracks in non-saturated regions
+            for name, _ in region_tracks:
+                if name not in track_lengths:
+                    track = self.tracking.tracks.get(name)
+                    if track:
+                        track_lengths[name] = count_active_markers(track)
             
             # Use spatial hashing for O(N) neighbor search instead of O(N^2)
             grid = defaultdict(list)
