@@ -613,17 +613,27 @@ class FilteringMixin:
                     return True
             return False
         
-        # Count tracks covering keyframes before filtering
-        keyframe_tracks = [t.name for t in self.tracking.tracks if covers_keyframes(t)]
+        # Optimized: Single pass to build map and collect candidates
+        # This avoids iterating self.tracking.tracks multiple times (O(3N) -> O(N))
+        # and builds a safe lookup map instead of relying on .get()
+        track_map = {}
+        keyframe_tracks = set()
+        to_delete = []
+
+        for t in self.tracking.tracks:
+            track_map[t.name] = t
+            if covers_keyframes(t):
+                keyframe_tracks.add(t.name)
+            if t.has_bundle and t.average_error > max_error:
+                to_delete.append(t.name)
+
         keyframe_count = len(keyframe_tracks)
-        
-        to_delete = [t.name for t in self.tracking.tracks
-                    if t.has_bundle and t.average_error > max_error]
         
         # Calculate max deletable considering BOTH total count and keyframe coverage
         max_by_total = current - self.ABSOLUTE_MIN_TRACKS
         
         # Separate candidates into keyframe-critical and non-critical
+        # Optimized: O(1) lookup in keyframe_tracks set
         critical_candidates = [n for n in to_delete if n in keyframe_tracks]
         safe_candidates = [n for n in to_delete if n not in keyframe_tracks]
         
@@ -635,8 +645,10 @@ class FilteringMixin:
         if len(critical_candidates) > max_critical_loss:
             # We need error values to sort
             critical_errors = []
-            for t in self.tracking.tracks:
-                if t.name in critical_candidates and t.has_bundle:
+            # Optimized: Direct lookup O(C) using safe track_map
+            for name in critical_candidates:
+                t = track_map.get(name)
+                if t and t.has_bundle:
                     critical_errors.append((t.name, t.average_error))
 
             # Sort by error descending (worst first)
@@ -652,8 +664,10 @@ class FilteringMixin:
         if len(final_to_delete) > max_by_total:
              # Sort combined list by error
             final_errors = []
-            for t in self.tracking.tracks:
-                if t.name in final_to_delete and t.has_bundle:
+            # Optimized: Direct lookup O(F) using safe track_map
+            for name in final_to_delete:
+                t = track_map.get(name)
+                if t and t.has_bundle:
                     final_errors.append((t.name, t.average_error))
 
             final_errors.sort(key=lambda x: x[1], reverse=True)
