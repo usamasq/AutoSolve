@@ -28,3 +28,6 @@
 ## 2026-05-27 - [Optimizing Marker Counting]
 **Learning:** Using `len([m for m in track.markers if not m.mute]) >= limit` creates a full list allocation just to check a count, which is expensive for tracks with many markers.
 **Action:** Use a helper function with a loop and early exit (short-circuiting) to count active markers. This avoids list allocation and can return as soon as the limit is reached, providing up to 10x speedup for boolean checks.
+## 2026-05-28 - [Track Collection Lookup Safety]
+**Learning:** Relying on API-specific methods like `.get()` on `bpy.types.BlendDataMovieClips.tracks` can be risky in cross-environment or mocked contexts. Using a temporary Python dictionary `{t.name: t for t in tracks}` guarantees O(N) access and type safety.
+**Action:** When performing repeated lookups on a Blender collection in a loop, always pre-build a local dictionary map first. This unifies iteration logic and improves performance.
