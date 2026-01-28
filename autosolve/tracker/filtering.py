@@ -13,7 +13,7 @@ Contains methods for filtering tracks based on various quality criteria:
 """
 
 import math
-from typing import Dict, List
+from typing import Dict, List, Set
 from collections import defaultdict
 
 import bpy
@@ -600,21 +600,18 @@ class FilteringMixin:
         # Helper to check if track has active markers on both keyframes
         def covers_keyframes(track):
             """Check if track has non-muted markers on BOTH keyframes."""
-            has_a = False
-            has_b = False
-            for m in track.markers:
-                if m.mute:
-                    continue
-                if m.frame == keyframe_a:
-                    has_a = True
-                if m.frame == keyframe_b:
-                    has_b = True
-                if has_a and has_b:
-                    return True
-            return False
+            # Optimized: Use find_frame() (O(1)) instead of iterating all markers (O(M))
+            ma = track.markers.find_frame(keyframe_a)
+            if not ma or ma.mute:
+                return False
+            mb = track.markers.find_frame(keyframe_b)
+            if not mb or mb.mute:
+                return False
+            return True
         
         # Count tracks covering keyframes before filtering
-        keyframe_tracks = [t.name for t in self.tracking.tracks if covers_keyframes(t)]
+        # Optimized: Use Set for O(1) membership lookup
+        keyframe_tracks = {t.name for t in self.tracking.tracks if covers_keyframes(t)}
         keyframe_count = len(keyframe_tracks)
         
         to_delete = [t.name for t in self.tracking.tracks
@@ -624,6 +621,7 @@ class FilteringMixin:
         max_by_total = current - self.ABSOLUTE_MIN_TRACKS
         
         # Separate candidates into keyframe-critical and non-critical
+        # Optimized: O(M) instead of O(M*N) thanks to Set
         critical_candidates = [n for n in to_delete if n in keyframe_tracks]
         safe_candidates = [n for n in to_delete if n not in keyframe_tracks]
         
@@ -631,13 +629,21 @@ class FilteringMixin:
         # Must keep at least 8 keyframe tracks
         max_critical_loss = max(0, keyframe_count - 8)
         
+        # Helper map for O(1) track lookup
+        # Only build if needed, and only once
+        track_map = None
+
         # If we have more critical candidates than we can lose, sort them by error and keep the worst
         if len(critical_candidates) > max_critical_loss:
+            if track_map is None:
+                track_map = {t.name: t for t in self.tracking.tracks}
+
             # We need error values to sort
             critical_errors = []
-            for t in self.tracking.tracks:
-                if t.name in critical_candidates and t.has_bundle:
-                    critical_errors.append((t.name, t.average_error))
+            for name in critical_candidates:
+                t = track_map.get(name)
+                if t and t.has_bundle:
+                    critical_errors.append((name, t.average_error))
 
             # Sort by error descending (worst first)
             critical_errors.sort(key=lambda x: x[1], reverse=True)
@@ -652,9 +658,14 @@ class FilteringMixin:
         if len(final_to_delete) > max_by_total:
              # Sort combined list by error
             final_errors = []
-            for t in self.tracking.tracks:
-                if t.name in final_to_delete and t.has_bundle:
-                    final_errors.append((t.name, t.average_error))
+
+            if track_map is None:
+                track_map = {t.name: t for t in self.tracking.tracks}
+
+            for name in final_to_delete:
+                t = track_map.get(name)
+                if t and t.has_bundle:
+                    final_errors.append((name, t.average_error))
 
             final_errors.sort(key=lambda x: x[1], reverse=True)
             final_to_delete = [n for n, _ in final_errors[:max_by_total]]
