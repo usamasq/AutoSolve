@@ -600,21 +600,20 @@ class FilteringMixin:
         # Helper to check if track has active markers on both keyframes
         def covers_keyframes(track):
             """Check if track has non-muted markers on BOTH keyframes."""
-            has_a = False
-            has_b = False
-            for m in track.markers:
-                if m.mute:
-                    continue
-                if m.frame == keyframe_a:
-                    has_a = True
-                if m.frame == keyframe_b:
-                    has_b = True
-                if has_a and has_b:
-                    return True
-            return False
+            # Optimization: Use O(1) C-lookup instead of iterating markers O(M)
+            marker_a = track.markers.find_frame(keyframe_a)
+            if not marker_a or marker_a.mute:
+                return False
+
+            marker_b = track.markers.find_frame(keyframe_b)
+            if not marker_b or marker_b.mute:
+                return False
+
+            return True
         
         # Count tracks covering keyframes before filtering
-        keyframe_tracks = [t.name for t in self.tracking.tracks if covers_keyframes(t)]
+        # Optimization: Use set for O(1) membership checks
+        keyframe_tracks = {t.name for t in self.tracking.tracks if covers_keyframes(t)}
         keyframe_count = len(keyframe_tracks)
         
         to_delete = [t.name for t in self.tracking.tracks
@@ -624,6 +623,7 @@ class FilteringMixin:
         max_by_total = current - self.ABSOLUTE_MIN_TRACKS
         
         # Separate candidates into keyframe-critical and non-critical
+        # Optimization: membership check in set is O(1)
         critical_candidates = [n for n in to_delete if n in keyframe_tracks]
         safe_candidates = [n for n in to_delete if n not in keyframe_tracks]
         
@@ -635,9 +635,11 @@ class FilteringMixin:
         if len(critical_candidates) > max_critical_loss:
             # We need error values to sort
             critical_errors = []
-            for t in self.tracking.tracks:
-                if t.name in critical_candidates and t.has_bundle:
-                    critical_errors.append((t.name, t.average_error))
+            # Optimization: Iterate candidates (smaller subset) instead of all tracks
+            for n in critical_candidates:
+                t = self.tracking.tracks.get(n)
+                if t and t.has_bundle:
+                    critical_errors.append((n, t.average_error))
 
             # Sort by error descending (worst first)
             critical_errors.sort(key=lambda x: x[1], reverse=True)
@@ -652,9 +654,11 @@ class FilteringMixin:
         if len(final_to_delete) > max_by_total:
              # Sort combined list by error
             final_errors = []
-            for t in self.tracking.tracks:
-                if t.name in final_to_delete and t.has_bundle:
-                    final_errors.append((t.name, t.average_error))
+            # Optimization: Iterate candidates instead of all tracks
+            for n in final_to_delete:
+                t = self.tracking.tracks.get(n)
+                if t and t.has_bundle:
+                    final_errors.append((n, t.average_error))
 
             final_errors.sort(key=lambda x: x[1], reverse=True)
             final_to_delete = [n for n, _ in final_errors[:max_by_total]]
