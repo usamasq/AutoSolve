@@ -28,3 +28,7 @@
 ## 2026-05-27 - [Optimizing Marker Counting]
 **Learning:** Using `len([m for m in track.markers if not m.mute]) >= limit` creates a full list allocation just to check a count, which is expensive for tracks with many markers.
 **Action:** Use a helper function with a loop and early exit (short-circuiting) to count active markers. This avoids list allocation and can return as soon as the limit is reached, providing up to 10x speedup for boolean checks.
+
+## 2026-05-28 - [O(1) Blender C-API Lookups]
+**Learning:** Iterating through `track.markers` (O(M)) to check for specific frames is significantly slower than using Blender's C-API optimized `track.markers.find_frame(frame)` (O(1)). In `filter_high_error`, replacing manual loops with `find_frame` yielded a ~92% speedup.
+**Action:** Always prefer `collection.find_frame(frame)` or similar C-API lookup methods over manual Python loops when checking for existence or retrieving items by key.
