@@ -600,21 +600,20 @@ class FilteringMixin:
         # Helper to check if track has active markers on both keyframes
         def covers_keyframes(track):
             """Check if track has non-muted markers on BOTH keyframes."""
-            has_a = False
-            has_b = False
-            for m in track.markers:
-                if m.mute:
-                    continue
-                if m.frame == keyframe_a:
-                    has_a = True
-                if m.frame == keyframe_b:
-                    has_b = True
-                if has_a and has_b:
-                    return True
-            return False
+            # Optimized: Use O(1) find_frame instead of O(M) loop
+            m_a = track.markers.find_frame(keyframe_a)
+            if not m_a or m_a.mute:
+                return False
+
+            m_b = track.markers.find_frame(keyframe_b)
+            if not m_b or m_b.mute:
+                return False
+
+            return True
         
         # Count tracks covering keyframes before filtering
-        keyframe_tracks = [t.name for t in self.tracking.tracks if covers_keyframes(t)]
+        # Optimized: Use set for O(1) lookups
+        keyframe_tracks = {t.name for t in self.tracking.tracks if covers_keyframes(t)}
         keyframe_count = len(keyframe_tracks)
         
         to_delete = [t.name for t in self.tracking.tracks
