@@ -28,3 +28,7 @@
 ## 2026-05-27 - [Optimizing Marker Counting]
 **Learning:** Using `len([m for m in track.markers if not m.mute]) >= limit` creates a full list allocation just to check a count, which is expensive for tracks with many markers.
 **Action:** Use a helper function with a loop and early exit (short-circuiting) to count active markers. This avoids list allocation and can return as soon as the limit is reached, providing up to 10x speedup for boolean checks.
+
+## 2026-05-28 - [Optimizing Track Filtering with Sets and Maps]
+**Learning:** Checking track membership in a list (`if name in track_list`) inside a loop over tracks creates an O(N*M) bottleneck. Changing the list to a `set` reduces this to O(N). Additionally, repeatedly accessing `tracking.tracks` by name to retrieve properties (like error) is slow; pre-building a `name -> track` map allows O(1) lookups.
+**Action:** Use `set` for membership checks and `dict` maps for object lookups when filtering or intersecting collections of tracks.
