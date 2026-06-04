@@ -325,6 +325,14 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         from .settings_predictor import SettingsPredictor
         self.predictor = SettingsPredictor()
         
+        # Track quality predictor (ML Phase 1)
+        try:
+            from .track_predictor import TrackPredictor
+            self.track_predictor = TrackPredictor()
+        except Exception as e:
+            print(f"AutoSolve: Failed to initialize TrackPredictor: {e}")
+            self.track_predictor = None
+        
         self.motion_class: Optional[str] = None  # Set after motion probe
         
         # Current session state
@@ -833,12 +841,85 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Returns:
             Dict with monitoring results
         """
+        # Proactive track replacement (ML Track Predictor)
+        proactive_muted = 0
+        proactive_msg = ""
+        if self.track_predictor and self.track_predictor.model is not None:
+            active_tracks = []
+            clip_frame = self.scene_to_clip_frame(frame)
+            
+            # Gather coordinate histories for active tracks
+            track_histories = {}
+            for track in self.tracking.tracks:
+                coords = []
+                for f in range(1, clip_frame + 1):
+                    m = track.markers.find_frame(f)
+                    if m and not m.mute:
+                        coords.append((m.co[0], m.co[1]))
+                track_histories[track.name] = coords
+                
+                current_m = track.markers.find_frame(clip_frame)
+                if current_m and not current_m.mute and len(coords) >= 6:
+                    active_tracks.append(track)
+                    
+            if active_tracks:
+                # Build feature batch
+                features_list = []
+                for track in active_tracks:
+                    coords = track_histories[track.name]
+                    
+                    # Gather neighbor coords
+                    neighbors = []
+                    for n_name, n_coords in track_histories.items():
+                        if n_name != track.name and len(n_coords) >= 1:
+                            neighbors.append(n_coords)
+                            
+                    # Coordinates at current frame to determine region
+                    curr_m = track.markers.find_frame(clip_frame)
+                    fx, fy = curr_m.co[0], curr_m.co[1]
+                    ry = 0 if fy > 0.66 else (2 if fy < 0.33 else 1)
+                    rx = 0 if fx < 0.33 else (2 if fx > 0.66 else 1)
+                    region_idx = ry * 3 + rx
+                    
+                    FOOTAGE_TYPE_MAP = {
+                        'AUTO': 0, 'INDOOR': 1, 'OUTDOOR': 2, 'DRONE': 3, 'HANDHELD': 4,
+                        'GIMBAL': 5, 'ACTION': 6, 'VFX': 7, 'SCREEN': 8, 'CINEMATIC': 9
+                    }
+                    footage_idx = FOOTAGE_TYPE_MAP.get(self.footage_type, 0)
+                    
+                    from .features import extract_features_from_history
+                    feats = extract_features_from_history(
+                        coords=coords,
+                        neighbors_coords=neighbors,
+                        region_idx=region_idx,
+                        footage_idx=footage_idx,
+                        robust_mode=self.robust_mode
+                    )
+                    features_list.append(feats)
+                    
+                features_batch = np.array(features_list, dtype=np.float32)
+                
+                # Run batch prediction
+                probs = self.track_predictor.predict_survival(features_batch)
+                
+                # Mute tracks with survival probability < 0.3
+                for track, prob in zip(active_tracks, probs):
+                    if prob < 0.3:
+                        marker = track.markers.find_frame(clip_frame)
+                        if marker:
+                            marker.mute = True
+                            proactive_muted += 1
+                            
+                if proactive_muted > 0:
+                    proactive_msg = f"Retired {proactive_muted} weak tracks proactively"
+                    print(f"AutoSolve: Proactive replacement - retired {proactive_muted} weak tracks at frame {frame} based on survival predictions")
+
         result = {
             'frame': frame,
             'survival_rate': self.get_current_survival_rate(frame),
             'markers_added': 0,
             'adapted': False,
-            'changes': [],
+            'changes': [proactive_msg] if proactive_msg else [],
         }
         
         # 1. Check if we need to add markers
