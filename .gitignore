@@ -8,3 +8,5 @@
 /verify_install.py
 __pycache__/
 *.pyc
+/ml/data/
+/ml/runs/
