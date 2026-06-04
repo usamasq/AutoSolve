@@ -34,8 +34,22 @@ autosolve/
     ├── failure_diagnostics.py # Failure analysis & fixes
     ├── track_healer.py       # Gap healing with anchor interpolation
     ├── feature_density.py    # Temporal texture analysis
+    ├── track_predictor.py    # Numpy-only MLP survival inference engine
+    ├── models/
+    │   └── track_predictor.json  # Exported Track Quality Predictor weights
     └── presets/
-        └── defaults.json     # Bundled community default presets
+        ├── defaults.json     # Bundled community default presets
+        └── region_weights.json # Empirical track survivability region weights
+
+ml/
+├── collect_data.py           # Headless simulated data collection script
+├── prepare_dataset.py        # Dataset preprocessing for settings optimizer
+├── train_track_predictor.py  # Train Track Quality Predictor PyTorch model
+├── train_trackability_model.py # Calculate empirical region weights
+├── export_numpy_model.py     # Export predictor weights to JSON
+├── evaluate_model.py         # Evaluate settings expected reward model
+├── export_defaults.py        # Grid-search and export optimal settings presets
+└── schema.py                 # Dataclasses and serialization schemas for collection
 ```
 
 ---
@@ -331,6 +345,30 @@ The UI uses a **guided, phase-based workflow** that progressively reveals option
 │ • UI shows error, point count            │
 └──────────────────────────────────────────┘
 ```
+
+---
+
+## Machine Learning & Content-Aware Systems
+
+To achieve professional tracking accuracy, AutoSolve integrates visual analysis and neural network models that run locally inside Blender.
+
+### 1. Track Quality Predictor (ML Phase 1)
+* **Purpose**: Proactively identifies and retires weak tracks during sequence tracking before they fail and introduce solve errors.
+* **Architecture**: A 3-layer Multi-Layer Perceptron (MLP) mapping 15 trajectory-based features (velocities, standard deviations, accelerations, neighbor movements, distance to nearest neighbors) to expected track survival.
+* **Inference**: Implemented as a pure NumPy engine (`track_predictor.py`) reading static weights stored in `models/track_predictor.json`. Runs in less than 1ms per batch.
+* **Replenishment Integration**: Triggered every 10 frames during sequence tracking. Mutes tracks with $P(\text{survival}) < 0.3$ and triggers localized replacement.
+
+### 2. Content-Aware Feature Placement (ML Phase 2)
+* **Purpose**: Prevents marker placement on flat, un-trackable areas (such as clear skies or blank walls) and prioritizes texture-dense features.
+* **Texture Estimation**: A sparse pixel grid sampler mapped over the 3x3 screen regions. Samples an 8x8 grid of pixel luminance values ($Y = 0.299R + 0.587G + 0.114B$) to compute region variance.
+* **Empirical Weighting**: Loads track survivability weights (`presets/region_weights.json`) calculated offline from historical tracking datasets per footage type class.
+* **Target Scaling**: Scales target region marker counts using `weight * normalized_variance`. Regions with a variance below a near-uniform threshold ($< 0.0005$) are skipped automatically.
+
+### 3. Settings Optimizer (ML Phase 3)
+* **Purpose**: Automatically identifies optimal tracking parameters (pattern size, search size, correlation, threshold, motion model) for a clip resolution and footage type.
+* **Expected Reward MLP**: A PyTorch network (24 -> 64 -> 32 -> 1) trained offline to predict solve expected reward:
+  $$\text{Reward} = \text{success} \times \left(1 - \text{clamp}\left(\frac{\text{error}}{5}, 0, 1\right)\right) \times \text{bundle\_ratio}$$
+* **Grid Search Exporter**: Runs a 2,016-element grid search using the MLP predictor to generate recommended default configs saved as `ml/runs/settings_optimizer/recommended_defaults.json` for developer review and manual merge.
 
 ---
 

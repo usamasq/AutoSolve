@@ -39,6 +39,8 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **Region Control**         | Draw inclusion/exclusion zones using annotations to guide the tracker |
 | **Bidirectional Tracking** | Starts from mid-clip for better frame coverage                  |
 | **Track Healing**          | Detects drifted tracks and heals gaps with anchor interpolation |
+| **Track Quality Predictor**| Proactively retires weak tracks using a numpy MLP model before they fail |
+| **Content-Aware Placement**| Grid samples luminance variance to skip uniform areas (sky, walls) and scale targets |
 | **Track Averaging**        | Averages nearby track clusters for noise reduction              |
 | **Failure Diagnosis**      | Detects why tracking failed and applies targeted fixes          |
 | **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.            |
@@ -159,8 +161,23 @@ autosolve/
     ├── failure_diagnostics.py # Failure analysis & fixes
     ├── track_healer.py       # Gap healing with anchor interpolation
     ├── feature_density.py    # Temporal texture analysis
+    ├── track_predictor.py    # Numpy-only MLP survival inference engine
+    ├── models/
+    │   └── track_predictor.json  # Exported Track Quality Predictor weights
     └── presets/
-        └── defaults.json     # Bundled community default presets
+        ├── defaults.json     # Bundled community default presets
+        └── region_weights.json # Empirical track survivability region weights
+
+ml/
+├── collect_data.py           # Headless simulated data collection script
+├── prepare_dataset.py        # Dataset preprocessing for settings optimizer
+├── train_track_predictor.py  # Train Track Quality Predictor PyTorch model
+├── train_trackability_model.py # Calculate empirical region weights
+├── export_numpy_model.py     # Export predictor weights to JSON
+├── evaluate_model.py         # Evaluate settings expected reward model
+├── export_defaults.py        # Grid-search and export optimal settings presets
+└── schema.py                 # Dataclasses and serialization schemas for collection
+
 ```
 
 ---
