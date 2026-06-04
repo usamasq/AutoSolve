@@ -134,6 +134,21 @@ def _find_tracking_camera(context):
     return None
 
 
+def get_quality_rating(error):
+    if error <= 0.0:
+        return 0, "No Solve"
+    if error < 0.5:
+        return 5, "Excellent"
+    elif error < 1.0:
+        return 4, "Good"
+    elif error < 1.5:
+        return 3, "Fair"
+    elif error < 2.0:
+        return 2, "Poor"
+    else:
+        return 1, "Bad"
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN PANEL
 # ═══════════════════════════════════════════════════════════════════════════
@@ -357,6 +372,37 @@ class AUTOSOLVE_PT_phase2_scene(Panel):
         # Single outer box for the entire phase
         outer_box = layout.box()
         
+        # Solve Report Box
+        if settings.has_solve:
+            report_box = outer_box.box()
+            report_box.label(text="Solve Summary Report", icon='TEXT')
+            
+            row = report_box.row()
+            col1 = row.column()
+            col1.label(text="Detection:")
+            col1.label(text="Tracking (Fwd):")
+            col1.label(text="Tracking (Bwd):")
+            col1.label(text="Cleanup:")
+            col1.label(text="Healing:")
+            col1.label(text="Solve:")
+            col1.label(text="Quality:")
+            col1.label(text="Time:")
+            
+            col2 = row.column()
+            col2.label(text=f"{settings.report_markers_detected} markers")
+            col2.label(text=f"{settings.report_survived_forward} tracks")
+            col2.label(text=f"{settings.report_survived_backward} tracks")
+            col2.label(text=f"{settings.report_after_cleanup} tracks")
+            col2.label(text=f"{settings.report_gaps_healed} gaps healed")
+            col2.label(text=f"{settings.report_bundles} bundles @ {settings.report_error:.2f}px")
+            
+            stars, rating_text = get_quality_rating(settings.report_error)
+            stars_str = "★" * stars + "☆" * (5 - stars)
+            col2.label(text=f"{stars_str} ({rating_text})")
+            col2.label(text=f"{settings.report_total_time:.1f}s")
+            
+            outer_box.separator()
+        
         if phase == 'SCENE_SETUP':
             # ══════════════════════════════════════════════
             # ACTIVE PHASE
@@ -424,6 +470,7 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
     
     def draw(self, context):
         layout = self.layout
+        settings = context.scene.autosolve
         
         # Single outer box for the entire phase
         outer_box = layout.box()
@@ -435,7 +482,6 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
         
         # Smoothing tools
         outer_box.label(text="Reduce Jitter:", icon='MOD_SMOOTH')
-        settings = context.scene.autosolve
         
         # Strength slider
         col = outer_box.column(align=True)
@@ -445,6 +491,18 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
         row = outer_box.row(align=True)
         row.scale_y = 1.4
         row.operator("autosolve.smooth_tracks", text="Apply Smoothing", icon='CURVE_PATH')
+        
+        outer_box.separator()
+        
+        # Clean Bad Tracks Section
+        outer_box.label(text="Clean Bad Tracks:", icon='TRACKING_BACKWARDS')
+        col = outer_box.column(align=True)
+        col.prop(settings, "select_error_threshold", text="Threshold", slider=True)
+        
+        row = outer_box.row(align=True)
+        row.scale_y = 1.4
+        row.operator("autosolve.select_high_error", text="Select High Error", icon='RESTRICT_SELECT_OFF')
+        row.operator("autosolve.resolve", text="Clean & Re-Solve", icon='FILE_REFRESH')
         
         outer_box.separator()
         

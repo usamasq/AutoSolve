@@ -170,6 +170,18 @@ FOOTAGE_TYPE_ADJUSTMENTS = {
         'correlation': 0.75,
         'threshold': 0.35,
     },
+    'SCREEN': {
+        'correlation': 0.80,
+        'threshold': 0.20,
+        'motion_model': 'LocRot',
+    },
+    'CINEMATIC': {
+        'pattern_size_mult': 1.4,
+        'search_size_mult': 1.2,
+        'correlation': 0.65,
+        'threshold': 0.25,
+        'motion_model': 'Affine',
+    },
 }
 
 

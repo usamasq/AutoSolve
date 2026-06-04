@@ -42,6 +42,16 @@ class ClipState:
     solve_progress: float = 0.0
     solve_status: str = ""
     
+    # Solve report metrics
+    report_markers_detected: int = 0
+    report_survived_forward: int = 0
+    report_survived_backward: int = 0
+    report_after_cleanup: int = 0
+    report_gaps_healed: int = 0
+    report_bundles: int = 0
+    report_error: float = 0.0
+    report_total_time: float = 0.0
+    
 
 
 
@@ -172,6 +182,16 @@ class ClipStateManager:
         settings.is_solving = state.is_solving
         settings.solve_progress = state.solve_progress
         settings.solve_status = state.solve_status
+        
+        # Sync report metrics
+        settings.report_markers_detected = state.report_markers_detected
+        settings.report_survived_forward = state.report_survived_forward
+        settings.report_survived_backward = state.report_survived_backward
+        settings.report_after_cleanup = state.report_after_cleanup
+        settings.report_gaps_healed = state.report_gaps_healed
+        settings.report_bundles = state.report_bundles
+        settings.report_error = state.report_error
+        settings.report_total_time = state.report_total_time
     
     def update_from_blender(self, clip: bpy.types.MovieClip, scene: bpy.types.Scene):
         """
@@ -194,6 +214,10 @@ class ClipStateManager:
             # Count bundles
             bundle_count = sum(1 for t in tracking.tracks if t.has_bundle)
             state.point_count = bundle_count
+            
+            # Also update basic report fields from current solve
+            state.report_error = state.solve_error
+            state.report_bundles = bundle_count
             
         except (AttributeError, ReferenceError):
             pass

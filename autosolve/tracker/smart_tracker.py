@@ -175,6 +175,20 @@ FOOTAGE_TYPE_ADJUSTMENTS = {
         'threshold': 0.35,
         'motion_model': 'LocRotScale',  # VFX plates often have camera moves
     },
+    'SCREEN': {
+        # Screen capture: high quality flat features, no camera distortion, 2D motion
+        'correlation': 0.80,
+        'threshold': 0.20,
+        'motion_model': 'LocRot',
+    },
+    'CINEMATIC': {
+        # Cinematic: shallow depth of field, anamorphic lens, larger tracking patterns
+        'pattern_size_mult': 1.4,
+        'search_size_mult': 1.2,
+        'correlation': 0.65,
+        'threshold': 0.25,
+        'motion_model': 'Affine',
+    },
 }
 
 # Known problematic regions (from developer testing)
@@ -183,6 +197,8 @@ PRETRAINED_DEAD_ZONES = {
     'OUTDOOR': ['top-center'],
     'INDOOR': [],
     'AUTO': [],
+    'SCREEN': [],
+    'CINEMATIC': [],
 }
 
 # Tiered settings for iterative refinement

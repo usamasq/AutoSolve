@@ -85,6 +85,12 @@ class AutoSolveSettings(PropertyGroup):
             ('VFX', "VFX Plate", 
              "Footage shot specifically for VFX integration", 
              'CAMERA_DATA', 7),
+            ('SCREEN', "Screen Recording", 
+             "Screen capture - flat textures, no lens distortion", 
+             'WINDOW', 8),
+            ('CINEMATIC', "Cinematic", 
+             "Cinematic footage - anamorphic, shallow depth of field", 
+             'MOVIE', 9),
         ],
         default='AUTO',
     )
@@ -191,6 +197,68 @@ class AutoSolveSettings(PropertyGroup):
         default=0,
         min=0,
         options={'SKIP_SAVE'},
+    )
+    
+    # ═══════════════════════════════════════════════════════════
+    # SOLVE REPORT PROPERTIES
+    # ═══════════════════════════════════════════════════════════
+    
+    report_markers_detected: IntProperty(
+        name="Markers Detected",
+        default=0,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_survived_forward: IntProperty(
+        name="Survived Forward",
+        default=0,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_survived_backward: IntProperty(
+        name="Survived Backward",
+        default=0,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_after_cleanup: IntProperty(
+        name="Passed Cleanup",
+        default=0,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_gaps_healed: IntProperty(
+        name="Gaps Healed",
+        default=0,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_bundles: IntProperty(
+        name="Report Bundles",
+        default=0,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_error: FloatProperty(
+        name="Report Error",
+        default=0.0,
+        precision=2,
+        options={'SKIP_SAVE'},
+    )
+    
+    report_total_time: FloatProperty(
+        name="Report Total Time",
+        default=0.0,
+        precision=1,
+        options={'SKIP_SAVE'},
+    )
+    
+    select_error_threshold: FloatProperty(
+        name="Error Threshold",
+        description="Select tracks with reprojection error above this threshold (in pixels)",
+        default=1.5,
+        min=0.1,
+        max=10.0,
     )
 
 

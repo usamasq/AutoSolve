@@ -27,6 +27,14 @@ class TrackingState:
         self.tripod_mode = False
         self.iteration = 0
         self.last_analysis = None
+        
+        # Report fields
+        self.start_time = 0.0
+        self.markers_detected = 0
+        self.survived_forward = 0
+        self.survived_backward = 0
+        self.after_cleanup = 0
+        self.gaps_healed = 0
 
 
 _state = TrackingState()
@@ -127,6 +135,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
         _state.tripod_mode = tripod_mode
         _state.phase = 'CONFIGURE'
         _state.iteration = 0
+        import time
+        _state.start_time = time.time()
         
         sync_scene_to_clip(clip)
         
@@ -227,6 +237,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 print(f"AutoSolve: Ready with {total_tracks} tracks")
                 tracker.select_all_tracks()
                 
+                _state.markers_detected = len(tracker.tracking.tracks)
                 _state.phase = 'TRACK_FORWARD'
                 _state.segment_start = _state.frame_current
                 context.area.tag_redraw()
@@ -249,6 +260,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     )
                     print(f"AutoSolve: Batch tracked {frames} frames forward")
                     
+                    # Calculate survived forward
+                    clip_frame_end = tracker.scene_to_clip_frame(_state.frame_end)
+                    _state.survived_forward = sum(
+                        1 for t in tracker.tracking.tracks
+                        if (marker := t.markers.find_frame(clip_frame_end)) and not marker.mute
+                    )
                     _state.frame_current = _state.frame_end
                     _state.phase = 'TRACK_BACKWARD'
                     # Start 3 FRAMES AFTER optimal_start (into forward-tracked territory) to ensure overlap
@@ -279,6 +296,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
+                    # Calculate survived forward
+                    clip_frame_end = tracker.scene_to_clip_frame(_state.frame_end)
+                    _state.survived_forward = sum(
+                        1 for t in tracker.tracking.tracks
+                        if (marker := t.markers.find_frame(clip_frame_end)) and not marker.mute
+                    )
                     # Forward tracking complete, now track BACKWARD from END to cover all markers
                     _state.phase = 'TRACK_BACKWARD'
                     # Start from frame_end (not optimal_start) to ensure markers added
@@ -304,6 +327,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     )
                     print(f"AutoSolve: Batch tracked {frames} frames backward")
                     
+                    # Calculate survived backward
+                    clip_frame_start = tracker.scene_to_clip_frame(_state.frame_start)
+                    _state.survived_backward = sum(
+                        1 for t in tracker.tracking.tracks
+                        if (marker := t.markers.find_frame(clip_frame_start)) and not marker.mute
+                    )
                     # Go to healing phase
                     _state.phase = 'HEAL_TRACKS'
                     context.area.tag_redraw()
@@ -326,6 +355,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
+                    # Calculate survived backward
+                    clip_frame_start = tracker.scene_to_clip_frame(_state.frame_start)
+                    _state.survived_backward = sum(
+                        1 for t in tracker.tracking.tracks
+                        if (marker := t.markers.find_frame(clip_frame_start)) and not marker.mute
+                    )
                     # Bidirectional tracking complete!
                     # Go to healing phase
                     _state.phase = 'HEAL_TRACKS'
@@ -362,6 +397,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 healed = tracker.heal_tracks()
                 if healed > 0:
                     print(f"AutoSolve: Healed {healed} track gaps")
+                _state.gaps_healed = healed if healed else 0
                 
                 # Don't call cleanup_tracks here - it happens in FILTER_SHORT phase
                 # Just mark healing done so short tracks can be filtered
@@ -466,6 +502,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     # Record failure before cancelling
                     
                     return self._finish(context, success=False)
+                
+                _state.after_cleanup = len(tracker.tracking.tracks)
                 
                 # Pre-solve validation
                 is_valid, issues = tracker.validate_pre_solve()
@@ -682,6 +720,19 @@ class AUTOSOLVE_OT_run_solve(Operator):
             state.has_solve = clip.tracking.reconstruction.is_valid
             state.solve_error = clip.tracking.reconstruction.average_error if clip.tracking.reconstruction.is_valid else 0.0
             
+            if success:
+                import time
+                state.report_markers_detected = getattr(_state, "markers_detected", 0)
+                state.report_survived_forward = getattr(_state, "survived_forward", 0)
+                state.report_survived_backward = getattr(_state, "survived_backward", 0)
+                state.report_after_cleanup = getattr(_state, "after_cleanup", 0)
+                state.report_gaps_healed = getattr(_state, "gaps_healed", 0)
+                state.report_bundles = state.point_count
+                state.report_error = state.solve_error
+                state.report_total_time = max(0.1, time.time() - getattr(_state, "start_time", time.time()))
+            
+            manager.sync_to_blender_properties(clip, context.scene)
+            
         self._cleanup(context)
         return {'FINISHED'} if success else {'CANCELLED'}
     
@@ -756,11 +807,29 @@ class AUTOSOLVE_OT_setup_scene(Operator):
         if self.floor_mode == 'MANUAL':
             layout.label(text="Tip: Select 3 tracks on a flat surface", icon='INFO')
     
+    def _configure_scene_dimensions(self, context, clip):
+        if not clip:
+            return
+        try:
+            # Match render resolution to clip dimensions
+            context.scene.render.resolution_x = clip.size[0]
+            context.scene.render.resolution_y = clip.size[1]
+            
+            # Match frame range to clip duration
+            context.scene.frame_start = clip.frame_start
+            context.scene.frame_end = clip.frame_start + clip.frame_duration - 1
+            print(f"AutoSolve: Scene dimensions matched to clip: {clip.size[0]}x{clip.size[1]}, frame range {context.scene.frame_start}-{context.scene.frame_end}")
+        except Exception as e:
+            print(f"AutoSolve: Failed to configure scene dimensions: {e}")
+
     def execute(self, context):
         if self.floor_mode == 'MANUAL':
             # User wants to select tracks manually - just cancel
             self.report({'INFO'}, "Select 3+ floor tracks, then click Setup again")
             return {'CANCELLED'}
+        
+        clip = context.edit_movieclip
+        self._configure_scene_dimensions(context, clip)
         
         # Auto mode - use standard Blender setup (robust and proven)
         try:
@@ -775,6 +844,8 @@ class AUTOSOLVE_OT_setup_scene(Operator):
         """Setup scene with floor alignment using given tracks."""
         clip = context.edit_movieclip
         tracking = clip.tracking
+        
+        self._configure_scene_dimensions(context, clip)
         
         # Step 1: Select floor tracks and set plane BEFORE creating camera
         for track in tracking.tracks:
@@ -1097,12 +1168,153 @@ class AUTOSOLVE_OT_clear_annotations(Operator):
 
 
 
+class AUTOSOLVE_OT_select_high_error(Operator):
+    """Select tracks with reprojection error above threshold."""
+    bl_idname = "autosolve.select_high_error"
+    bl_label = "Select High Error Tracks"
+    bl_description = "Select tracks with average reprojection error above the threshold"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        clip = getattr(context, "edit_movieclip", None)
+        return clip is not None and len(clip.tracking.tracks) > 0
+        
+    def execute(self, context):
+        clip = context.edit_movieclip
+        settings = context.scene.autosolve
+        threshold = settings.select_error_threshold
+        
+        # Deselect all tracks first
+        for track in clip.tracking.tracks:
+            track.select = False
+            
+        count = 0
+        for track in clip.tracking.tracks:
+            if track.has_bundle:
+                if track.average_error > threshold:
+                    track.select = True
+                    count += 1
+        self.report({'INFO'}, f"Selected {count} tracks with error > {threshold:.2f}px")
+        
+        # Force UI redraw
+        if context.area:
+            context.area.tag_redraw()
+        return {'FINISHED'}
+
+
+class AUTOSOLVE_OT_resolve(Operator):
+    """Clean and re-solve camera using existing tracks (no re-tracking)."""
+    bl_idname = "autosolve.resolve"
+    bl_label = "Clean & Re-Solve"
+    bl_description = "Refine existing tracks by filtering outliers and re-solving camera (no new tracking)"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        clip = getattr(context, "edit_movieclip", None)
+        return clip is not None and len(clip.tracking.tracks) >= 8
+        
+    def execute(self, context):
+        clip = context.edit_movieclip
+        settings = context.scene.autosolve
+        
+        import time
+        start_time = time.time()
+        
+        from .tracker.smart_tracker import SmartTracker
+        
+        robust = getattr(settings, 'robust_mode', False)
+        footage_type = getattr(settings, 'footage_type', 'AUTO')
+        quality_preset = getattr(settings, 'quality_preset', 'BALANCED')
+        tripod_mode = getattr(settings, 'tripod_mode', False)
+        
+        # Instantiate SmartTracker
+        tracker = SmartTracker(
+            clip, 
+            robust_mode=robust, 
+            footage_type=footage_type,
+            quality_preset=quality_preset,
+            tripod_mode=tripod_mode
+        )
+        
+        # Configure settings
+        tracker.configure_settings()
+        
+        # Step 1: Cleanup tracks (short tracks, spikes)
+        tracker.cleanup_tracks(
+            min_frames=tracker.min_lifespan,
+            spike_multiplier=8.0,
+            jitter_threshold=0.6,
+            coherence_threshold=0.4
+        )
+        
+        # Step 2: Smoothing if enabled
+        if settings.smooth_tracks:
+            try:
+                from .tracker.smoothing import smooth_track_markers
+                smooth_track_markers(tracker.tracking, settings.track_smooth_factor)
+            except Exception as e:
+                print(f"AutoSolve: Smooth tracks failed: {e}")
+                
+        # Step 3: Solve draft to establish errors
+        success = tracker.solve_camera(tripod_mode=tripod_mode)
+        
+        # Step 4: Filter high error tracks (above 2.0px)
+        if success:
+            tracker.filter_high_error(max_error=2.0)
+            
+        # Step 5: Sanitize tracks before final solve
+        tracker.sanitize_tracks_before_solve()
+        
+        # Step 6: Select optimal keyframes
+        tracker.select_optimal_keyframes()
+        
+        # Step 7: Final solve
+        success = tracker.solve_camera(tripod_mode=tripod_mode)
+        
+        if not success:
+            self.report({'ERROR'}, "Re-solve failed. Not enough tracks or bad configuration.")
+            return {'CANCELLED'}
+            
+        # Get results
+        error = tracker.get_solve_error()
+        bundles = tracker.get_bundle_count()
+        
+        # Sync results to scene settings and ClipState
+        settings.solve_error = error
+        settings.point_count = bundles
+        settings.has_solve = True
+        
+        manager = _get_clip_manager()
+        if manager:
+            manager.update_from_blender(clip, context.scene)
+            state = manager.get_state(clip)
+            state.has_solve = True
+            state.solve_error = error
+            state.point_count = bundles
+            
+            # Update report metrics
+            state.report_markers_detected = len(clip.tracking.tracks)
+            state.report_after_cleanup = len(clip.tracking.tracks)
+            state.report_bundles = bundles
+            state.report_error = error
+            state.report_total_time = max(0.1, time.time() - start_time)
+            
+            manager.sync_to_blender_properties(clip, context.scene)
+            
+        self.report({'INFO'}, f"Re-solved: {bundles} tracks, {error:.2f}px error")
+        return {'FINISHED'}
+
+
 # Registration
 
 classes = (
     AUTOSOLVE_OT_run_solve,
     AUTOSOLVE_OT_setup_scene,
     AUTOSOLVE_OT_smooth_tracks,
+    AUTOSOLVE_OT_select_high_error,
+    AUTOSOLVE_OT_resolve,
     # Region detection operators
     AUTOSOLVE_OT_detect_inside_annotation,
     AUTOSOLVE_OT_detect_outside_annotation,
