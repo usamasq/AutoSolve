@@ -591,13 +591,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
                 
                 if not success:
-                    # Check if this was a quality failure (low bundle ratio)
-                    quality_failure = hasattr(tracker, '_solve_quality_failure') and tracker._solve_quality_failure
-                    
-                    # For quality failures, retry with robust mode (more markers + learned behavior)
-                    if quality_failure and not tracker.robust_mode and _state.iteration < tracker.MAX_ITERATIONS:
-                        print("AutoSolve: Quality failure detected - retrying with Robust Mode...")
-                        self.report({'WARNING'}, "Quality failure - retrying with more markers and learned behavior")
+                    # For solve or quality failures, retry with robust mode (more markers + learned behavior)
+                    if not tracker.robust_mode and _state.iteration < tracker.MAX_ITERATIONS:
+                        print("AutoSolve: Solve failure or quality failure detected - retrying with Robust Mode...")
+                        self.report({'WARNING'}, "Solve failed or poor quality - retrying with more markers and learned behavior")
                         
                         # Enable robust mode
                         settings.robust_mode = True
@@ -668,10 +665,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
             elif _state.phase == 'COMPLETE':
                 error = tracker.get_solve_error()
                 bundles = tracker.get_bundle_count()
-                
-                # Extract training data and save session
-                training_data = tracker.extract_training_data()
-                
                 
                 # Save user template learning (with success metrics)
                 if hasattr(_state, 'user_learned') and _state.user_learned:
@@ -959,10 +952,8 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
                 
             # ═══════════════════════════════════════════════════════════════
             # 3. Prevent Learning (Update snapshot)
-            # ═══════════════════════════════════════════════════════════════
-            global _behavior_recorder
-            if _behavior_recorder and _behavior_recorder.is_monitoring:
-                _behavior_recorder.update_snapshot(clip)
+            # Telemetry recorder removed
+
             
             # ═══════════════════════════════════════════════════════════════
             # 4. Auto-Solve Camera
@@ -1017,12 +1008,8 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
                     track.select = True
                 
             # ═══════════════════════════════════════════════════════════════
-            # 6. Update learning snapshot with new solve state
-            # ═══════════════════════════════════════════════════════════════
-            if _behavior_recorder and _behavior_recorder.is_monitoring:
-                if clip.tracking.reconstruction.is_valid:
-                    error = clip.tracking.reconstruction.average_error
-                    _behavior_recorder.update_snapshot(clip, solve_error=error)
+            # Telemetry recorder removed
+
             
             # ═══════════════════════════════════════════════════════════════
             # 7. Report result with appropriate messages

@@ -20,7 +20,7 @@ except ImportError:
     bpy = None
     Vector = None
 
-from ..utils import get_region
+from .utils import get_region
 
 
 # =============================================================================
@@ -773,7 +773,7 @@ class TrackHealer:
             Number of track pairs merged
         """
         try:
-            from ..averaging import merge_overlapping_segments as merge_fn
+            from .averaging import merge_overlapping_segments as merge_fn
             return merge_fn(tracking, min_overlap)
         except Exception as e:
             print(f"AutoSolve: merge_overlapping_segments failed: {e}")

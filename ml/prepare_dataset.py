@@ -148,7 +148,7 @@ def generate_simulated_dataset() -> List[Dict[str, Any]]:
                     "frame_count": clip["frame_count"]
                 },
                 "settings": {
-                    "quality_preset": random.choice(["FAST", "BALANCED", "ACCURATE"]),
+                    "quality_preset": random.choice(["FAST", "BALANCED", "QUALITY"]),
                     "footage_type": clip["footage_type"],
                     "robust_mode": robust,
                     "tripod_mode": tripod,

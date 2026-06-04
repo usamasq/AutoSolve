@@ -13,6 +13,7 @@ import bpy
 import json
 import os
 import hashlib
+import numpy as np
 from mathutils import Vector
 from typing import Optional, List, Dict, Tuple, Set
 from dataclasses import dataclass, asdict, field
@@ -1525,7 +1526,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self._run_ops(
                 bpy.ops.clip.detect_features,
                 threshold=threshold,
-                min_distance=50,
+                min_distance=25,
                 margin=20,
                 placement=self._get_feature_placement()
             )
@@ -2113,9 +2114,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         print(f"AutoSolve: Smart detection complete - {total} markers placed")
         
-        # Minimum viable check
-        if total < 8:
-            print(f"AutoSolve: Only {total} markers, adding reinforcements...")
+        # Minimum viable check - ensure we have at least 40% of target tracks
+        min_required = max(15, int(self.target_tracks * 0.4))
+        if total < min_required:
+            print(f"AutoSolve: Only {total} markers (target {self.target_tracks}), adding reinforcements...")
             extra = self._add_reinforcement_markers(total, motion_class)
             total += extra
         
@@ -2534,20 +2536,29 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Add reinforcement markers if we don't have enough.
         Focus on center regions which are usually most reliable.
         """
-        needed = max(0, 12 - current_count)  # Aim for 12 total
+        needed = max(0, self.target_tracks - current_count)  # Aim for target_tracks
         if needed == 0:
             return 0
         
         print(f"AutoSolve: Adding {needed} reinforcement markers...")
         
-        # Focus on reliable regions
+        # Focus on reliable regions first
         reliable_regions = ['center', 'mid-left', 'mid-right', 'bottom-center']
         
         added = 0
         for region in reliable_regions:
             if added >= needed:
                 break
-            detected = self.detect_in_region(region, count=2)
+            detected = self.detect_in_region(region, count=(needed - added))
+            added += detected
+        
+        # If still needed, query remaining regions
+        from .constants import REGIONS
+        remaining_regions = [r for r in REGIONS if r not in reliable_regions]
+        for region in remaining_regions:
+            if added >= needed:
+                break
+            detected = self.detect_in_region(region, count=(needed - added))
             added += detected
         
         return added
@@ -3016,7 +3027,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         # Lazy init healer
         if self.healer is None:
-            from .learning.track_healer import TrackHealer
+            from .track_healer import TrackHealer
             self.healer = TrackHealer()
         
         # Find anchor tracks (complete, high-quality reference tracks)
@@ -3846,6 +3857,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Attempts to solve with current settings. If that fails or yields poor quality
         (low track reconstruction), it re-tries with focal length refinement enabled.
         """
+        # Always sanitize tracks to prevent Ceres solver errors (NaNs, short tracks, etc.)
+        self.sanitize_tracks_before_solve()
+        
         if hasattr(self.settings, 'use_tripod_solver'):
             self.settings.use_tripod_solver = tripod_mode
         

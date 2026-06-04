@@ -11,25 +11,37 @@ Modules:
 - tracker: Smart tracking with adaptive learning
 """
 
-from . import properties
-from . import operators
-from . import ui
+try:
+    import bpy
+    from . import properties
+    from . import operators
+    from . import ui
+    HAS_BPY = True
+except ImportError:
+    HAS_BPY = False
 
-# All classes that need registration
-_modules = (
-    properties,
-    operators,
-    ui,
-)
+if HAS_BPY:
+    # All classes that need registration
+    _modules = (
+        properties,
+        operators,
+        ui,
+    )
 
 
-def register():
-    """Register all classes from submodules."""
-    for module in _modules:
-        module.register()
+    def register():
+        """Register all classes from submodules."""
+        for module in _modules:
+            module.register()
 
 
-def unregister():
-    """Unregister all classes from submodules in reverse order."""
-    for module in reversed(_modules):
-        module.unregister()
+    def unregister():
+        """Unregister all classes from submodules in reverse order."""
+        for module in reversed(_modules):
+            module.unregister()
+else:
+    def register():
+        pass
+
+    def unregister():
+        pass

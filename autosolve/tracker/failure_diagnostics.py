@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from ..constants import EDGE_REGIONS, CENTER_REGIONS
+from .constants import EDGE_REGIONS, CENTER_REGIONS
 
 
 class FailurePattern(Enum):

@@ -59,7 +59,7 @@ Trains the neural network that predicts if an active track is likely to fail in 
 ### Step 4a: Train PyTorch MLP
 ```bash
 # Trains 15 -> 64 -> 32 -> 1 classification MLP
-python ml/train_track_predictor.py --data ml/data/raw/ --out ml/runs/track_predictor/ --epochs 100
+python ml/train_track_predictor.py --data-dir ml/data/raw/ --out-dir ml/runs/track_predictor/ --epochs 100
 ```
 
 ### Step 4b: Export to NumPy JSON Weights

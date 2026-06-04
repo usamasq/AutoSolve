@@ -12,12 +12,14 @@ import sys
 import json
 import argparse
 import random
-import numpy as np
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
 
 # Add project path to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from ml.features.track_features import extract_features_from_history
 
 # Try importing torch
 try:
@@ -61,6 +63,7 @@ else:
 
 def load_dataset(data_dir: str):
     """Load JSON files and extract feature/label samples."""
+    from ml.features.track_features import extract_features_from_history
     print(f"Loading data from '{data_dir}'...")
     json_files = [
         os.path.join(data_dir, f) 
@@ -70,7 +73,7 @@ def load_dataset(data_dir: str):
     
     if not json_files:
         print("No JSON files found.")
-        return [], [], []
+        return {}, []
         
     samples_by_clip = {}
     
@@ -147,6 +150,11 @@ def load_dataset(data_dir: str):
 
 def train_model(args):
     """Train PyTorch model using SolveSamples."""
+    if not NUMPY_AVAILABLE:
+        print("Error: NumPy (numpy) is not installed. NumPy is required to train the model.")
+        print("Please install numpy: pip install numpy")
+        return
+        
     if not TORCH_AVAILABLE:
         print("Error: PyTorch (torch) is not installed. PyTorch is required to train the model.")
         print("Please install torch: pip install torch")
