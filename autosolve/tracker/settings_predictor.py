@@ -1,0 +1,199 @@
+# SPDX-FileCopyrightText: 2025 Usama Bin Shahid
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""
+SettingsPredictor - Predicts optimal tracking settings.
+
+Uses pretrained community data to recommend the best settings for new footage.
+"""
+
+import json
+from pathlib import Path
+from typing import Dict, Optional, Set
+import bpy
+
+from .constants import TIERED_SETTINGS, DEFAULT_SETTINGS
+from .utils import classify_footage as classify_footage_util
+
+
+class SettingsPredictor:
+    """
+    Predicts optimal tracking settings based on static community-trained presets.
+    """
+    
+    @property
+    def DEFAULT_SETTINGS(self):
+        return DEFAULT_SETTINGS
+    
+    @property 
+    def TIERED_SETTINGS(self):
+        return TIERED_SETTINGS
+    
+    def __init__(self):
+        self.model = self._load_defaults()
+    
+    def _load_defaults(self) -> Dict:
+        """Load bundled pretrained model/presets from disk."""
+        model = None
+        pretrained_path = Path(__file__).parent / 'presets' / 'defaults.json'
+        if pretrained_path.exists():
+            try:
+                with open(pretrained_path, encoding='utf-8') as f:
+                    model = json.load(f)
+            except Exception as e:
+                print(f"AutoSolve: Error loading presets/defaults.json: {e}")
+        
+        if model is None:
+            # Safe fallback structure
+            model = {
+                'version': 1,
+                'footage_classes': {},
+                'footage_type_adjustments': {},
+                'region_models': {},
+            }
+        return model
+    
+    def classify_footage(self, clip: bpy.types.MovieClip) -> str:
+        """Classify footage into a category (e.g., "HD_30fps")."""
+        return classify_footage_util(clip)
+    
+    def predict_settings(self, clip: bpy.types.MovieClip, 
+                          robust_mode: bool = False,
+                          footage_type: str = 'AUTO',
+                          motion_class: str = None,
+                          clip_fingerprint: str = None) -> Dict:
+        """
+        Predict optimal settings for the given clip using presets.
+        
+        Args:
+            clip: The Movie Clip to analyze
+            robust_mode: Use more aggressive settings for difficult footage
+            footage_type: User-specified footage type (INDOOR, DRONE, etc.)
+            motion_class: Optional motion classification (ignored/legacy)
+            clip_fingerprint: Optional clip fingerprint (ignored/legacy)
+        """
+        footage_class = self.classify_footage(clip)
+        
+        # 1. Get base settings for footage class
+        class_data = self.model.get('footage_classes', {}).get(footage_class, {})
+        if class_data and 'best_settings' in class_data:
+            settings = class_data['best_settings'].copy()
+        else:
+            settings = self._predict_heuristic(clip, robust_mode)
+        
+        # 2. Apply footage type adjustments
+        if footage_type != 'AUTO':
+            settings = self._apply_footage_type_adjustment(settings, footage_type)
+        
+        # 3. Estimate motion and adjust
+        motion_factor = self._estimate_motion_factor(clip)
+        settings = self._adjust_for_motion(settings, motion_factor)
+        
+        # 4. Apply robust mode overrides if requested
+        if robust_mode:
+            settings['pattern_size'] = int(settings.get('pattern_size', 15) * 1.4) | 1
+            settings['search_size'] = int(settings.get('search_size', 71) * 1.4) | 1
+            settings['correlation'] = max(0.5, settings.get('correlation', 0.7) - 0.15)
+            settings['motion_model'] = 'Affine'
+            
+        return settings
+    
+    def _apply_footage_type_adjustment(self, settings: Dict, footage_type: str) -> Dict:
+        """Apply multipliers and offsets based on footage type (DRONE, INDOOR, etc.)."""
+        adjustments = self.model.get('footage_type_adjustments', {}).get(footage_type, {})
+        if not adjustments:
+            return settings
+        
+        adjusted = settings.copy()
+        
+        if 'pattern_size_mult' in adjustments:
+            adjusted['pattern_size'] = int(settings['pattern_size'] * adjustments['pattern_size_mult'])
+            
+        if 'search_size_mult' in adjustments:
+            adjusted['search_size'] = int(settings['search_size'] * adjustments['search_size_mult'])
+            
+        if 'threshold_mult' in adjustments:
+            adjusted['threshold'] = settings['threshold'] * adjustments['threshold_mult']
+            
+        if 'correlation_offset' in adjustments:
+            adjusted['correlation'] = max(0.4, min(0.9, settings['correlation'] + adjustments['correlation_offset']))
+            
+        if 'motion_model' in adjustments:
+            adjusted['motion_model'] = adjustments['motion_model']
+            
+        return adjusted
+    
+    def _estimate_motion_factor(self, clip: bpy.types.MovieClip) -> float:
+        """Estimate motion multiplier based on frame rate and duration."""
+        fps = clip.fps if clip.fps > 0 else 24
+        duration = clip.frame_duration
+        
+        fps_factor = 30 / fps
+        if duration < 100:
+            duration_factor = 1.3
+        elif duration < 300:
+            duration_factor = 1.0
+        else:
+            duration_factor = 0.9
+            
+        return max(0.5, min(2.0, fps_factor * duration_factor))
+    
+    def _adjust_for_motion(self, settings: Dict, motion_factor: float) -> Dict:
+        """Scale search sizes dynamically according to motion factor."""
+        if motion_factor == 1.0:
+            return settings
+            
+        adjusted = settings.copy()
+        adjusted['search_size'] = int(settings['search_size'] * motion_factor)
+        
+        if motion_factor > 1.2:
+            adjusted['correlation'] = max(0.45, settings['correlation'] - 0.05)
+            
+        if adjusted['search_size'] % 2 == 0:
+            adjusted['search_size'] += 1
+            
+        return adjusted
+    
+    def _predict_heuristic(self, clip: bpy.types.MovieClip, robust_mode: bool) -> Dict:
+        """Fallback rule-based heuristic prediction."""
+        width = clip.size[0]
+        fps = clip.fps if clip.fps > 0 else 24
+        
+        if robust_mode:
+            base = self.TIERED_SETTINGS['aggressive'].copy()
+        else:
+            base = self.TIERED_SETTINGS['balanced'].copy()
+            
+        if width >= 3840:
+            base['pattern_size'] = int(base['pattern_size'] * 1.5)
+        elif width >= 1920:
+            base['pattern_size'] = int(base['pattern_size'] * 1.2)
+            
+        if fps < 30:
+            base['search_size'] = int(base['search_size'] * 1.3)
+        elif fps >= 60:
+            base['search_size'] = int(base['search_size'] * 0.8)
+            
+        return base
+        
+    def get_dead_zones_for_class(self, footage_class: str) -> Set[str]:
+        """Identify region dead zones from defaults database."""
+        dead_zones = set()
+        for region, data in self.model.get('region_models', {}).items():
+            success_rate = data.get('success_rate', 1.0)
+            if success_rate < 0.25:
+                dead_zones.add(region)
+        return dead_zones
+        
+    def get_region_advice(self) -> Dict[str, str]:
+        """Provides prioritization advice for regions based on success rate."""
+        advice = {}
+        for region, data in self.model.get('region_models', {}).items():
+            success_rate = data.get('success_rate', 1.0)
+            if success_rate < 0.3:
+                advice[region] = 'avoid'
+            elif success_rate > 0.7:
+                advice[region] = 'prioritize'
+            else:
+                advice[region] = 'normal'
+        return advice

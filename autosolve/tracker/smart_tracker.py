@@ -305,22 +305,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # Learning components
         self.analyzer = TrackAnalyzer()
         
-        # Unified SettingsPredictor for all learning
-        from .learning.settings_predictor import SettingsPredictor
+        # Predictor for static settings
+        from .settings_predictor import SettingsPredictor
         self.predictor = SettingsPredictor()
         
-        # Session recorder for training data
-        from .learning.session_recorder import SessionRecorder
-        self.recorder = SessionRecorder()
-        
-        # Feature extractor for per-clip learning and motion classification
-        from .learning.feature_extractor import FeatureExtractor
-        self.feature_extractor = FeatureExtractor(clip)
-        
-        # Extract clip fingerprint immediately (cheap operation)
-        self.clip_fingerprint = self.feature_extractor._generate_fingerprint()
-        # Sync to feature_extractor for to_dict() export
-        self.feature_extractor.features.clip_fingerprint = self.clip_fingerprint
         self.motion_class: Optional[str] = None  # Set after motion probe
         
         # Current session state
@@ -576,8 +564,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self.clip,
             robust_mode=False,  # We apply robust mode separately in step 3
             footage_type=self.footage_type,
-            motion_class=self.motion_class,  # May be None on first load, set after motion probe
-            clip_fingerprint=self.clip_fingerprint
+            motion_class=self.motion_class  # May be None on first load, set after motion probe
         )
         print(f"AutoSolve: Predicted settings for {self.footage_class}: "
               f"pattern={self.current_settings.get('pattern_size')}px, "
@@ -975,115 +962,27 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     def _get_learned_skip_regions(self) -> Set[str]:
         """
-        Get regions to skip based on historical learning data.
-        
-        This enables proactive region avoidance before detection.
-        Uses SettingsPredictor's region_models for success rate analysis.
+        Get regions to skip based on default settings.
         
         Returns:
             Set of region names to skip
         """
         skip = set()
-        MIN_SAMPLES = 20  # Need sufficient data to make decision
-        SKIP_THRESHOLD = 0.25  # Below 25% success = skip
+        SKIP_THRESHOLD = 0.25
         
         region_models = self.predictor.model.get('region_models', {})
         
         for region, data in region_models.items():
-            # Validate region name
             if region not in REGIONS:
                 continue
             
-            total = data.get('total_tracks', 0)
-            successful = data.get('successful_tracks', 0)
-            
-            if total >= MIN_SAMPLES:
-                rate = successful / total
-                if rate < SKIP_THRESHOLD:
-                    skip.add(region)
+            rate = data.get('success_rate', 1.0)
+            if rate < SKIP_THRESHOLD:
+                skip.add(region)
                     
         return skip
     
-    
-    def extract_training_data(self) -> Dict:
-        """
-        Extract patterns and data for training/learning.
-        
-        Captures:
-        - Track success/failure rates by region
-        - Velocity and jitter profiles
-        - Settings that led to this result
-        - Solve quality metrics
-        
-        Returns:
-            Dict containing extracted training data
-        """
-        training_data = {
-            'footage_class': self.footage_class,
-            'settings_used': self.current_settings.copy(),
-            'solve_success': self.tracking.reconstruction.is_valid,
-            'solve_error': self.get_solve_error(),
-            'track_count': self.get_bundle_count(),
-            'region_stats': {},
-            'velocity_stats': {},
-            'iteration': self.iteration,
-        }
-        
-        # Analyze by region
-        region_tracks = {r: {'total': 0, 'success': 0, 'avg_lifespan': 0, 'lifespans': []} 
-                        for r in REGIONS}
-        
-        for track in self.tracking.tracks:
-            markers = [m for m in track.markers if not m.mute]
-            if len(markers) < 2:
-                continue
-            
-            # Get region from average position
-            avg_x = sum(m.co.x for m in markers) / len(markers)
-            avg_y = sum(m.co.y for m in markers) / len(markers)
-            region = get_region(avg_x, avg_y)
-            
-            markers_sorted = sorted(markers, key=lambda m: m.frame)
-            lifespan = markers_sorted[-1].frame - markers_sorted[0].frame
-            
-            region_tracks[region]['total'] += 1
-            region_tracks[region]['lifespans'].append(lifespan)
-            if track.has_bundle:
-                region_tracks[region]['success'] += 1
-        
-        # Compute averages
-        for region, data in region_tracks.items():
-            if data['total'] > 0:
-                data['success_rate'] = data['success'] / data['total']
-                if data['lifespans']:
-                    data['avg_lifespan'] = sum(data['lifespans']) / len(data['lifespans'])
-                del data['lifespans']  # Don't store raw data
-            training_data['region_stats'][region] = data
-        
-        # Velocity statistics
-        velocities = []
-        for track in self.tracking.tracks:
-            markers = [m for m in track.markers if not m.mute]
-            if len(markers) < 2:
-                continue
-            
-            markers_sorted = sorted(markers, key=lambda m: m.frame)
-            displacement = (Vector(markers_sorted[-1].co) - Vector(markers_sorted[0].co)).length
-            duration = markers_sorted[-1].frame - markers_sorted[0].frame
-            if duration > 0:
-                velocities.append(displacement / duration)
-        
-        if velocities:
-            training_data['velocity_stats'] = {
-                'mean': sum(velocities) / len(velocities),
-                'max': max(velocities),
-                'min': min(velocities),
-            }
-        
-        print(f"AutoSolve: Extracted training data - {training_data['track_count']} bundles, "
-              f"{training_data['solve_error']:.2f}px error")
-        
-        return training_data
+
 
     # ═══════════════════════════════════════════════════════════════════════════
     # USER-GUIDED PRIORITY TRACKING
@@ -1334,22 +1233,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         Args:
             learned: Learned settings from learn_from_user_templates
         """
-        if not learned:
-            return
-        
-        # Merge with existing local learning
-        existing = self.predictor.get_data(self.footage_class) or {}
-        
-        # Update with user template learning
-        existing['user_templates'] = {
-            'last_updated': bpy.context.scene.frame_current,
-            'success_rate': learned.get('success_rate', 0),
-            'regions': learned.get('regions', {}),
-            'overall': learned.get('overall', {}),
-        }
-        
-        self.predictor.update(self.footage_class, existing)
-        print(f"AutoSolve: Saved user template learning for {self.footage_class}")
+        pass
 
     
     def preserve_existing_tracks(self) -> int:
@@ -1937,13 +1821,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Fix: Ensure motion class is set on instance
             self.motion_class = probe_results.get('motion_class', 'MEDIUM')
             
-            # Extract visual features from cached probe results
-            try:
-                if hasattr(self, 'feature_extractor'):
-                    self.feature_extractor.extract_all(tracking_data=probe_results)
-                    self.feature_extractor.features.motion_class = self.motion_class
-            except Exception as e:
-                print(f"AutoSolve: Error extracting features from cache: {e}")
+            pass
         else:
             probe_results = self._run_motion_probe()
             self.cached_motion_probe = probe_results
@@ -2894,18 +2772,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             print(f"AutoSolve: Only {len(anchors)} anchors found - need {self.healer.MIN_ANCHOR_TRACKS}+ for healing")
             return 0
         
-        # Record anchors for session data
-        if self.recorder and self.recorder.current_session:
-            self.recorder.current_session.anchor_tracks = [
-                {
-                    'name': a.name,
-                    'start_frame': a.start_frame,
-                    'end_frame': a.end_frame,
-                    'quality': round(a.quality_score, 3)
-                }
-                for a in anchors[:10]  # Top 10
-            ]
-        
         # Find healing candidates
         candidates = self.healer.find_healing_candidates(self.tracking)
         
@@ -2913,9 +2779,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             # Message already printed by healer
             return 0
         
-        # Update healing stats
-        if self.recorder and self.recorder.current_session:
-            self.recorder.current_session.healing_stats['candidates_found'] = len(candidates)
+        pass
         
         # Heal candidates above threshold
         healed = 0
@@ -2939,11 +2803,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     candidate, anchors, positions, success
                 )
                 
-                # Record for session
-                if self.recorder and self.recorder.current_session:
-                    self.recorder.current_session.healing_attempts.append(
-                        training_data.to_dict()
-                    )
+                pass
                 
                 if success:
                     healed += 1
@@ -2952,13 +2812,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             else:
                 below_threshold += 1
         
-        # Update healing stats
-        if self.recorder and self.recorder.current_session and attempted > 0:
-            stats = self.recorder.current_session.healing_stats
-            stats['heals_attempted'] = attempted
-            stats['heals_successful'] = healed
-            stats['avg_gap_frames'] = round(gap_frames_total / healed, 1) if healed > 0 else 0.0
-            stats['avg_match_score'] = round(match_scores_total / healed, 3) if healed > 0 else 0.0
+        pass
         
         # Improved logging
         if healed > 0:
@@ -3198,10 +3052,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         return success
     def configure_settings(self):
         """Apply current settings to Blender's tracker."""
-        # Start recording session for ML data collection
-        if hasattr(self, 'recorder') and self.recorder:
-            if not self.recorder.current_session:
-                self.recorder.start_session(self.clip, self.current_settings)
+        pass
         
         s = self.settings
         
@@ -3617,11 +3468,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self._run_ops(bpy.ops.clip.track_markers, backwards=backwards, sequence=False)
             frames_tracked += 1
             
-            # Record frame sample every 10 frames for ML temporal analysis
-            if hasattr(self, 'recorder') and self.recorder and frames_tracked % 10 == 0:
-                prev_active_count = self.recorder.record_frame_sample(
-                    frame, self.tracking, prev_active_count
-                )
+            pass
         
         return frames_tracked
 
@@ -3932,130 +3779,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         self.clear_tracks()
         self.configure_settings()
-    
-    def save_session_results(self, success: bool, solve_error: float):
-        """Save session results for future learning."""
-        bundle_count = self.get_bundle_count()
-        
-        # Always update model, even without full analysis (for early failures)
-        region_stats = self.last_analysis.get('region_stats', {}) if self.last_analysis else {}
-        
-        self.predictor.update_from_session(
-            footage_class=self.footage_class,
-            success=success,
-            settings=self.current_settings,
-            error=solve_error,
-            region_stats=region_stats,
-            bundle_count=bundle_count  # For HER reward computation
-        )
-        print(f"AutoSolve: Updated model - success={success}, error={solve_error:.2f}")
-        
-        # Save clip-specific settings for per-clip learning
-        if hasattr(self, 'clip_fingerprint') and self.clip_fingerprint:
-            self.predictor.save_clip_specific_settings(
-                self.clip_fingerprint, 
-                self.current_settings, 
-                success, 
-                solve_error
-            )
-            
-        # Record session data
-        if hasattr(self, 'recorder') and self.recorder:
-            try:
-                # 1. Start Session (if not already aligned)
-                if not self.recorder.current_session:
-                    self.recorder.start_session(self.clip, self.current_settings)
-                else:
-                    # CRITICAL FIX: Update settings to match final state (in case of adaptation)
-                    self.recorder.current_session.settings = self.current_settings.copy()
-                    print(f"AutoSolve: Synced final settings to session record")
-                
-                # 2. Record Motion Probe Results (if available)
-                if hasattr(self, 'cached_motion_probe') and self.cached_motion_probe:
-                    self.recorder.record_motion_probe(self.cached_motion_probe)
-                
-                # 3. Record Clip fingerprint and motion class
-                if hasattr(self, 'clip_fingerprint') and self.clip_fingerprint:
-                    self.recorder.record_clip_fingerprint(self.clip_fingerprint)
-                if hasattr(self, 'motion_class') and self.motion_class:
-                    self.recorder.record_motion_class(self.motion_class)
-                
-                # 4. Record session linkage for multi-attempt analysis
-                # Uses iteration count and previous_session_id if available
-                previous_session_id = getattr(self, 'previous_session_id', "")
-                iteration = getattr(self, 'iteration', 1)
-                self.recorder.record_session_linkage(previous_session_id, iteration)
-                
-                # 5. Record contributor ID for multi-user data distinction
-                from .utils import get_contributor_id
-                self.recorder.record_contributor_id(get_contributor_id())
-                
-                # 4. Extract and Record Visual Features (feature density, motion, etc.)
-                if hasattr(self, 'feature_extractor') and self.feature_extractor:
-                    # Build tracking_data with pre-computed feature density
-                    tracking_data = self.last_analysis.copy() if self.last_analysis else {}
-                    
-                    # Add detected feature density from smart detection (avoids duplicate detect_features call)
-                    if hasattr(self, '_detected_feature_density') and self._detected_feature_density:
-                        tracking_data['detected_feature_density'] = self._detected_feature_density
-                    
-                    # Extract features (feature density via detect_features if not pre-computed, motion, edge density)
-                    try:
-                        # CRITICAL: Force recompute to ensure we get full 9-frame timeline (not just detection frame shortcut)
-                        self.feature_extractor.extract_all(
-                            clip=self.clip,
-                            tracking_data=tracking_data,
-                            force_recompute=True
-                        )
-                        
-                        # CRITICAL FIX: Explicitly compute post-tracking features
-                        if tracking_data:
-                            self.feature_extractor.compute_from_tracking(tracking_data)
-                            
-                            # Build list of motion vectors from tracks for histogram
-                            vectors = []
-                            for track in self.tracking.tracks:
-                                if len(track.markers) >= 2:
-                                    markers = sorted(track.markers, key=lambda m: m.frame)
-                                    dx = markers[-1].co.x - markers[0].co.x
-                                    dy = markers[-1].co.y - markers[0].co.y
-                                    vectors.append((dx, dy))
-                            
-                            self.feature_extractor.compute_flow_histograms(vectors)
-                            print("AutoSolve: Re-computed visual features from final tracking data")
-                        
-                        # Record even if partial compute succeeded
-                        self.recorder.record_visual_features(self.feature_extractor.to_dict())
-                            
-                    except Exception as fe:
-                        print(f"AutoSolve: Feature extraction recording failed: {fe}")
-                    
-                # 5. Record Adaptation History
-                try:
-                    if hasattr(self, 'adaptation_history') and self.adaptation_history:
-                        summary = self.get_adaptation_summary()
-                        self.recorder.record_adaptation_history(summary)
-                except Exception as ae:
-                    print(f"AutoSolve: Adaptation recording failed: {ae}")
-                
-                # 6. Record Tracks & Solve metrics (CRITICAL STEP)
-                try:
-                    self.recorder.record_tracks(self.tracking)
-                except Exception as te:
-                    print(f"AutoSolve: Track recording failed: {te}")
 
-                # 7. Finalize and SAVE (CRITICAL)
-                self.recorder.finalize_session(
-                    success=success,
-                    solve_error=solve_error,
-                    bundle_count=self.get_bundle_count()
-                )
-                print(f"AutoSolve: Requesting session finalization (success={success})")
-                
-            except Exception as e:
-                import traceback
-                print(f"AutoSolve: Error recording session: {e}")
-                traceback.print_exc()
     
     def _get_context_override(self):
         """Get context override for operators."""

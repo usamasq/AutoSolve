@@ -165,44 +165,6 @@ class AUTOSOLVE_PT_main_panel(Panel):
         row.label(text=f"{clip.size[0]}x{clip.size[1]} | {clip.frame_duration}f")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# RESEARCH DATA (Always on top, always collapsed)
-# ═══════════════════════════════════════════════════════════════════════════
-
-class AUTOSOLVE_PT_research_panel(Panel):
-    """Research data management - beta participation."""
-    
-    bl_label = "Research Beta"
-    bl_idname = "AUTOSOLVE_PT_research_panel"
-    bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'TOOLS'
-    bl_category = "AutoSolve"
-    bl_parent_id = "AUTOSOLVE_PT_main_panel"
-    bl_options = {'DEFAULT_CLOSED'}
-    
-    def draw_header(self, context):
-        self.layout.label(text="", icon='EXPERIMENTAL')
-    
-    def draw(self, context):
-        layout = self.layout
-        settings = context.scene.autosolve
-        
-        col = layout.column(align=True)
-        col.prop(settings, "record_edits", text="Contribute to Research", icon='REC')
-        
-        try:
-            from .tracker.learning.settings_predictor import SettingsPredictor
-            predictor = SettingsPredictor()
-            stats = predictor.get_stats()
-            col.label(text=f"Sessions: {stats.get('total_sessions', 0)} | Success: {stats.get('success_rate', 0):.0%}")
-        except Exception:
-            col.label(text="No data collected yet")
-        
-        row = layout.row(align=True)
-        row.operator("autosolve.export_training_data", text="Export", icon='EXPORT')
-        row.operator("autosolve.contribute_data", text="Share", icon='URL')
-        row.operator("autosolve.reset_training_data", text="Reset", icon='LOOP_BACK')
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 1: TRACKING
@@ -503,7 +465,6 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
 
 classes = (
     AUTOSOLVE_PT_main_panel,
-    AUTOSOLVE_PT_research_panel,
     AUTOSOLVE_PT_phase1_tracking,
     AUTOSOLVE_PT_region_tools,
     AUTOSOLVE_PT_phase2_scene,

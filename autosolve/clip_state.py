@@ -42,13 +42,7 @@ class ClipState:
     solve_progress: float = 0.0
     solve_status: str = ""
     
-    # Last solve settings (for behavior learning)
-    last_settings: Dict = field(default_factory=dict)
-    last_footage_class: str = ""
-    
-    # Behavior tracking
-    behavior_recorder: Any = None
-    behavior_monitor: Any = None
+
 
 
 class ClipStateManager:
@@ -145,10 +139,7 @@ class ClipStateManager:
         
         Call this when detecting that user has switched to a different clip.
         """
-        # Save behavior data for old clip
-        if old_clip:
-            old_state = self.get_state(old_clip)
-            self._save_clip_behavior(old_state)
+
         
         # Update current fingerprint
         if new_clip:
@@ -156,17 +147,7 @@ class ClipStateManager:
         else:
             self._current_fingerprint = ""
     
-    def _save_clip_behavior(self, state: ClipState):
-        """Save pending behavior data for a clip."""
-        try:
-            if state.behavior_recorder and hasattr(state.behavior_recorder, 'is_monitoring'):
-                if state.behavior_recorder.is_monitoring:
-                    behavior = state.behavior_recorder.stop_monitoring(None, None)
-                    if behavior:
-                        state.behavior_recorder.save_behavior(behavior)
-                        print(f"AutoSolve: Saved behavior for clip {state.fingerprint[:8]}")
-        except Exception as e:
-            print(f"AutoSolve: Error saving clip behavior: {e}")
+
     
     def set_current_clip(self, clip: bpy.types.MovieClip):
         """Set the current active clip (call after successful solve)."""
@@ -219,9 +200,6 @@ class ClipStateManager:
     
     def clear_all(self):
         """Clear all clip states (call on file close)."""
-        # Save any pending behavior first
-        for state in self._states.values():
-            self._save_clip_behavior(state)
         
         self._states.clear()
         self._current_fingerprint = ""

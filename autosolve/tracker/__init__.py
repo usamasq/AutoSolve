@@ -6,5 +6,7 @@ Solver package - Automated Blender tracking system.
 
 Modules:
 - smart_tracker: Intelligent feature detection and tracking
-- learning: Machine learning for adaptive tracking
+- settings_predictor: Preset selection based on community defaults
+- failure_diagnostics: Algorithms for detecting tracking failure patterns
+- track_healer: Anchor-based gap interpolation for tracks
 """

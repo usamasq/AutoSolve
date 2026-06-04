@@ -59,7 +59,7 @@ class AutoSolveSettings(PropertyGroup):
     
     footage_type: EnumProperty(
         name="Footage Type",
-        description="Type of footage - helps the tracker learn better defaults",
+        description="Type of footage - optimizes tracking settings for footage characteristics",
         items=[
             ('AUTO', "Auto-detect", 
              "Automatically determine footage characteristics", 
@@ -135,19 +135,6 @@ class AutoSolveSettings(PropertyGroup):
              'SELECT_SET', 2),
         ],
         default='NONE',
-    )
-    
-    # ═══════════════════════════════════════════════════════════
-    # TRAINING DATA OPTIONS
-    # ═══════════════════════════════════════════════════════════
-    
-    record_edits: BoolProperty(
-        name="Learn from My Edits",
-        description="AutoSolve learns from your corrections! When you delete bad tracks "
-                    "or adjust settings before re-solving, AutoSolve learns what works "
-                    "for your footage types. All data stays local and anonymous. "
-                    "Disable if you prefer not to contribute to the learning model",
-        default=True,
     )
     
     # ═══════════════════════════════════════════════════════════
