@@ -1777,9 +1777,38 @@ class AUTOSOLVE_OT_clear_annotations(Operator):
     
     @classmethod
     def poll(cls, context):
-        return context.annotation_data is not None
+        clip = getattr(context, "edit_movieclip", None)
+        if clip:
+            if hasattr(clip, "annotation") and clip.annotation is not None:
+                return True
+            if hasattr(clip, "grease_pencil") and clip.grease_pencil is not None:
+                return True
+        if hasattr(context, "annotation_data") and context.annotation_data is not None:
+            return True
+        return False
     
     def execute(self, context):
+        try:
+            # Try clearing layers directly (Blender 4.2, 4.3, 4.4, 5.0, 5.1 safe)
+            clip = context.edit_movieclip
+            gpd = None
+            if clip:
+                if hasattr(clip, "annotation"):
+                    gpd = clip.annotation
+                elif hasattr(clip, "grease_pencil"):
+                    gpd = clip.grease_pencil
+            
+            if gpd is None and hasattr(context, "annotation_data"):
+                gpd = context.annotation_data
+                
+            if gpd and hasattr(gpd, "layers"):
+                gpd.layers.clear()
+                self.report({'INFO'}, "Annotations cleared")
+                return {'FINISHED'}
+        except Exception:
+            pass
+
+        # Fallback to legacy operator if direct clearing failed/unsupported
         try:
             bpy.ops.gpencil.data_unlink()
             self.report({'INFO'}, "Annotations cleared")

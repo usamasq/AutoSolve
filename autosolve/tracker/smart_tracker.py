@@ -424,8 +424,15 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             if annotation_mode == 'NONE':
                 return False
             
-            # Check for actual gpencil data
-            gpd = bpy.context.annotation_data
+            # Check for actual gpencil data on the clip
+            gpd = None
+            if hasattr(self.clip, "annotation"):
+                gpd = self.clip.annotation
+            elif hasattr(self.clip, "grease_pencil"):
+                gpd = self.clip.grease_pencil
+            elif hasattr(bpy.context, "annotation_data"):
+                gpd = bpy.context.annotation_data
+                
             if gpd and gpd.layers:
                 for layer in gpd.layers:
                     if layer.frames:
@@ -435,6 +442,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             return False
         except Exception:
             return False
+    
     
     # ─────────────────────────────────────────────────────────────────────────
     # FRAME COORDINATE CONVERSION
