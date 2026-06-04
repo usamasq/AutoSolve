@@ -516,26 +516,25 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TURBO MODE PANEL
+# NEURAL ENGINE PANEL
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_PT_turbo_mode(Panel):
-    """Turbo Mode — ONNX neural net inference for smarter tracking."""
+    """Neural Engine — ONNX inference bundled automatically with the addon."""
 
-    bl_label      = "⚡ Turbo Mode"
-    bl_idname     = "AUTOSOLVE_PT_turbo_mode"
-    bl_space_type = 'CLIP_EDITOR'
+    bl_label       = "Neural Engine"
+    bl_idname      = "AUTOSOLVE_PT_turbo_mode"
+    bl_space_type  = 'CLIP_EDITOR'
     bl_region_type = 'TOOLS'
-    bl_category   = "AutoSolve"
-    bl_parent_id  = "AUTOSOLVE_PT_main_panel"
-    bl_options    = {'DEFAULT_CLOSED'}
+    bl_category    = "AutoSolve"
+    bl_parent_id   = "AUTOSOLVE_PT_main_panel"
+    bl_options     = {'DEFAULT_CLOSED'}
 
     @classmethod
     def poll(cls, context):
         return context.edit_movieclip is not None
 
     def draw_header(self, context):
-        # Show a green dot when ONNX is active, grey otherwise
         try:
             from .tracker.onnx_predictor import is_onnx_installed
             icon = 'RADIOBUT_ON' if is_onnx_installed() else 'RADIOBUT_OFF'
@@ -556,44 +555,52 @@ class AUTOSOLVE_PT_turbo_mode(Panel):
             onnx_ok = False
 
         if onnx_ok:
-            version = get_onnx_version()
-            predictor    = OnnxPredictor.get_instance()
-            track_ok     = predictor.track_model_available
-            settings_ok  = predictor.settings_model_available
+            version     = get_onnx_version()
+            predictor   = OnnxPredictor.get_instance()
+            track_ok    = predictor.track_model_available
+            settings_ok = predictor.settings_model_available
+            all_ok      = track_ok and settings_ok
 
-            box.label(text=f"Status: ACTIVE (v{version})", icon='CHECKMARK')
+            box.label(
+                text=f"onnxruntime {version} — {'fully armed' if all_ok else 'engine ready'}",
+                icon='CHECKMARK' if all_ok else 'INFO'
+            )
+            box.separator(factor=0.5)
+
             col = box.column(align=True)
-            col.scale_y = 0.85
+            col.scale_y = 0.8
             col.label(
-                text=f"Track predictor:   {'✅ loaded' if track_ok    else '❌ model missing'}",
+                text=f"Track model:    {'loaded ✓' if track_ok    else 'missing'}",
                 icon='TRACKING'
             )
             col.label(
-                text=f"Settings model:    {'✅ loaded' if settings_ok else '❌ model missing'}",
+                text=f"Settings model: {'loaded ✓' if settings_ok else 'missing'}",
                 icon='PREFERENCES'
             )
-            box.separator()
-            box.label(
-                text="Train models then run ml/export_onnx.py to update.",
-                icon='INFO'
-            )
-            box.operator("autosolve.check_turbo_status", text="Refresh Status", icon='FILE_REFRESH')
+
+            if not all_ok:
+                box.separator(factor=0.5)
+                col2 = box.column(align=True)
+                col2.scale_y = 0.75
+                col2.label(text="To load models:", icon='INFO')
+                col2.label(text="1. python ml/train_settings_model.py")
+                col2.label(text="2. python ml/export_onnx.py")
+                col2.label(text="3. Copy .onnx → autosolve/tracker/models/")
+
+            box.separator(factor=0.5)
+            box.operator("autosolve.check_turbo_status", text="Refresh", icon='FILE_REFRESH')
+
+
 
         else:
-            box.label(text="Status: Not active", icon='ERROR')
-            box.separator()
+            # onnxruntime wheel didn't load — unusual since it's bundled with the addon
+            box.label(text="onnxruntime not loaded", icon='ERROR')
             col = box.column(align=True)
             col.scale_y = 0.8
-            col.label(text="Turbo Mode adds real neural net inference", icon='INFO')
-            col.label(text="for track quality and settings prediction.")
-            col.label(text="One-time ~6 MB download. No restart needed.")
-            box.separator()
-            row = box.row()
-            row.scale_y = 1.6
-            row.operator("autosolve.install_onnx", text="⚡ Enable Turbo Mode", icon='IMPORT')
-            box.separator()
-            box.label(text="Or install manually:", icon='CONSOLE')
-            box.label(text="pip install onnxruntime")
+            col.label(text="The bundled wheel failed to import.", icon='INFO')
+            col.label(text="Try reinstalling the addon, or check")
+            col.label(text="Window > System Console for details.")
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════

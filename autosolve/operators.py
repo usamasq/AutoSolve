@@ -1293,49 +1293,48 @@ class AUTOSOLVE_OT_resolve(Operator):
         self.report({'INFO'}, f"Re-solved: {bundles} tracks, {error:.2f}px error")
         return {'FINISHED'}
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-# TURBO MODE — ONNX INSTALLER
+# NEURAL ENGINE — ONNX OPERATORS
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_OT_install_onnx(bpy.types.Operator):
-    """Install onnxruntime into Blender's Python (one-time, ~6 MB download).
-    Enables Turbo Mode: real neural net inference for smarter tracking decisions."""
+    """Install onnxruntime into Blender's Python as a fallback for older Blender versions
+    that do not support bundled extension wheels."""
 
     bl_idname  = "autosolve.install_onnx"
-    bl_label   = "Enable Turbo Mode"
+    bl_label   = "Install Neural Engine"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        self.report({'INFO'}, "AutoSolve Turbo: Installing onnxruntime...")
+        self.report({'INFO'}, "AutoSolve: Installing onnxruntime...")
 
         try:
             from .tracker.onnx_predictor import install_onnx_runtime
 
             def _progress(msg):
-                self.report({'INFO'}, f"AutoSolve Turbo: {msg}")
+                self.report({'INFO'}, f"AutoSolve: {msg}")
 
             success = install_onnx_runtime(progress_callback=_progress)
 
             if success:
                 self.report({'INFO'},
-                    "AutoSolve Turbo: onnxruntime installed! "
+                    "AutoSolve: onnxruntime installed! "
                     "Restart Blender once to activate neural net inference.")
             else:
                 self.report({'WARNING'},
-                    "AutoSolve Turbo: Installation failed — check System Console for details.")
+                    "AutoSolve: Installation failed — check System Console for details.")
 
         except Exception as e:
-            self.report({'ERROR'}, f"AutoSolve Turbo: Unexpected error: {e}")
+            self.report({'ERROR'}, f"AutoSolve: Unexpected error: {e}")
 
         return {'FINISHED'}
 
 
 class AUTOSOLVE_OT_check_turbo_status(bpy.types.Operator):
-    """Check whether Turbo Mode (onnxruntime) is active."""
+    """Refresh the Neural Engine status panel."""
 
     bl_idname  = "autosolve.check_turbo_status"
-    bl_label   = "Check Turbo Status"
+    bl_label   = "Refresh Neural Engine Status"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1343,19 +1342,19 @@ class AUTOSOLVE_OT_check_turbo_status(bpy.types.Operator):
             from .tracker.onnx_predictor import is_onnx_installed, get_onnx_version, OnnxPredictor
             if is_onnx_installed():
                 version = get_onnx_version()
-                predictor = OnnxPredictor.get_instance()
+                predictor   = OnnxPredictor.get_instance()
                 track_ok    = predictor.track_model_available
                 settings_ok = predictor.settings_model_available
                 self.report({'INFO'},
-                    f"Turbo ACTIVE — onnxruntime {version} | "
-                    f"Track model: {'✅' if track_ok else '❌'} | "
-                    f"Settings model: {'✅' if settings_ok else '❌'}")
+                    f"Neural Engine: onnxruntime {version} | "
+                    f"Track model: {'loaded' if track_ok else 'missing'} | "
+                    f"Settings model: {'loaded' if settings_ok else 'missing'}")
             else:
-                self.report({'INFO'},
-                    "Turbo NOT active — onnxruntime not installed. "
-                    "Click 'Enable Turbo Mode' to install.")
+                self.report({'WARNING'},
+                    "Neural Engine: onnxruntime not found. "
+                    "Reinstall the addon or check System Console.")
         except Exception as e:
-            self.report({'ERROR'}, f"Status check error: {e}")
+            self.report({'ERROR'}, f"Neural Engine status error: {e}")
 
         return {'FINISHED'}
 
@@ -1372,10 +1371,11 @@ classes = (
     AUTOSOLVE_OT_detect_inside_annotation,
     AUTOSOLVE_OT_detect_outside_annotation,
     AUTOSOLVE_OT_clear_annotations,
-    # Turbo Mode
+    # Neural Engine
     AUTOSOLVE_OT_install_onnx,
     AUTOSOLVE_OT_check_turbo_status,
 )
+
 
 
 

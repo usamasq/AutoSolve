@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "autosolve"
 name = "AutoSolve"
-version = "0.1.1"
+version = "0.2.0"
 tagline = "One-click automated camera tracking for Blender"
 maintainer = "Usama Bin Shahid <usamasq@gmail.com>"
 type = "add-on"
@@ -14,4 +14,12 @@ license = ["SPDX:GPL-3.0-or-later"]
 copyright = ["2025 Usama Bin Shahid"]
 
 [permissions]
-files = "Access movie clip data for tracking"
+files = "Access movie clip data for tracking and writing live training records to disk"
+
+# Bundled Python wheels — installed automatically by Blender at addon install time.
+# onnxruntime 1.26.0 for Python 3.13 (Blender 5.x) — three major platforms.
+wheels = [
+  "./wheels/onnxruntime-1.26.0-cp313-cp313-win_amd64.whl",
+  "./wheels/onnxruntime-1.26.0-cp313-cp313-macosx_14_0_arm64.whl",
+  "./wheels/onnxruntime-1.26.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+]
