@@ -5,7 +5,7 @@
 OnnxPredictor — Neural net inference using ONNX Runtime inside Blender.
 
 Strategy:
-  1. Try to import onnxruntime (present after user installs Turbo Mode, or pre-bundled)
+  1. Try to import onnxruntime (present from bundled wheels, or installed fallback)
   2. Fall back gracefully to the existing numpy JSON-weight forward pass
   3. Cache InferenceSession so loading only happens once per Blender session
 
@@ -273,7 +273,7 @@ def install_onnx_runtime(progress_callback=None) -> bool:
     import sys
 
     def _log(msg):
-        print(f"AutoSolve Turbo: {msg}")
+        print(f"AutoSolve Neural Engine: {msg}")
         if progress_callback:
             progress_callback(msg)
 

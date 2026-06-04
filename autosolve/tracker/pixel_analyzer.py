@@ -10,7 +10,7 @@ Uses ONLY bpy + numpy (both bundled with Blender) to:
   - Build a heatmap of "trackable" zones before markers are placed
   - Score existing marker positions for pre-rejection before tracking
 
-This is the "zero new dependencies" turbo component.
+This is the "zero new dependencies" component.
 """
 
 import bpy

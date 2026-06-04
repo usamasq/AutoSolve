@@ -28,9 +28,9 @@ from .analyzers import TrackStats, RegionStats, CoverageData, TrackAnalyzer, Cov
 from .constants import REGIONS
 # Utility functions
 from .utils import get_region, get_region_bounds
-# Turbo: pixel-based trackability scorer (zero new deps)
+# Neural Engine: pixel-based trackability scorer (zero new deps)
 from .pixel_analyzer import PixelAnalyzer
-# Turbo: camera reconstruction readback
+# Neural Engine: camera reconstruction readback
 from .reconstruction_reader import ReconstructionReader
 
 
@@ -335,7 +335,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             from .onnx_predictor import OnnxPredictor
             self.onnx_predictor = OnnxPredictor.get_instance()
             if self.onnx_predictor.track_model_available:
-                print("AutoSolve: TrackPredictor using ONNX Turbo inference")
+                print("AutoSolve: TrackPredictor using ONNX inference")
             else:
                 print("AutoSolve: ONNX track model not found, loading numpy fallback")
         except Exception as e:
@@ -351,10 +351,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             except Exception as e:
                 print(f"AutoSolve: Failed to initialize TrackPredictor fallback: {e}")
 
-        # Turbo: pixel-based trackability scorer
+        # Neural Engine: pixel-based trackability scorer
         self.pixel_analyzer = PixelAnalyzer()
 
-        # Turbo: camera reconstruction reader
+        # Neural Engine: camera reconstruction reader
         self.reconstruction_reader = ReconstructionReader()
         
         self.motion_class: Optional[str] = None  # Set after motion probe
@@ -411,7 +411,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.enable_healing: bool = True
         self.healer = None  # Lazy init in heal_tracks()
 
-        # Turbo: last reconstruction velocity signal (set after each solve)
+        # Neural Engine: last reconstruction velocity signal (set after each solve)
         self._last_reconstruction_velocity: Optional[Dict] = None
         
         # Try to load cached probe from disk
@@ -3988,7 +3988,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
 
                 self._solve_quality_failure = False
 
-                # ── Turbo: Reconstruction readback ──────────────────────────
+                # ── Neural Engine: Reconstruction readback ──────────────────
                 try:
                     poses = self.reconstruction_reader.read_camera_poses(self.clip)
                     if poses:
@@ -3996,12 +3996,12 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                         vel_signal = self.reconstruction_reader.camera_velocity_signal(poses)
 
                         if bad_frames:
-                            print(f"AutoSolve Turbo: Detected {len(bad_frames)} bad reconstruction frames: "
+                            print(f"AutoSolve: Detected {len(bad_frames)} bad reconstruction frames: "
                                   f"{bad_frames[:5]}{'...' if len(bad_frames) > 5 else ''}")
                             self._mute_tracks_in_bad_frames(bad_frames)
 
                         self._last_reconstruction_velocity = vel_signal
-                        print(f"AutoSolve Turbo: Camera velocity — "
+                        print(f"AutoSolve: Camera velocity — "
                               f"angular={vel_signal['mean_angular_vel']:.2f}°/f, "
                               f"class={vel_signal['motion_class']}")
 
@@ -4012,10 +4012,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                             )
                             self._append_training_record(record)
                         except Exception as te:
-                            print(f"AutoSolve Turbo: Training record export failed: {te}")
+                            print(f"AutoSolve: Training record export failed: {te}")
 
                 except Exception as re_err:
-                    print(f"AutoSolve Turbo: Reconstruction readback failed: {re_err}")
+                    print(f"AutoSolve: Reconstruction readback failed: {re_err}")
                 # ────────────────────────────────────────────────────────────
 
                 return True
@@ -4057,7 +4057,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
 
     def _mute_tracks_in_bad_frames(self, bad_frames: List[int]):
         """
-        Turbo helper: mute markers on frames flagged as bad reconstruction frames.
+        Neural Engine helper: mute markers on frames flagged as bad reconstruction frames.
 
         A track's markers that fall exclusively in bad frames are muted so they
         don't contribute to the next solve attempt.
@@ -4072,11 +4072,11 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     marker.mute = True
                     muted_count += 1
         if muted_count:
-            print(f"AutoSolve Turbo: Muted {muted_count} markers in {len(bad_frames)} bad frames")
+            print(f"AutoSolve: Muted {muted_count} markers in {len(bad_frames)} bad frames")
 
     def _append_training_record(self, record: Dict):
         """
-        Turbo helper: append a training record to the per-clip on-disk dataset.
+        Neural Engine helper: append a training record to the per-clip on-disk dataset.
 
         Records are written to the ml/data/live/ directory so the training
         pipeline can pick them up on the next training run.
@@ -4094,7 +4094,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             with open(record_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record) + "\n")
         except Exception as e:
-            print(f"AutoSolve Turbo: Could not write training record: {e}")
+            print(f"AutoSolve: Could not write training record: {e}")
 
     def analyze_and_learn(self) -> Dict:
         """Analyze tracks and learn from results."""
