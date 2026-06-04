@@ -1293,6 +1293,7 @@ class AUTOSOLVE_OT_resolve(Operator):
         self.report({'INFO'}, f"Re-solved: {bundles} tracks, {error:.2f}px error")
         return {'FINISHED'}
 
+
 # ═══════════════════════════════════════════════════════════════════════════
 # NEURAL ENGINE — ONNX OPERATORS
 # ═══════════════════════════════════════════════════════════════════════════

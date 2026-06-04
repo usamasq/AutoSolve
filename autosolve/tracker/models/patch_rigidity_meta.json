@@ -1,0 +1,9 @@
+{
+    "input_size": [
+        32,
+        32
+    ],
+    "channels": 1,
+    "normalization": "div_255",
+    "description": "AutoSolve Patch Rigidity CNN. Inputs 32x32 grayscale image patches scaled to [0,1]. Outputs static/rigid rigidity probability in [0,1]."
+}

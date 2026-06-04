@@ -156,12 +156,18 @@ def main():
     print(f"Found {len(files)} clips to process in {args.clips_dir}")
 
     for f in files:
+        out_name = f"{os.path.splitext(f)[0]}_video_meta.json"
+        out_path = os.path.join(args.out_dir, out_name)
+        
+        # Skip if already exists (resume support)
+        if os.path.exists(out_path):
+            print(f"  -> Skipping existing features: {out_name}")
+            continue
+            
         path = os.path.join(args.clips_dir, f)
         print(f"Extracting features from {f}...")
         feats = extract_features_from_video(path)
         if feats:
-            out_name = f"{os.path.splitext(f)[0]}_video_meta.json"
-            out_path = os.path.join(args.out_dir, out_name)
             with open(out_path, 'w', encoding='utf-8') as fh:
                 json.dump(feats, fh, indent=4)
             print(f"  Saved features to {out_name}")

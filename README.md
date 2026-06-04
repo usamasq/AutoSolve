@@ -169,7 +169,10 @@ autosolve/
         └── region_weights.json # Empirical track survivability region weights
 
 ml/
-├── collect_data.py           # Headless simulated data collection script
+├── extract_video_features.py  # OpenCV video feature extraction script
+├── extract_cotracker_trajectories.py # PyTorch/CoTracker trajectory extractor
+├── collect_data.py           # Headless validation/collection script (Blender)
+├── run_collection.py         # Batch runner for Blender validation/collection
 ├── prepare_dataset.py        # Dataset preprocessing for settings optimizer
 ├── train_track_predictor.py  # Train Track Quality Predictor PyTorch model
 ├── train_trackability_model.py # Calculate empirical region weights

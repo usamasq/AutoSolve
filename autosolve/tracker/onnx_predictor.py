@@ -35,8 +35,10 @@ except ImportError:
 
 _MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 
+PATCH_MODEL_ONNX    = os.path.join(_MODELS_DIR, "patch_rigidity.onnx")
 SETTINGS_MODEL_ONNX = os.path.join(_MODELS_DIR, "settings_model.onnx")
 TRACK_MODEL_ONNX    = os.path.join(_MODELS_DIR, "track_predictor.onnx")
+PATCH_META_JSON     = os.path.join(_MODELS_DIR, "patch_rigidity_meta.json")
 SETTINGS_META_JSON  = os.path.join(_MODELS_DIR, "settings_model_meta.json")
 TRACK_META_JSON     = os.path.join(_MODELS_DIR, "track_predictor_meta.json")
 
@@ -106,7 +108,8 @@ class _OnnxSession:
             raise RuntimeError("ONNX session is not available")
 
         x = features.astype(np.float32)
-        if self.input_mean is not None:
+        # Apply normalization if defined in metadata and shape matches
+        if self.input_mean is not None and self.input_mean.shape == x.shape[1:]:
             x = (x - self.input_mean) / self.input_std
 
         output = self.session.run([self.output_name], {self.input_name: x})
@@ -122,6 +125,7 @@ class OnnxPredictor:
     Unified ONNX-based predictor for:
       - Track survival probability  (replaces TrackPredictor numpy MLP)
       - Expected tracking reward    (replaces SettingsPredictor heuristic)
+      - Patch rigidity classification (semantic masking)
 
     Falls back silently to None returns when ONNX is unavailable so that
     callers can handle the fallback with their existing code paths.
@@ -132,11 +136,13 @@ class OnnxPredictor:
     def __init__(self):
         self._track_session    = _OnnxSession(TRACK_MODEL_ONNX,    TRACK_META_JSON)
         self._settings_session = _OnnxSession(SETTINGS_MODEL_ONNX, SETTINGS_META_JSON)
+        self._patch_session    = _OnnxSession(PATCH_MODEL_ONNX,    PATCH_META_JSON)
 
         if _ONNX_AVAILABLE:
             print(f"AutoSolve OnnxPredictor: onnxruntime {ort.__version__} ready. "
                   f"Track={self._track_session.available}, "
-                  f"Settings={self._settings_session.available}")
+                  f"Settings={self._settings_session.available}, "
+                  f"Patch={self._patch_session.available}")
         else:
             print("AutoSolve OnnxPredictor: onnxruntime not installed — using numpy fallback")
 
@@ -167,6 +173,32 @@ class OnnxPredictor:
     @property
     def settings_model_available(self) -> bool:
         return self._settings_session.available
+
+    @property
+    def patch_model_available(self) -> bool:
+        return self._patch_session.available
+
+    def predict_patch_rigidity(self, patch: np.ndarray) -> Optional[float]:
+        """
+        Predict the rigidity of a 32x32 grayscale image patch.
+
+        Args:
+            patch: (32, 32) float32 numpy array with values in [0, 1]
+
+        Returns:
+            Rigidity score in [0, 1] (higher = static/rigid, lower = dynamic)
+            or None if the patch model is not available.
+        """
+        if not self._patch_session.available:
+            return None
+        try:
+            # Reshape to (1, 1, 32, 32) matching Conv2D input
+            x = patch.reshape(1, 1, 32, 32).astype(np.float32)
+            result = self._patch_session.run(x)
+            return float(np.clip(result[0], 0.0, 1.0))
+        except Exception as e:
+            print(f"AutoSolve OnnxPredictor: patch rigidity inference failed: {e}")
+            return None
 
     def predict_track_survival(self, features: np.ndarray) -> Optional[np.ndarray]:
         """

@@ -72,7 +72,7 @@ def run_validation(args):
     json_files = [
         os.path.join(args.data_dir, f) 
         for f in os.listdir(args.data_dir) 
-        if f.endswith('.json')
+        if f.endswith('.json') and not f.endswith('_video_meta.json')
     ]
     
     total_files = len(json_files)

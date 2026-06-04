@@ -134,6 +134,29 @@ def train_model(args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     
     model = SettingsMLP()
+    
+    # Load pretrained weights if specified
+    if hasattr(args, 'pretrained') and args.pretrained:
+        if os.path.exists(args.pretrained):
+            print(f"Loading pretrained weights from '{args.pretrained}'...")
+            try:
+                if args.pretrained.endswith('.json'):
+                    with open(args.pretrained, 'r') as fh:
+                        meta_data = json.load(fh)
+                    weights_dict = {}
+                    for k, v in meta_data["weights"].items():
+                        weights_dict[k] = torch.tensor(v, dtype=torch.float32)
+                    model.load_state_dict(weights_dict)
+                    print("Successfully loaded weights from metadata JSON file.")
+                else:
+                    model.load_state_dict(torch.load(args.pretrained, map_location='cpu'))
+                    print("Successfully loaded weights from PyTorch checkpoint (.pt) file.")
+            except Exception as e:
+                print(f"Error loading pretrained weights: {e}")
+                print("Proceeding with fresh training.")
+        else:
+            print(f"Pretrained weight file not found at '{args.pretrained}'. Proceeding with fresh training.")
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
@@ -193,6 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=0.005, help="Learning rate")
+    parser.add_argument("--pretrained", default=None, help="Path to pretrained model weight file (.pt or metadata JSON) to resume/fine-tune training")
     
     parsed_args = parser.parse_args()
     train_model(parsed_args)

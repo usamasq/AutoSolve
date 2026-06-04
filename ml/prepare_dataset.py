@@ -98,35 +98,75 @@ def calculate_reward(sample: Dict[str, Any]) -> float:
     return round(reward, 4)
 
 
-def generate_simulated_dataset() -> List[Dict[str, Any]]:
-    """Generates a synthetic list of SolveSamples to simulate the data collection pipeline."""
-    print("Generating simulated SolveSamples for testing settings optimizer pipeline...")
+def generate_simulated_dataset(video_metas: Dict[str, Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Generates a synthetic list of SolveSamples to simulate the data collection pipeline using video features."""
+    print("Generating simulated SolveSamples for settings optimizer pipeline using video features...")
     samples = []
     
-    # Generate 15 fake clips
     clips = []
-    for i in range(15):
-        f_type = random.choice(FOOTAGE_TYPES)
-        w, h = random.choice([(1920, 1080), (3840, 2160), (1280, 720)])
-        clips.append({
-            "clip_name": f"synthetic_clip_{i:03d}",
-            "width": w,
-            "height": h,
-            "fps": random.choice([23.976, 24.0, 25.0, 29.97, 30.0, 60.0]),
-            "frame_count": random.randint(60, 450),
-            "footage_type": f_type
-        })
+    if video_metas:
+        # Use real video metadata from extracted features
+        for c_name, meta in video_metas.items():
+            f_type = "AUTO"
+            if meta.get("mean_motion", 0.0) > 3.0:
+                f_type = "ACTION"
+            elif meta.get("zoom_divergence", 0.0) > 0.4:
+                f_type = "DRONE" if random.random() < 0.5 else "CINEMATIC"
+            elif meta.get("distortion_factor", 0.0) > 50.0:
+                f_type = "CINEMATIC"
+                
+            clips.append({
+                "clip_name": c_name,
+                "width": meta.get("width", 1920),
+                "height": meta.get("height", 1080),
+                "fps": meta.get("fps", 24.0),
+                "frame_count": meta.get("frame_count", 250),
+                "footage_type": f_type,
+                "mean_motion": meta.get("mean_motion", 0.5),
+                "zoom_divergence": meta.get("zoom_divergence", 0.0),
+                "distortion_factor": meta.get("distortion_factor", 0.0),
+                "noise_ratio": meta.get("noise_ratio", 0.003)
+            })
+    else:
+        # Generate 15 fake clips
+        for i in range(15):
+            f_type = random.choice(FOOTAGE_TYPES)
+            w, h = random.choice([(1920, 1080), (3840, 2160), (1280, 720)])
+            clips.append({
+                "clip_name": f"synthetic_clip_{i:03d}",
+                "width": w,
+                "height": h,
+                "fps": random.choice([23.976, 24.0, 25.0, 29.97, 30.0, 60.0]),
+                "frame_count": random.randint(60, 450),
+                "footage_type": f_type,
+                "mean_motion": random.uniform(0.1, 4.0),
+                "zoom_divergence": random.uniform(0.0, 1.2),
+                "distortion_factor": random.uniform(0.0, 100.0),
+                "noise_ratio": random.uniform(0.001, 0.08)
+            })
         
     # For each clip, try multiple settings variations
     for clip in clips:
-        # Expected optimal settings for this footage type to add some signal to the data
+        # Expected optimal settings determined by physical video features to guide training
         optimal_pattern = 17
-        optimal_search = 71
         if clip["width"] >= 3840:
             optimal_pattern = 55
-            optimal_search = 231
-        if clip["footage_type"] == "DRONE":
-            optimal_search = 121
+        elif clip.get("noise_ratio", 0.0) > 0.03:
+            optimal_pattern = 31
+            
+        optimal_search = 71
+        if clip.get("mean_motion", 0.5) > 2.0:
+            optimal_search += 100
+        if clip.get("zoom_divergence", 0.0) > 0.3:
+            optimal_search += 50
+            
+        optimal_corr = 0.70
+        if clip.get("noise_ratio", 0.0) > 0.03:
+            optimal_corr = 0.55
+            
+        optimal_thresh = 0.30
+        if clip.get("mean_motion", 0.5) > 2.0:
+            optimal_thresh = 0.15
             
         for _ in range(25):  # 25 solve attempts per clip
             pattern = random.choice([11, 15, 17, 21, 31, 55])
@@ -138,17 +178,22 @@ def generate_simulated_dataset() -> List[Dict[str, Any]]:
             robust = random.random() < 0.3
             
             # Calculate distance from optimal settings
-            dist = abs(pattern - optimal_pattern) / 50.0 + abs(search - optimal_search) / 200.0
+            dist = (
+                abs(pattern - optimal_pattern) / 50.0 + 
+                abs(search - optimal_search) / 200.0 +
+                abs(corr - optimal_corr) +
+                abs(thresh - optimal_thresh)
+            )
             
             # Higher distance = lower probability of success
-            success_prob = max(0.1, 0.85 - dist)
+            success_prob = max(0.1, 0.90 - dist)
             success = random.random() < success_prob
             
             error = 99.0
             bundle_ratio = 0.0
             if success:
-                error = max(0.1, random.normalvariate(0.6 + dist * 2.0, 0.3))
-                bundle_ratio = max(0.2, min(0.95, random.uniform(0.4, 0.9) - dist * 0.3))
+                error = max(0.1, random.normalvariate(0.5 + dist * 1.5, 0.2))
+                bundle_ratio = max(0.2, min(0.95, random.uniform(0.5, 0.9) - dist * 0.25))
                 
             sample = {
                 "clip_metadata": {
@@ -184,6 +229,7 @@ def prepare_dataset(args):
     """Load, split, normalize, and save the settings optimizer dataset."""
     raw_samples = []
     video_meta_lookup = {}
+    real_samples = []
     
     if os.path.exists(args.data_dir):
         # 1. Load video feature files first
@@ -198,18 +244,24 @@ def prepare_dataset(args):
             except Exception as e:
                 print(f"Error loading video meta {fp}: {e}")
 
-        # 2. Load SolveSample JSON files
-        json_files = [os.path.join(args.data_dir, f) for f in os.listdir(args.data_dir) if f.endswith('.json') and not f.endswith('_video_meta.json')]
-        for fp in json_files:
-            try:
-                with open(fp, 'r') as f:
-                    raw_samples.append(json.load(f))
-            except Exception as e:
-                print(f"Error loading solve sample {fp}: {e}")
-                
-    if not raw_samples:
-        print(f"No raw files found in '{args.data_dir}'. Generating synthetic dataset.")
-        raw_samples = generate_simulated_dataset()
+        # 2. Load actual solve sample JSONs if present
+        for f in os.listdir(args.data_dir):
+            if f.endswith('.json') and not f.endswith('_video_meta.json') and not f.endswith('settings_dataset.json'):
+                fp = os.path.join(args.data_dir, f)
+                try:
+                    with open(fp, 'r', encoding='utf-8') as fh:
+                        sample = json.load(fh)
+                        if isinstance(sample, dict) and "clip_metadata" in sample and "settings" in sample:
+                            real_samples.append(sample)
+                except Exception as e:
+                    print(f"Error loading solve sample {fp}: {e}")
+
+    if real_samples:
+        print(f"Loaded {len(real_samples)} actual solve samples from '{args.data_dir}'.")
+        raw_samples = real_samples
+    else:
+        print(f"No actual solve samples found in '{args.data_dir}'. Falling back to simulated dataset.")
+        raw_samples = generate_simulated_dataset(video_meta_lookup)
         
     print(f"Total samples loaded: {len(raw_samples)}")
     

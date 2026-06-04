@@ -51,8 +51,12 @@ Videos are categorized into 7 core motion and environmental classes:
 
 Raw clips should be placed in `ml/clips/` using the naming pattern `clip_[id]_[category]_[fps]_[resolution].mp4` (e.g. `clip_001_indoor_24fps_1080p.mp4`).
 
-Run the dataset generator runner:
+Run the dataset extraction pipeline:
 ```bash
-python ml/run_collection.py --clips-dir ml/clips --output-dir ml/data/raw --blender-bin "path/to/blender"
+# 1. Extract video metadata features
+python ml/extract_video_features.py --clips-dir ml/clips --out-dir ml/data/raw
+
+# 2. Track trajectories natively (using CoTracker or LK fallback)
+python ml/extract_cotracker_trajectories.py --clips-dir ml/clips --out-dir ml/data/raw
 ```
-This runs the background tracking simulations and populates `ml/data/raw/` with JSON samples.
+This processes all video clips and generates raw JSON metadata and tracking trajectories in `ml/data/raw/`.

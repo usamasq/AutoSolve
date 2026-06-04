@@ -1,6 +1,6 @@
 # AutoSolve Model Training Guide
 
-This guide describes how to run the data collection pipeline and train/evaluate the machine learning models used in AutoSolve.
+This guide describes how to extract tracking datasets directly from video clips and train/evaluate the machine learning models used in AutoSolve.
 
 All training scripts support **zero-dependency fallback modes** which generate heuristic defaults if PyTorch/NumPy are missing from your global environment.
 
@@ -10,11 +10,12 @@ All training scripts support **zero-dependency fallback modes** which generate h
 
 ```mermaid
 graph TD
-    Clips[1. Reference Clips] -->|ml/run_collection.py| RawJSON[2. Raw JSON Samples]
-    RawJSON -->|ml/train_trackability_model.py| RegionWeights[3. region_weights.json]
-    RawJSON -->|ml/train_track_predictor.py| PyTorchTrack[4. Track Predictor Weights]
+    Clips[1. Reference Clips] -->|ml/extract_video_features.py| VideoMeta[2a. Video Metadata]
+    Clips -->|ml/extract_cotracker_trajectories.py| Trajectories[2b. Trajectories JSON]
+    Trajectories -->|ml/train_trackability_model.py| RegionWeights[3. region_weights.json]
+    Trajectories -->|ml/train_track_predictor.py| PyTorchTrack[4. Track Predictor Weights]
     PyTorchTrack -->|ml/export_numpy_model.py| PredictorJSON[5. track_predictor.json]
-    RawJSON -->|ml/prepare_dataset.py| ProcessedDataset[6. Settings Dataset]
+    VideoMeta -->|ml/prepare_dataset.py| ProcessedDataset[6. Settings Dataset]
     ProcessedDataset -->|ml/train_settings_model.py| PyTorchSettings[7. Settings Model Weights]
     PyTorchSettings -->|ml/evaluate_model.py| Evaluation[8. Performance Evaluation]
     PyTorchSettings -->|ml/export_defaults.py| PresetsReport[9. recommended_defaults.json]
@@ -27,12 +28,15 @@ To build a dataset, you must gather a set of CC-licensed tracking reference clip
 
 ---
 
-## 2. Simulated Data Collection
-Run the batch simulation runner. This script launches Blender headlessly, performs simulated tracking sweeps with varying parameters, and logs solve results.
+## 2. Ingestion & Trajectory Extraction
+Bypassing Blender, we extract video features and track trajectories directly in PyTorch using Meta's **CoTracker** (with an OpenCV Lucas-Kanade fallback).
 
 ```bash
-# Run batch tracking simulation over clips directory
-python ml/run_collection.py --clips-dir ml/clips/ --out-dir ml/data/raw/
+# Step 2a: Extract video features (motion speed, zoom divergence, distortion curvature, noise)
+python ml/extract_video_features.py --clips-dir ml/clips/ --out-dir ml/data/raw/
+
+# Step 2b: Extract point trajectories and simulate settings variations (with noise/occlusions)
+python ml/extract_cotracker_trajectories.py --clips-dir ml/clips/ --out-dir ml/data/raw/
 ```
 
 ### Validate Raw Dataset
@@ -97,3 +101,14 @@ Performs parameter search grid sweeps using the MLP predictor to select optimal 
 python ml/export_defaults.py --model-path ml/runs/settings_optimizer/model_meta_weights.json --output-json ml/runs/settings_optimizer/recommended_defaults.json
 ```
 *Note: Developers should manually review recommendations inside `recommended_defaults.json` and merge them into `PRETRAINED_DEFAULTS` inside `autosolve/tracker/constants.py`.*
+
+---
+
+## 6. Phase 2: Addon Validation (Headless Blender solves)
+To verify that the trained models translate to high-quality solves under actual Blender conditions, run the validation script which launches background Blender tasks to track and solve clips:
+
+```bash
+# Run validation solves over your clips using the new models
+python ml/run_collection.py --clips-dir ml/clips/ --output-dir ml/data/validation/ --blender-bin "path/to/blender"
+```
+This output can be compared to benchmark performance to verify accuracy.

@@ -143,22 +143,100 @@ class PixelAnalyzer:
     # Texture Scoring
     # ───────────────────────────────────────────────────────────────────────
 
+    def is_patch_rigid(
+        self,
+        clip: bpy.types.MovieClip,
+        frame: int,
+        cx: float, cy: float,
+        gray_f: Optional[np.ndarray] = None
+    ) -> bool:
+        """
+        Verify if a patch centered at normalized (cx, cy) is rigid/static.
+        Uses patch_rigidity.onnx model if available, falling back to a NumPy
+        temporal and texture variance analyzer.
+        """
+        try:
+            from .onnx_predictor import OnnxPredictor
+            opt = OnnxPredictor.get_instance()
+
+            if gray_f is None:
+                gray_f = self.get_frame_gray(clip, frame)
+            if gray_f is None:
+                return True  # neutral fallback
+
+            h, w = gray_f.shape
+            px = int(cx * w)
+            py = int(cy * h)
+
+            x0 = max(0, px - 16)
+            x1 = min(w, px + 16)
+            y0 = max(0, py - 16)
+            y1 = min(h, py + 16)
+
+            # Pad boundary patches safely to 32x32
+            if (x1 - x0) < 32 or (y1 - y0) < 32:
+                patch = np.zeros((32, 32), dtype=np.float32)
+                crop = gray_f[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
+                ch, cw = crop.shape
+                patch[:ch, :cw] = crop
+            else:
+                patch = gray_f[y0:y1, x0:x1]
+
+            # 1. Try ONNX rigidity classifier prediction (CNN-based)
+            if opt.patch_model_available:
+                score = opt.predict_patch_rigidity(patch)
+                if score is not None:
+                    return score > 0.45
+
+            # 2. NumPy Fallback: Texture variance + Simple Temporal variance checks
+            p_var = float(np.var(patch))
+            if p_var < MIN_TEXTURE_VARIANCE:
+                return False  # uniform homogeneous (e.g. flat sky, untrackable)
+
+            # Sample adjacent frames to check temporal consistency (water/foliage)
+            prev_frame = max(clip.frame_start, frame - 3)
+            next_frame = min(clip.frame_start + clip.frame_duration - 1, frame + 3)
+
+            gray_prev = self.get_frame_gray(clip, prev_frame)
+            gray_next = self.get_frame_gray(clip, next_frame)
+
+            if gray_prev is not None and gray_next is not None:
+                p_prev = gray_prev[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
+                p_next = gray_next[max(0, y0):min(h, y1), max(0, x0):min(w, x1)]
+
+                if p_prev.shape == patch.shape and p_next.shape == patch.shape:
+                    var_prev = float(np.var(p_prev))
+                    var_next = float(np.var(p_next))
+                    
+                    var_drift = float(np.std([var_prev, p_var, var_next]))
+                    if var_drift > 0.015:  # High texture volatility indicates foliage/water
+                        return False
+
+            return True
+        except Exception as e:
+            print(f"AutoSolve: Rigidity analysis error: {e}")
+            return True
+
     def score_patch(
         self,
         gray: np.ndarray,
         cx: float, cy: float,
-        patch_size: int = MARKER_PATCH_SIZE
+        patch_size: int = MARKER_PATCH_SIZE,
+        clip: Optional[bpy.types.MovieClip] = None,
+        frame: Optional[int] = None
     ) -> float:
         """
-        Score the textural richness of a patch around pixel (cx, cy).
+        Score the textural richness and rigidity of a patch around pixel (cx, cy).
 
         Args:
             gray:       Grayscale (H, W) float32 array (values in [0,1])
             cx, cy:     Patch center in normalized [0,1] image coordinates
             patch_size: Patch side length in pixels
+            clip:       Optional MovieClip for temporal rigidity checks
+            frame:      Optional frame number for temporal rigidity checks
 
         Returns:
-            Score in [0, 1] where 1 = very trackable, 0 = flat/featureless
+            Score in [0, 1] where 1 = very trackable & rigid, 0 = flat/dynamic
         """
         h, w = gray.shape
         half = patch_size // 2
@@ -201,6 +279,15 @@ class PixelAnalyzer:
         norm_grad = min(1.0, gradient_mean / 0.3)
 
         score = VARIANCE_WEIGHT * norm_var + GRADIENT_WEIGHT * norm_grad
+        score = float(np.clip(score, 0.0, 1.0))
+
+        # 3. Apply Rigidity/Semantic Masking Filter if context is provided
+        if clip is not None and frame is not None:
+            # Flip y back for is_patch_rigid which assumes Blender Y-up flipped coords
+            cy_flipped = 1.0 - cy
+            if not self.is_patch_rigid(clip, frame, cx, cy_flipped, gray_f=gray):
+                score *= 0.05  # heavily penalize non-rigid/dynamic regions
+
         return float(np.clip(score, 0.0, 1.0))
 
     def score_marker_position(
@@ -230,7 +317,7 @@ class PixelAnalyzer:
         # Blender uses bottom-left origin; numpy uses top-left — flip Y
         cy_flipped = 1.0 - cy
 
-        return self.score_patch(gray, cx, cy_flipped, patch_size)
+        return self.score_patch(gray, cx, cy_flipped, patch_size, clip, frame)
 
     # ───────────────────────────────────────────────────────────────────────
     # Heatmap Generation
@@ -268,7 +355,7 @@ class PixelAnalyzer:
                 # Center of this cell in normalized coords
                 cx = (col + 0.5) / grid_size
                 cy = (row + 0.5) / grid_size
-                heatmap[row, col] = self.score_patch(gray, cx, cy, cell_patch)
+                heatmap[row, col] = self.score_patch(gray, cx, cy, cell_patch, clip, frame)
 
         return heatmap
 
@@ -331,7 +418,7 @@ class PixelAnalyzer:
 
             cx, cy = marker.co
             cy_flipped = 1.0 - cy
-            scores[track.name] = self.score_patch(gray, cx, cy_flipped)
+            scores[track.name] = self.score_patch(gray, cx, cy_flipped, clip=clip, frame=frame)
 
         return scores
 

@@ -65,6 +65,20 @@ def load_dataset(data_dir: str):
     """Load JSON files and extract feature/label samples."""
     from ml.features.track_features import extract_features_from_history
     print(f"Loading data from '{data_dir}'...")
+    
+    if not os.path.exists(data_dir) or not os.listdir(data_dir):
+        print(f"Data directory '{data_dir}' not found or empty. Generating synthetic track predictor samples...")
+        samples_by_clip = {}
+        for i in range(10): # 10 dummy clips
+            clip_name = f"dummy_clip_{i}"
+            samples_by_clip[clip_name] = []
+            for _ in range(50): # 50 tracks per clip
+                features = np.random.randn(15).astype(np.float32).tolist()
+                label = 1.0 if random.random() > 0.4 else 0.0
+                samples_by_clip[clip_name].append((features, label))
+        clips = list(samples_by_clip.keys())
+        return samples_by_clip, clips
+        
     json_files = [
         os.path.join(data_dir, f) 
         for f in os.listdir(data_dir) 
@@ -72,8 +86,17 @@ def load_dataset(data_dir: str):
     ]
     
     if not json_files:
-        print("No JSON files found.")
-        return {}, []
+        print("No JSON files found. Generating synthetic track predictor samples...")
+        samples_by_clip = {}
+        for i in range(10):
+            clip_name = f"dummy_clip_{i}"
+            samples_by_clip[clip_name] = []
+            for _ in range(50):
+                features = np.random.randn(15).astype(np.float32).tolist()
+                label = 1.0 if random.random() > 0.4 else 0.0
+                samples_by_clip[clip_name].append((features, label))
+        clips = list(samples_by_clip.keys())
+        return samples_by_clip, clips
         
     samples_by_clip = {}
     
@@ -219,6 +242,29 @@ def train_model(args):
     
     # Setup model, loss, optimizer
     model = TrackMLP()
+    
+    # Load pretrained weights if specified
+    if hasattr(args, 'pretrained') and args.pretrained:
+        if os.path.exists(args.pretrained):
+            print(f"Loading pretrained weights from '{args.pretrained}'...")
+            try:
+                if args.pretrained.endswith('.json'):
+                    with open(args.pretrained, 'r') as fh:
+                        meta_data = json.load(fh)
+                    weights_dict = {}
+                    for k, v in meta_data["weights"].items():
+                        weights_dict[k] = torch.tensor(v, dtype=torch.float32)
+                    model.load_state_dict(weights_dict)
+                    print("Successfully loaded weights from metadata JSON file.")
+                else:
+                    model.load_state_dict(torch.load(args.pretrained, map_location='cpu'))
+                    print("Successfully loaded weights from PyTorch checkpoint (.pt) file.")
+            except Exception as e:
+                print(f"Error loading pretrained weights: {e}")
+                print("Proceeding with fresh training.")
+        else:
+            print(f"Pretrained weight file not found at '{args.pretrained}'. Proceeding with fresh training.")
+
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
     
@@ -294,6 +340,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--learning-rate", type=float, default=0.001, help="Learning rate")
     parser.add_argument("--train-split", type=float, default=0.8, help="Ratio for training vs validation split")
+    parser.add_argument("--pretrained", default=None, help="Path to pretrained model weight file (.pt or metadata JSON) to resume/fine-tune training")
     
     parsed_args = parser.parse_args()
     train_model(parsed_args)
