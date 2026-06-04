@@ -1745,7 +1745,28 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # Store detected counts for feature extractor (before filtering)
         self._detected_feature_density = detected_per_region
         
-        # Process each region: SORT BY QUALITY, keep top N
+        # Estimate texture quality per region (ML Phase 2)
+        qualities = self._estimate_region_texture_quality()
+        
+        # Load empirical region weights (ML Phase 2)
+        try:
+            weights_path = Path(__file__).parent / 'presets' / 'region_weights.json'
+            if weights_path.exists():
+                with open(weights_path, 'r') as f:
+                    region_weights = json.load(f)
+            else:
+                region_weights = {}
+        except Exception as e:
+            print(f"AutoSolve: Failed to load region weights preset: {e}")
+            region_weights = {}
+            
+        f_weights = region_weights.get(self.footage_type, {})
+        if not f_weights:
+            f_weights = region_weights.get('AUTO', {})
+            
+        max_q = max(qualities.values()) if qualities else 0.0
+        
+        # Process each region: SORT BY QUALITY, keep top N scaled by weight and quality
         result: Dict[str, int] = {}
         to_delete = list(no_marker_tracks)  # Always delete tracks without markers
         
@@ -1758,11 +1779,34 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 result[region] = 0
                 continue
             
+            # Scale target markers using region weights and texture quality
+            weight = f_weights.get(region, 1.0)
+            q = qualities.get(region, 1.0)
+            norm_q = q / max_q if max_q > 0.0 else 1.0
+            
+            adjusted_target = markers_per_region * weight * norm_q
+            adjusted_markers_per_region = int(round(adjusted_target))
+            
+            # Automatically skip near-uniform regions (sky, walls)
+            is_uniform = False
+            if max_q > 0.0:
+                if max_q <= 1.001 and q < 0.05:  # Density fallback or pre-normalized qualities
+                    is_uniform = True
+                elif q < 0.0005:  # Raw variance
+                    is_uniform = True
+            
+            if is_uniform:
+                print(f"AutoSolve: Skipping near-uniform region '{region}' (quality score: {q:.6f})")
+                adjusted_markers_per_region = 0
+            
             # SORT by quality score (highest first)
             region_tracks.sort(key=lambda x: x[1], reverse=True)
             
-            # Keep up to markers_per_region of the BEST quality features
-            keep_count = min(len(region_tracks), markers_per_region)
+            # Keep up to adjusted_markers_per_region of the BEST quality features
+            keep_count = min(len(region_tracks), adjusted_markers_per_region)
+            
+            if adjusted_markers_per_region != markers_per_region:
+                print(f"AutoSolve: {region} target scaled from {markers_per_region} to {adjusted_markers_per_region} (weight: {weight:.2f}, quality: {norm_q:.2f})")
             
             for track, quality in region_tracks[:keep_count]:
                 self._apply_track_settings(track)
@@ -1786,6 +1830,119 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         print(f"AutoSolve: Distributed {total} quality-selected markers across {active_regions}/9 regions")
         
         return result
+
+    def _estimate_region_texture_quality(self) -> Dict[str, float]:
+        """
+        Estimate texture quality (luminance variance) in each region.
+        
+        Sparsely samples pixels over an 8x8 grid within the bounding box of
+        each of the 3x3 screen regions.
+        
+        Returns:
+            Dict mapping region name to luminance variance (float).
+        """
+        import uuid
+        
+        print("AutoSolve: Estimating region texture quality...")
+        qualities = {}
+        temp_img = None
+        temp_name = f"__autosolve_temp_{uuid.uuid4().hex}"
+        
+        try:
+            filepath = bpy.path.abspath(self.clip.filepath)
+            if not filepath or not os.path.exists(filepath):
+                raise FileNotFoundError(f"Clip filepath not found: {filepath}")
+                
+            temp_img = bpy.data.images.load(filepath)
+            temp_img.name = temp_name
+            
+            # Access pixels
+            pixels = temp_img.pixels
+            num_pixels = len(pixels)
+            if num_pixels == 0:
+                raise ValueError("No pixels loaded from image")
+                
+            W, H = self.clip.size
+            if W <= 0 or H <= 0:
+                W, H = temp_img.size
+                
+            if W <= 0 or H <= 0:
+                raise ValueError(f"Invalid image dimensions: {W}x{H}")
+                
+            # Sample 8x8 grid for each region
+            for region in REGIONS:
+                x_min, y_min, x_max, y_max = get_region_bounds(region)
+                px_min_x = int(x_min * W)
+                px_max_x = int(x_max * W)
+                px_min_y = int(y_min * H)
+                px_max_y = int(y_max * H)
+                
+                dx = (px_max_x - px_min_x) / 8.0
+                dy = (px_max_y - px_min_y) / 8.0
+                
+                luminances = []
+                for i in range(8):
+                    for j in range(8):
+                        px = int(px_min_x + (i + 0.5) * dx)
+                        py = int(px_min_y + (j + 0.5) * dy)
+                        px = max(0, min(px, W - 1))
+                        py = max(0, min(py, H - 1))
+                        
+                        idx = (py * W + px) * 4
+                        # Guard index bounds
+                        if idx + 2 < num_pixels:
+                            r = pixels[idx]
+                            g = pixels[idx + 1]
+                            b = pixels[idx + 2]
+                            lum = 0.299 * r + 0.587 * g + 0.114 * b
+                            luminances.append(lum)
+                        else:
+                            luminances.append(0.0)
+                        
+                if luminances:
+                    mean_lum = sum(luminances) / len(luminances)
+                    variance = sum((lum - mean_lum) ** 2 for lum in luminances) / len(luminances)
+                    qualities[region] = variance
+                else:
+                    qualities[region] = 0.0
+                
+            print("AutoSolve: Successfully estimated region texture qualities from image data.")
+            
+        except Exception as e:
+            print(f"AutoSolve: Failed to load image data for texture quality estimation: {e}")
+            # Fallback to self._detected_feature_density
+            print("AutoSolve: Falling back to detected feature density for texture quality estimation.")
+            if hasattr(self, '_detected_feature_density') and self._detected_feature_density:
+                max_density = max(self._detected_feature_density.values())
+                if max_density > 0:
+                    qualities = {
+                        r: self._detected_feature_density.get(r, 0) / max_density
+                        for r in REGIONS
+                    }
+                else:
+                    qualities = {r: 1.0 for r in REGIONS}
+            else:
+                qualities = {r: 1.0 for r in REGIONS}
+                
+        finally:
+            # Cleanup current temp image
+            if temp_img:
+                try:
+                    temp_img.user_clear()
+                    bpy.data.images.remove(temp_img)
+                except Exception as e:
+                    print(f"AutoSolve: Error cleaning up temporary image: {e}")
+            
+            # Clean up any other orphaned temporary images starting with __autosolve_temp_
+            for img in list(bpy.data.images):
+                if img.name.startswith("__autosolve_temp_"):
+                    try:
+                        img.user_clear()
+                        bpy.data.images.remove(img)
+                    except Exception as e:
+                        print(f"AutoSolve: Error cleaning up orphan temporary image {img.name}: {e}")
+                        
+        return qualities
     
     def _score_feature_quality(self, marker, track) -> float:
         """

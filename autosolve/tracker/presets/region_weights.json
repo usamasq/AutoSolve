@@ -1,0 +1,112 @@
+{
+    "AUTO": {
+        "top-left": 1.0,
+        "top-center": 1.0,
+        "top-right": 1.0,
+        "mid-left": 1.0,
+        "center": 1.0,
+        "mid-right": 1.0,
+        "bottom-left": 1.0,
+        "bottom-center": 1.0,
+        "bottom-right": 1.0
+    },
+    "INDOOR": {
+        "top-left": 0.85,
+        "top-center": 0.8,
+        "top-right": 0.85,
+        "mid-left": 0.95,
+        "center": 1.0,
+        "mid-right": 0.95,
+        "bottom-left": 0.9,
+        "bottom-center": 0.9,
+        "bottom-right": 0.9
+    },
+    "OUTDOOR": {
+        "top-left": 0.4,
+        "top-center": 0.15,
+        "top-right": 0.4,
+        "mid-left": 0.85,
+        "center": 0.95,
+        "mid-right": 0.85,
+        "bottom-left": 1.0,
+        "bottom-center": 1.0,
+        "bottom-right": 1.0
+    },
+    "DRONE": {
+        "top-left": 0.1,
+        "top-center": 0.05,
+        "top-right": 0.1,
+        "mid-left": 0.7,
+        "center": 0.9,
+        "mid-right": 0.7,
+        "bottom-left": 1.0,
+        "bottom-center": 1.0,
+        "bottom-right": 1.0
+    },
+    "HANDHELD": {
+        "top-left": 0.5,
+        "top-center": 0.6,
+        "top-right": 0.5,
+        "mid-left": 0.8,
+        "center": 1.0,
+        "mid-right": 0.8,
+        "bottom-left": 0.6,
+        "bottom-center": 0.8,
+        "bottom-right": 0.6
+    },
+    "GIMBAL": {
+        "top-left": 0.9,
+        "top-center": 0.9,
+        "top-right": 0.9,
+        "mid-left": 0.95,
+        "center": 1.0,
+        "mid-right": 0.95,
+        "bottom-left": 0.95,
+        "bottom-center": 0.95,
+        "bottom-right": 0.95
+    },
+    "ACTION": {
+        "top-left": 0.3,
+        "top-center": 0.5,
+        "top-right": 0.3,
+        "mid-left": 0.7,
+        "center": 1.0,
+        "mid-right": 0.7,
+        "bottom-left": 0.4,
+        "bottom-center": 0.7,
+        "bottom-right": 0.4
+    },
+    "VFX": {
+        "top-left": 0.8,
+        "top-center": 0.85,
+        "top-right": 0.8,
+        "mid-left": 0.95,
+        "center": 1.0,
+        "mid-right": 0.95,
+        "bottom-left": 0.9,
+        "bottom-center": 0.95,
+        "bottom-right": 0.9
+    },
+    "SCREEN": {
+        "top-left": 0.2,
+        "top-center": 0.3,
+        "top-right": 0.2,
+        "mid-left": 0.6,
+        "center": 1.0,
+        "mid-right": 0.6,
+        "bottom-left": 0.2,
+        "bottom-center": 0.4,
+        "bottom-right": 0.2
+    },
+    "CINEMATIC": {
+        "top-left": 0.4,
+        "top-center": 0.6,
+        "top-right": 0.4,
+        "mid-left": 0.85,
+        "center": 1.0,
+        "mid-right": 0.85,
+        "bottom-left": 0.5,
+        "bottom-center": 0.8,
+        "bottom-right": 0.5
+    }
+}
