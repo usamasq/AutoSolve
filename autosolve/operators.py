@@ -1294,6 +1294,72 @@ class AUTOSOLVE_OT_resolve(Operator):
         return {'FINISHED'}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# TURBO MODE — ONNX INSTALLER
+# ═══════════════════════════════════════════════════════════════════════════
+
+class AUTOSOLVE_OT_install_onnx(bpy.types.Operator):
+    """Install onnxruntime into Blender's Python (one-time, ~6 MB download).
+    Enables Turbo Mode: real neural net inference for smarter tracking decisions."""
+
+    bl_idname  = "autosolve.install_onnx"
+    bl_label   = "Enable Turbo Mode"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        self.report({'INFO'}, "AutoSolve Turbo: Installing onnxruntime...")
+
+        try:
+            from .tracker.onnx_predictor import install_onnx_runtime
+
+            def _progress(msg):
+                self.report({'INFO'}, f"AutoSolve Turbo: {msg}")
+
+            success = install_onnx_runtime(progress_callback=_progress)
+
+            if success:
+                self.report({'INFO'},
+                    "AutoSolve Turbo: onnxruntime installed! "
+                    "Restart Blender once to activate neural net inference.")
+            else:
+                self.report({'WARNING'},
+                    "AutoSolve Turbo: Installation failed — check System Console for details.")
+
+        except Exception as e:
+            self.report({'ERROR'}, f"AutoSolve Turbo: Unexpected error: {e}")
+
+        return {'FINISHED'}
+
+
+class AUTOSOLVE_OT_check_turbo_status(bpy.types.Operator):
+    """Check whether Turbo Mode (onnxruntime) is active."""
+
+    bl_idname  = "autosolve.check_turbo_status"
+    bl_label   = "Check Turbo Status"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        try:
+            from .tracker.onnx_predictor import is_onnx_installed, get_onnx_version, OnnxPredictor
+            if is_onnx_installed():
+                version = get_onnx_version()
+                predictor = OnnxPredictor.get_instance()
+                track_ok    = predictor.track_model_available
+                settings_ok = predictor.settings_model_available
+                self.report({'INFO'},
+                    f"Turbo ACTIVE — onnxruntime {version} | "
+                    f"Track model: {'✅' if track_ok else '❌'} | "
+                    f"Settings model: {'✅' if settings_ok else '❌'}")
+            else:
+                self.report({'INFO'},
+                    "Turbo NOT active — onnxruntime not installed. "
+                    "Click 'Enable Turbo Mode' to install.")
+        except Exception as e:
+            self.report({'ERROR'}, f"Status check error: {e}")
+
+        return {'FINISHED'}
+
+
 # Registration
 
 classes = (
@@ -1306,6 +1372,9 @@ classes = (
     AUTOSOLVE_OT_detect_inside_annotation,
     AUTOSOLVE_OT_detect_outside_annotation,
     AUTOSOLVE_OT_clear_annotations,
+    # Turbo Mode
+    AUTOSOLVE_OT_install_onnx,
+    AUTOSOLVE_OT_check_turbo_status,
 )
 
 

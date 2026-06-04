@@ -28,6 +28,10 @@ from .analyzers import TrackStats, RegionStats, CoverageData, TrackAnalyzer, Cov
 from .constants import REGIONS
 # Utility functions
 from .utils import get_region, get_region_bounds
+# Turbo: pixel-based trackability scorer (zero new deps)
+from .pixel_analyzer import PixelAnalyzer
+# Turbo: camera reconstruction readback
+from .reconstruction_reader import ReconstructionReader
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -326,13 +330,32 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         from .settings_predictor import SettingsPredictor
         self.predictor = SettingsPredictor()
         
-        # Track quality predictor (ML Phase 1)
+        # Track quality predictor — ONNX-first, numpy fallback
         try:
-            from .track_predictor import TrackPredictor
-            self.track_predictor = TrackPredictor()
+            from .onnx_predictor import OnnxPredictor
+            self.onnx_predictor = OnnxPredictor.get_instance()
+            if self.onnx_predictor.track_model_available:
+                print("AutoSolve: TrackPredictor using ONNX Turbo inference")
+            else:
+                print("AutoSolve: ONNX track model not found, loading numpy fallback")
         except Exception as e:
-            print(f"AutoSolve: Failed to initialize TrackPredictor: {e}")
-            self.track_predictor = None
+            print(f"AutoSolve: OnnxPredictor init failed: {e}")
+            self.onnx_predictor = None
+
+        # Fallback numpy TrackPredictor (used when ONNX unavailable)
+        self.track_predictor = None
+        if self.onnx_predictor is None or not self.onnx_predictor.track_model_available:
+            try:
+                from .track_predictor import TrackPredictor
+                self.track_predictor = TrackPredictor()
+            except Exception as e:
+                print(f"AutoSolve: Failed to initialize TrackPredictor fallback: {e}")
+
+        # Turbo: pixel-based trackability scorer
+        self.pixel_analyzer = PixelAnalyzer()
+
+        # Turbo: camera reconstruction reader
+        self.reconstruction_reader = ReconstructionReader()
         
         self.motion_class: Optional[str] = None  # Set after motion probe
         
@@ -387,6 +410,9 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # Track healing (enabled by default)
         self.enable_healing: bool = True
         self.healer = None  # Lazy init in heal_tracks()
+
+        # Turbo: last reconstruction velocity signal (set after each solve)
+        self._last_reconstruction_velocity: Optional[Dict] = None
         
         # Try to load cached probe from disk
         self._try_load_cached_probe()
@@ -3952,7 +3978,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 bundle_ratio = bundle_count / max(track_count, 1)
                 raw_error = self.tracking.reconstruction.average_error
 
-                
                 if bundle_ratio < 0.3:
                     print(f"AutoSolve WARNING: Low quality solve - only {bundle_count}/{track_count} tracks reconstructed")
                     print(f"AutoSolve WARNING: This usually indicates incorrect focal length or missing lens distortion")
@@ -3960,16 +3985,48 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                     return False
                 elif bundle_ratio < 0.5:
                     print(f"AutoSolve NOTICE: Moderate quality solve - {bundle_count}/{track_count} tracks reconstructed")
-                
+
                 self._solve_quality_failure = False
+
+                # ── Turbo: Reconstruction readback ──────────────────────────
+                try:
+                    poses = self.reconstruction_reader.read_camera_poses(self.clip)
+                    if poses:
+                        bad_frames = self.reconstruction_reader.detect_pose_jumps(poses)
+                        vel_signal = self.reconstruction_reader.camera_velocity_signal(poses)
+
+                        if bad_frames:
+                            print(f"AutoSolve Turbo: Detected {len(bad_frames)} bad reconstruction frames: "
+                                  f"{bad_frames[:5]}{'...' if len(bad_frames) > 5 else ''}")
+                            self._mute_tracks_in_bad_frames(bad_frames)
+
+                        self._last_reconstruction_velocity = vel_signal
+                        print(f"AutoSolve Turbo: Camera velocity — "
+                              f"angular={vel_signal['mean_angular_vel']:.2f}°/f, "
+                              f"class={vel_signal['motion_class']}")
+
+                        try:
+                            record = self.reconstruction_reader.export_for_training(
+                                self.clip, poses, raw_error,
+                                self.current_settings, self.footage_class
+                            )
+                            self._append_training_record(record)
+                        except Exception as te:
+                            print(f"AutoSolve Turbo: Training record export failed: {te}")
+
+                except Exception as re_err:
+                    print(f"AutoSolve Turbo: Reconstruction readback failed: {re_err}")
+                # ────────────────────────────────────────────────────────────
+
                 return True
             else:
                 print("AutoSolve WARNING: Solve failed (is_valid=False)")
                 return False
-                
+
         except Exception as e:
             print(f"AutoSolve: Solve camera failed with error: {e}")
             return False
+
 
     
     def get_solve_error(self) -> float:
@@ -3997,7 +4054,48 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     def get_bundle_count(self) -> int:
         return len([t for t in self.tracking.tracks if t.has_bundle])
-    
+
+    def _mute_tracks_in_bad_frames(self, bad_frames: List[int]):
+        """
+        Turbo helper: mute markers on frames flagged as bad reconstruction frames.
+
+        A track's markers that fall exclusively in bad frames are muted so they
+        don't contribute to the next solve attempt.
+        """
+        if not bad_frames:
+            return
+        bad_set = set(bad_frames)
+        muted_count = 0
+        for track in self.tracking.tracks:
+            for marker in track.markers:
+                if marker.frame in bad_set and not marker.mute:
+                    marker.mute = True
+                    muted_count += 1
+        if muted_count:
+            print(f"AutoSolve Turbo: Muted {muted_count} markers in {len(bad_frames)} bad frames")
+
+    def _append_training_record(self, record: Dict):
+        """
+        Turbo helper: append a training record to the per-clip on-disk dataset.
+
+        Records are written to the ml/data/live/ directory so the training
+        pipeline can pick them up on the next training run.
+        """
+        try:
+            import json
+            from pathlib import Path
+            live_dir = Path(__file__).parent.parent.parent / "ml" / "data" / "live"
+            live_dir.mkdir(parents=True, exist_ok=True)
+
+            # One file per clip fingerprint
+            safe_name = "".join(c for c in self.clip.name if c.isalnum() or c in "._-")[:40]
+            record_file = live_dir / f"{safe_name}_records.jsonl"
+
+            with open(record_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            print(f"AutoSolve Turbo: Could not write training record: {e}")
+
     def analyze_and_learn(self) -> Dict:
         """Analyze tracks and learn from results."""
         # Use same min_lifespan as cleanup_tracks for consistency
