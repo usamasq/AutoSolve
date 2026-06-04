@@ -33,7 +33,7 @@ if TORCH_AVAILABLE:
         def __init__(self):
             super().__init__()
             self.network = nn.Sequential(
-                nn.Linear(24, 64),
+                nn.Linear(28, 64),
                 nn.ReLU(),
                 nn.Linear(64, 32),
                 nn.ReLU(),
@@ -47,18 +47,18 @@ else:
     class SettingsMLP:
         """Fallback class when PyTorch is not available."""
         pass
-
-
+ 
+ 
 def generate_fallback_weights() -> dict:
     """Generate mock weights using python standard libraries if PyTorch is not available."""
     print("Generating heuristic weights for settings optimizer fallback...")
     
-    # 24 input features, 64 hidden, 32 hidden, 1 output
+    # 28 input features, 64 hidden, 32 hidden, 1 output
     # Setup simple weights that reward matching resolution/pattern sizes
     layer1_w = []
     for i in range(64):
         row = []
-        for j in range(24):
+        for j in range(28):
             val = 0.0
             # Example heuristic weight connections:
             # Connect width (0) and pattern_size (6)

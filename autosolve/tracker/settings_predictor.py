@@ -72,6 +72,79 @@ class SettingsPredictor:
             motion_class: Optional motion classification (ignored/legacy)
             clip_fingerprint: Optional clip fingerprint (ignored/legacy)
         """
+        # Try ONNX Settings Optimizer first
+        try:
+            from .onnx_predictor import OnnxPredictor
+            opt = OnnxPredictor.get_instance()
+            if opt.settings_model_available and clip.size[0] > 0 and clip.size[1] > 0:
+                def feature_fn(cand):
+                    # 1. Clip features (4)
+                    width = float(clip.size[0])
+                    height = float(clip.size[1])
+                    fps = float(clip.fps if clip.fps > 0 else 24.0)
+                    frame_count = float(clip.frame_duration)
+                    
+                    # 2. Boolean switches (2)
+                    tripod = 1.0 if (footage_type == 'TRIPOD' or getattr(clip.tracking, 'use_tripod', False)) else 0.0
+                    robust = 1.0 if robust_mode else 0.0
+                    
+                    # 3. Candidate settings (4)
+                    pattern = float(cand['pattern_size'])
+                    search = float(cand['search_size'])
+                    corr = float(cand['correlation'])
+                    thresh = float(cand['threshold'])
+                    
+                    # 4. Footage type one-hot (10)
+                    FOOTAGE_TYPES = ['AUTO', 'INDOOR', 'OUTDOOR', 'DRONE', 'HANDHELD', 'GIMBAL', 'ACTION', 'VFX', 'SCREEN', 'CINEMATIC']
+                    f_type_oh = [0.0] * len(FOOTAGE_TYPES)
+                    f_type = footage_type if footage_type in FOOTAGE_TYPES else 'AUTO'
+                    f_type_oh[FOOTAGE_TYPES.index(f_type)] = 1.0
+                    
+                    # 5. Motion model one-hot (4)
+                    MOTION_MODELS = ['Loc', 'LocRot', 'Affine', 'Perspective']
+                    m_model_oh = [0.0] * len(MOTION_MODELS)
+                    m_model = cand['motion_model']
+                    if m_model in MOTION_MODELS:
+                        m_model_oh[MOTION_MODELS.index(m_model)] = 1.0
+                    else:
+                        m_model_oh[1] = 1.0
+                        
+                    import numpy as np
+                    return np.array(
+                        [width, height, fps, frame_count, tripod, robust, pattern, search, corr, thresh] +
+                        f_type_oh + m_model_oh,
+                        dtype=np.float32
+                    )
+
+                patterns = [11, 15, 17, 21, 31, 55]
+                searches = [51, 71, 91, 121, 231]
+                correlations = [0.55, 0.65, 0.70, 0.75, 0.85]
+                thresholds = [0.1, 0.2, 0.3, 0.4]
+                motion_models = ['Loc', 'LocRot', 'Affine', 'Perspective']
+                
+                candidates = []
+                for p in patterns:
+                    for s in searches:
+                        for c in correlations:
+                            for t in thresholds:
+                                for m in motion_models:
+                                    candidates.append({
+                                        'pattern_size': p,
+                                        'search_size': s,
+                                        'correlation': c,
+                                        'threshold': t,
+                                        'motion_model': m
+                                    })
+                
+                ranked = opt.rank_settings_candidates(candidates, feature_fn)
+                if ranked:
+                    best_reward, best_settings = ranked[0]
+                    print(f"AutoSolve: Neural Engine selected settings with predicted reward {best_reward:.4f}")
+                    return best_settings.copy()
+        except Exception as e:
+            print(f"AutoSolve: Neural Engine settings prediction failed, falling back: {e}")
+
+        # Fallback to heuristics / presets
         footage_class = self.classify_footage(clip)
         
         # 1. Get base settings for footage class

@@ -47,11 +47,11 @@ except ImportError:
 
 if TORCH_AVAILABLE:
     class SettingsMLP(nn.Module):
-        """24 → 64 → 32 → 1 MLP for expected reward (must match train_settings_model.py)."""
+        """28 → 64 → 32 → 1 MLP for expected reward (must match train_settings_model.py)."""
         def __init__(self):
             super().__init__()
             self.network = nn.Sequential(
-                nn.Linear(24, 64), nn.ReLU(),
+                nn.Linear(28, 64), nn.ReLU(),
                 nn.Linear(64, 32), nn.ReLU(),
                 nn.Linear(32, 1),  nn.Sigmoid(),
             )
@@ -148,7 +148,7 @@ def export_settings_model(weights_path: str, out_dir: str) -> bool:
     os.makedirs(out_dir, exist_ok=True)
 
     onnx_path = os.path.join(out_dir, "settings_model.onnx")
-    dummy_input = torch.zeros(1, 24, dtype=torch.float32)
+    dummy_input = torch.zeros(1, 28, dtype=torch.float32)
 
     torch.onnx.export(
         model,
@@ -162,17 +162,17 @@ def export_settings_model(weights_path: str, out_dir: str) -> bool:
     print(f"   Exported → {onnx_path}")
 
     # Validate
-    sample = np.random.randn(4, 24).astype(np.float32)
+    sample = np.random.randn(4, 28).astype(np.float32)
     _validate_onnx_vs_torch(model, onnx_path, sample)
 
     # Write meta (normalisation + model info)
     meta_out = {
-        "input_mean":   meta.get("input_mean", [0.0] * 24),
-        "input_std":    meta.get("input_std",  [1.0] * 24),
-        "input_size":   24,
+        "input_mean":   meta.get("input_mean", [0.0] * 28),
+        "input_std":    meta.get("input_std",  [1.0] * 28),
+        "input_size":   28,
         "output_size":  1,
         "best_val_loss": meta.get("best_val_loss", None),
-        "description":  "Settings expected-reward predictor. Input: clip+settings features (24-dim). Output: reward in [0,1]."
+        "description":  "Settings expected-reward predictor. Input: clip+settings features (28-dim). Output: reward in [0,1]."
     }
     meta_path = os.path.join(out_dir, "settings_model_meta.json")
     with open(meta_path, "w") as f:

@@ -29,9 +29,9 @@ def get_one_hot(value: str, catalog: List[str]) -> List[float]:
     return one_hot
 
 
-def extract_sample_features(sample: Dict[str, Any]) -> List[float]:
+def extract_sample_features(sample: Dict[str, Any], video_meta: Dict[str, float] = None) -> List[float]:
     """
-    Extracts a 24-dimensional feature vector from a SolveSample dictionary.
+    Extracts a 28-dimensional feature vector from a SolveSample dictionary.
     Vector structure:
     [0:4] clip: width, height, fps, frame_count
     [4] tripod_mode
@@ -39,6 +39,7 @@ def extract_sample_features(sample: Dict[str, Any]) -> List[float]:
     [6:10] settings: pattern_size, search_size, correlation, threshold
     [10:20] footage_type one-hot
     [20:24] motion_model one-hot
+    [24:28] video features: mean_motion, zoom_divergence, distortion_factor, noise_ratio
     """
     meta = sample["clip_metadata"]
     settings = sample["settings"]
@@ -69,7 +70,17 @@ def extract_sample_features(sample: Dict[str, Any]) -> List[float]:
     f_type_oh = get_one_hot(settings.get("footage_type", "AUTO"), FOOTAGE_TYPES)
     m_model_oh = get_one_hot(settings.get("motion_model", "LocRot"), MOTION_MODELS)
     
-    return clip_feats + switches + setting_feats + f_type_oh + m_model_oh
+    # 5. Video features (4)
+    if video_meta is None:
+        video_meta = {}
+    v_feats = [
+        float(video_meta.get("mean_motion", 0.5)),
+        float(video_meta.get("zoom_divergence", 0.0)),
+        float(video_meta.get("distortion_factor", 0.0)),
+        float(video_meta.get("noise_ratio", 0.003))
+    ]
+    
+    return clip_feats + switches + setting_feats + f_type_oh + m_model_oh + v_feats
 
 
 def calculate_reward(sample: Dict[str, Any]) -> float:
@@ -172,15 +183,29 @@ def generate_simulated_dataset() -> List[Dict[str, Any]]:
 def prepare_dataset(args):
     """Load, split, normalize, and save the settings optimizer dataset."""
     raw_samples = []
+    video_meta_lookup = {}
     
     if os.path.exists(args.data_dir):
-        json_files = [os.path.join(args.data_dir, f) for f in os.listdir(args.data_dir) if f.endswith('.json')]
+        # 1. Load video feature files first
+        video_files = [os.path.join(args.data_dir, f) for f in os.listdir(args.data_dir) if f.endswith('_video_meta.json')]
+        for fp in video_files:
+            try:
+                with open(fp, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                    c_name = meta.get("clip_name")
+                    if c_name:
+                        video_meta_lookup[c_name] = meta
+            except Exception as e:
+                print(f"Error loading video meta {fp}: {e}")
+
+        # 2. Load SolveSample JSON files
+        json_files = [os.path.join(args.data_dir, f) for f in os.listdir(args.data_dir) if f.endswith('.json') and not f.endswith('_video_meta.json')]
         for fp in json_files:
             try:
                 with open(fp, 'r') as f:
                     raw_samples.append(json.load(f))
             except Exception as e:
-                print(f"Error loading {fp}: {e}")
+                print(f"Error loading solve sample {fp}: {e}")
                 
     if not raw_samples:
         print(f"No raw files found in '{args.data_dir}'. Generating synthetic dataset.")
@@ -214,10 +239,10 @@ def prepare_dataset(args):
           f"{len(val_clips)} val clips ({len(val_raw)} samples)")
           
     # 2. Extract features and targets
-    train_X = [extract_sample_features(s) for s in train_raw]
+    train_X = [extract_sample_features(s, video_meta_lookup.get(s["clip_metadata"]["clip_name"])) for s in train_raw]
     train_y = [calculate_reward(s) for s in train_raw]
     
-    val_X = [extract_sample_features(s) for s in val_raw]
+    val_X = [extract_sample_features(s, video_meta_lookup.get(s["clip_metadata"]["clip_name"])) for s in val_raw]
     val_y = [calculate_reward(s) for s in val_raw]
     
     # 3. Compute normalization parameters (means & stds) from training set only
