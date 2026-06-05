@@ -109,10 +109,17 @@ class SettingsPredictor:
                     else:
                         m_model_oh[1] = 1.0
                         
+                    # 6. Video features (4) (using average representative values matching training metadata)
+                    v_feats = [0.5, 0.0, 0.0, 0.003] # mean_motion, zoom_divergence, distortion_factor, noise_ratio
+                    if footage_type == 'ACTION':
+                        v_feats[0] = 3.5
+                    elif footage_type == 'DRONE':
+                        v_feats[1] = 0.5
+                        
                     import numpy as np
                     return np.array(
                         [width, height, fps, frame_count, tripod, robust, pattern, search, corr, thresh] +
-                        f_type_oh + m_model_oh,
+                        f_type_oh + m_model_oh + v_feats,
                         dtype=np.float32
                     )
 

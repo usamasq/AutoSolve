@@ -163,7 +163,14 @@ def export_defaults(args):
                 f_type_oh = get_one_hot(f_type, FOOTAGE_TYPES)
                 m_model_oh = get_one_hot(cand["motion_model"], MOTION_MODELS)
                 
-                raw_vector = clip_feats + switches + settings_feats + f_type_oh + m_model_oh
+                # 5. Video features (4) (using average representative values matching training metadata)
+                v_feats = [0.5, 0.0, 0.0, 0.003] # mean_motion, zoom_divergence, distortion_factor, noise_ratio
+                if f_type == "ACTION":
+                    v_feats[0] = 3.5
+                elif f_type == "DRONE":
+                    v_feats[1] = 0.5
+                
+                raw_vector = clip_feats + switches + settings_feats + f_type_oh + m_model_oh + v_feats
                 # Normalize
                 norm_vector = [(val - m) / s for val, m, s in zip(raw_vector, means, stds)]
                 features_batch.append(norm_vector)

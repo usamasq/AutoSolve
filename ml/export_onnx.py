@@ -62,13 +62,13 @@ if TORCH_AVAILABLE:
         """15 → 64 → 32 → 1 MLP for track survival (must match train_track_predictor.py)."""
         def __init__(self):
             super().__init__()
-            self.net = nn.Sequential(
+            self.network = nn.Sequential(
                 nn.Linear(15, 64), nn.ReLU(),
                 nn.Linear(64, 32), nn.ReLU(),
                 nn.Linear(32,  1), nn.Sigmoid(),
             )
         def forward(self, x):
-            return self.net(x)
+            return self.network(x)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -115,10 +115,10 @@ def _validate_onnx_vs_torch(torch_model, onnx_path, sample_input):
 
     max_diff = float(np.max(np.abs(torch_out - ort_out)))
     if max_diff < 1e-3:
-        print(f"  ✅ Validation passed — max output diff: {max_diff:.2e}")
+        print(f"  [OK] Validation passed — max output diff: {max_diff:.2e}")
         return True
     else:
-        print(f"  ⚠️  Validation WARNING — max diff: {max_diff:.2e} (threshold: 1e-3)")
+        print(f"  [WARNING] Validation WARNING — max diff: {max_diff:.2e} (threshold: 1e-3)")
         return False
 
 
@@ -128,14 +128,14 @@ def export_settings_model(weights_path: str, out_dir: str) -> bool:
     Also writes settings_model_meta.json with normalisation parameters.
     """
     if not TORCH_AVAILABLE:
-        print("❌ PyTorch not available — cannot export ONNX.")
+        print("[ERROR] PyTorch not available — cannot export ONNX.")
         return False
 
     if not os.path.exists(weights_path):
-        print(f"❌ Weights file not found: {weights_path}")
+        print(f"[ERROR] Weights file not found: {weights_path}")
         return False
 
-    print(f"\n── Settings Model ──────────────────────────────")
+    print("\n--- Settings Model ------------------------------")
     print(f"   Loading weights from: {weights_path}")
 
     with open(weights_path, "r") as f:
@@ -188,14 +188,14 @@ def export_track_predictor(weights_path: str, out_dir: str) -> bool:
     Also writes track_predictor_meta.json.
     """
     if not TORCH_AVAILABLE:
-        print("❌ PyTorch not available — cannot export ONNX.")
+        print("[ERROR] PyTorch not available — cannot export ONNX.")
         return False
 
     if not os.path.exists(weights_path):
-        print(f"❌ Weights file not found: {weights_path}")
+        print(f"[ERROR] Weights file not found: {weights_path}")
         return False
 
-    print(f"\n── Track Predictor ─────────────────────────────")
+    print("\n--- Track Predictor -----------------------------")
     print(f"   Loading weights from: {weights_path}")
 
     with open(weights_path, "r") as f:
@@ -205,14 +205,14 @@ def export_track_predictor(weights_path: str, out_dir: str) -> bool:
     # Keys: layer1_weight, layer1_bias, layer2_weight, layer2_bias, layer3_weight, layer3_bias,
     #       input_mean, input_std
     model = TrackMLP()
-    # Map from track_predictor.json key names to net.X.weight / net.X.bias
+    # Map from track_predictor.json key names to network.X.weight / network.X.bias
     mapped_weights = {
-        "net.0.weight": raw["layer1_weight"],
-        "net.0.bias":   raw["layer1_bias"],
-        "net.2.weight": raw["layer2_weight"],
-        "net.2.bias":   raw["layer2_bias"],
-        "net.4.weight": raw["layer3_weight"],
-        "net.4.bias":   raw["layer3_bias"],
+        "network.0.weight": raw["layer1_weight"],
+        "network.0.bias":   raw["layer1_bias"],
+        "network.2.weight": raw["layer2_weight"],
+        "network.2.bias":   raw["layer2_bias"],
+        "network.4.weight": raw["layer3_weight"],
+        "network.4.bias":   raw["layer3_bias"],
     }
     _load_json_weights_into_model(model, mapped_weights)
     model.eval()
@@ -285,12 +285,12 @@ def main():
     args = parser.parse_args()
 
     print("AutoSolve ONNX Export")
-    print(f"  PyTorch:       {'✅' if TORCH_AVAILABLE else '❌ not installed'}")
-    print(f"  onnxruntime:   {'✅' if ORT_AVAILABLE  else '⚠️  not installed (validation skipped)'}")
+    print(f"  PyTorch:       {'[OK]' if TORCH_AVAILABLE else '[ERROR] not installed'}")
+    print(f"  onnxruntime:   {'[OK]' if ORT_AVAILABLE  else '[WARN] not installed (validation skipped)'}")
     print(f"  Output dir:    {args.out_dir}")
 
     if not TORCH_AVAILABLE:
-        print("\n❌ PyTorch is required for ONNX export. Install it with:")
+        print("\n[ERROR] PyTorch is required for ONNX export. Install it with:")
         print("   pip install torch --index-url https://download.pytorch.org/whl/cpu")
         sys.exit(1)
 
@@ -303,12 +303,12 @@ def main():
     if not args.skip_track:
         ok_track = export_track_predictor(args.track_weights, args.out_dir)
 
-    print("\n── Summary ─────────────────────────────────────")
-    print(f"   Settings model:   {'✅ exported' if ok_settings else '❌ failed'}")
-    print(f"   Track predictor:  {'✅ exported' if ok_track    else '❌ failed'}")
+    print("\n--- Summary -------------------------------------")
+    print(f"   Settings model:   {'[OK] exported' if ok_settings else '[ERROR] failed'}")
+    print(f"   Track predictor:  {'[OK] exported' if ok_track    else '[ERROR] failed'}")
 
     if ok_settings and ok_track:
-        print("\n✅ All models exported successfully!")
+        print("\n[OK] All models exported successfully!")
         print(f"   Place the .onnx and _meta.json files in:")
         print(f"   {_MODELS_DIR}")
     else:

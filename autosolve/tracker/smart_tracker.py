@@ -331,23 +331,24 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.predictor = SettingsPredictor()
         
         # Track quality predictor — ONNX-first, numpy fallback
+        self.track_predictor = None
         try:
             from .onnx_predictor import OnnxPredictor
-            self.onnx_predictor = OnnxPredictor.get_instance()
-            if self.onnx_predictor.track_model_available:
+            onnx_pred = OnnxPredictor.get_instance()
+            if onnx_pred.track_model_available:
+                self.track_predictor = onnx_pred
                 print("AutoSolve: TrackPredictor using ONNX inference")
             else:
                 print("AutoSolve: ONNX track model not found, loading numpy fallback")
         except Exception as e:
             print(f"AutoSolve: OnnxPredictor init failed: {e}")
-            self.onnx_predictor = None
 
         # Fallback numpy TrackPredictor (used when ONNX unavailable)
-        self.track_predictor = None
-        if self.onnx_predictor is None or not self.onnx_predictor.track_model_available:
+        if self.track_predictor is None:
             try:
                 from .track_predictor import TrackPredictor
                 self.track_predictor = TrackPredictor()
+                print("AutoSolve: Loaded numpy fallback TrackPredictor")
             except Exception as e:
                 print(f"AutoSolve: Failed to initialize TrackPredictor fallback: {e}")
 
@@ -871,7 +872,15 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         # Proactive track replacement (ML Track Predictor)
         proactive_muted = 0
         proactive_msg = ""
-        if self.track_predictor and self.track_predictor.model is not None:
+        # Check if predictor is armed
+        predictor_ready = False
+        if self.track_predictor is not None:
+            if hasattr(self.track_predictor, 'track_model_available'):
+                predictor_ready = self.track_predictor.track_model_available
+            elif hasattr(self.track_predictor, 'model') and self.track_predictor.model is not None:
+                predictor_ready = True
+                
+        if predictor_ready:
             active_tracks = []
             clip_frame = self.scene_to_clip_frame(frame)
             
@@ -927,7 +936,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 features_batch = np.array(features_list, dtype=np.float32)
                 
                 # Run batch prediction
-                probs = self.track_predictor.predict_survival(features_batch)
+                if hasattr(self.track_predictor, 'predict_track_survival'):
+                    probs = self.track_predictor.predict_track_survival(features_batch)
+                else:
+                    probs = self.track_predictor.predict_survival(features_batch)
                 
                 # Mute tracks with survival probability < 0.3
                 for track, prob in zip(active_tracks, probs):
@@ -1862,69 +1874,47 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         """
         Estimate texture quality (luminance variance) in each region.
         
-        Sparsely samples pixels over an 8x8 grid within the bounding box of
-        each of the 3x3 screen regions.
+        Uses PixelAnalyzer to read frame pixels directly from Blender's memory,
+        then samples an 8x8 grid within the bounding box of each of the 3x3 screen regions.
         
         Returns:
             Dict mapping region name to luminance variance (float).
         """
-        import uuid
-        
         print("AutoSolve: Estimating region texture quality...")
         qualities = {}
-        temp_img = None
-        temp_name = f"__autosolve_temp_{uuid.uuid4().hex}"
+        
+        current_frame = bpy.context.scene.frame_current
         
         try:
-            filepath = bpy.path.abspath(self.clip.filepath)
-            if not filepath or not os.path.exists(filepath):
-                raise FileNotFoundError(f"Clip filepath not found: {filepath}")
+            # Use PixelAnalyzer to get the grayscale frame pixels
+            gray = self.pixel_analyzer.get_frame_gray(self.clip, current_frame)
+            if gray is None:
+                raise ValueError("Could not retrieve frame pixels from PixelAnalyzer")
                 
-            temp_img = bpy.data.images.load(filepath)
-            temp_img.name = temp_name
+            H, W = gray.shape
             
-            # Access pixels
-            pixels = temp_img.pixels
-            num_pixels = len(pixels)
-            if num_pixels == 0:
-                raise ValueError("No pixels loaded from image")
-                
-            W, H = self.clip.size
-            if W <= 0 or H <= 0:
-                W, H = temp_img.size
-                
-            if W <= 0 or H <= 0:
-                raise ValueError(f"Invalid image dimensions: {W}x{H}")
-                
             # Sample 8x8 grid for each region
             for region in REGIONS:
                 x_min, y_min, x_max, y_max = get_region_bounds(region)
                 px_min_x = int(x_min * W)
                 px_max_x = int(x_max * W)
-                px_min_y = int(y_min * H)
-                px_max_y = int(y_max * H)
+                # Flip y coordinates because numpy uses top-left origin,
+                # but Blender bounds assume bottom-left origin.
+                py_min_y = int((1.0 - y_max) * H)
+                py_max_y = int((1.0 - y_min) * H)
                 
                 dx = (px_max_x - px_min_x) / 8.0
-                dy = (px_max_y - px_min_y) / 8.0
+                dy = (py_max_y - py_min_y) / 8.0
                 
                 luminances = []
                 for i in range(8):
                     for j in range(8):
                         px = int(px_min_x + (i + 0.5) * dx)
-                        py = int(px_min_y + (j + 0.5) * dy)
+                        py = int(py_min_y + (j + 0.5) * dy)
                         px = max(0, min(px, W - 1))
                         py = max(0, min(py, H - 1))
                         
-                        idx = (py * W + px) * 4
-                        # Guard index bounds
-                        if idx + 2 < num_pixels:
-                            r = pixels[idx]
-                            g = pixels[idx + 1]
-                            b = pixels[idx + 2]
-                            lum = 0.299 * r + 0.587 * g + 0.114 * b
-                            luminances.append(lum)
-                        else:
-                            luminances.append(0.0)
+                        luminances.append(float(gray[py, px]))
                         
                 if luminances:
                     mean_lum = sum(luminances) / len(luminances)
@@ -1933,10 +1923,10 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 else:
                     qualities[region] = 0.0
                 
-            print("AutoSolve: Successfully estimated region texture qualities from image data.")
+            print("AutoSolve: Successfully estimated region texture qualities from image data via PixelAnalyzer.")
             
         except Exception as e:
-            print(f"AutoSolve: Failed to load image data for texture quality estimation: {e}")
+            print(f"AutoSolve: Failed to estimate texture quality using PixelAnalyzer: {e}")
             # Fallback to self._detected_feature_density
             print("AutoSolve: Falling back to detected feature density for texture quality estimation.")
             if hasattr(self, '_detected_feature_density') and self._detected_feature_density:
@@ -1951,24 +1941,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             else:
                 qualities = {r: 1.0 for r in REGIONS}
                 
-        finally:
-            # Cleanup current temp image
-            if temp_img:
-                try:
-                    temp_img.user_clear()
-                    bpy.data.images.remove(temp_img)
-                except Exception as e:
-                    print(f"AutoSolve: Error cleaning up temporary image: {e}")
-            
-            # Clean up any other orphaned temporary images starting with __autosolve_temp_
-            for img in list(bpy.data.images):
-                if img.name.startswith("__autosolve_temp_"):
-                    try:
-                        img.user_clear()
-                        bpy.data.images.remove(img)
-                    except Exception as e:
-                        print(f"AutoSolve: Error cleaning up orphan temporary image {img.name}: {e}")
-                        
         return qualities
     
     def _score_feature_quality(self, marker, track) -> float:
@@ -2006,6 +1978,18 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             score *= 0.6
         elif min_dist_to_existing > 0.1:  # Good distance
             score *= 1.15
+            
+        # Use PixelAnalyzer to get texture and rigidity score
+        try:
+            current_frame = bpy.context.scene.frame_current
+            clip_frame = self.scene_to_clip_frame(current_frame)
+            
+            # score_marker_position returns a score in [0, 1] representing richness & rigidity
+            # It returns 0.5 as neutral fallback
+            pixel_score = self.pixel_analyzer.score_marker_position(self.clip, track, clip_frame)
+            score *= pixel_score
+        except Exception as pe:
+            print(f"AutoSolve: Pixel scoring failed for track {track.name}: {pe}")
         
         return min(score, 1.0)
     
