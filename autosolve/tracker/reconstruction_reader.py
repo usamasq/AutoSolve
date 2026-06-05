@@ -261,60 +261,6 @@ class ReconstructionReader:
         }
 
     # ────────────────────────────────────────────────────────────────────────
-    # Training Data Export
-    # ────────────────────────────────────────────────────────────────────────
-
-    def export_for_training(
-        self,
-        clip: bpy.types.MovieClip,
-        poses: List[CameraPose],
-        reprojection_error: float,
-        settings: Dict,
-        footage_class: str,
-    ) -> Dict:
-        """
-        Package reconstruction data into a training record for the ML pipeline.
-
-        This record can be appended to the training dataset to improve future
-        predictions. It includes the solve quality signal (reprojection error,
-        bundle ratio) alongside the settings that produced it.
-
-        Returns:
-            dict ready to be serialised to JSON
-        """
-        vel_signal = self.camera_velocity_signal(poses)
-        bad_frames = self.detect_pose_jumps(poses)
-
-        track_count  = len(clip.tracking.tracks)
-        bundle_count = len([t for t in clip.tracking.tracks if t.has_bundle])
-        bundle_ratio = bundle_count / max(track_count, 1)
-
-        # Reward function: lower error + higher bundle ratio = better
-        if reprojection_error >= 999.0 or not clip.tracking.reconstruction.is_valid:
-            reward = 0.0
-        else:
-            error_score  = max(0.0, 1.0 - reprojection_error / 5.0)
-            bundle_score = bundle_ratio
-            reward       = 0.6 * error_score + 0.4 * bundle_score
-
-        return {
-            "footage_class":      footage_class,
-            "clip_width":         clip.size[0],
-            "clip_height":        clip.size[1],
-            "clip_fps":           clip.fps,
-            "clip_duration":      clip.frame_duration,
-            "settings":           settings,
-            "reprojection_error": reprojection_error,
-            "bundle_ratio":       bundle_ratio,
-            "reward":             reward,
-            "bad_frame_count":    len(bad_frames),
-            "motion_class":       vel_signal["motion_class"],
-            "mean_angular_vel":   vel_signal["mean_angular_vel"],
-            "peak_angular_vel":   vel_signal["peak_angular_vel"],
-            "mean_linear_vel":    vel_signal["mean_linear_vel"],
-        }
-
-    # ────────────────────────────────────────────────────────────────────────
     # Convenience: read reconstruction error from clip
     # ────────────────────────────────────────────────────────────────────────
 
