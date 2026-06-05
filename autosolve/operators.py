@@ -666,11 +666,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 error = tracker.get_solve_error()
                 bundles = tracker.get_bundle_count()
                 
-                # Save user template learning (with success metrics)
-                if hasattr(_state, 'user_learned') and _state.user_learned:
-                    final_learned = tracker.learn_from_user_templates()
-                    tracker.save_user_learning(final_learned)
-                
                 # Camera setup handled by AUTOSOLVE_OT_setup_scene operator
                 
                 settings.solve_status = "Complete!"
@@ -949,10 +944,6 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
             if count == 0:
                 self.report({'WARNING'}, "No markers were smoothed (tracks too short)")
                 return {'CANCELLED'}
-                
-            # ═══════════════════════════════════════════════════════════════
-            # 3. Prevent Learning (Update snapshot)
-            # Telemetry recorder removed
 
             
             # ═══════════════════════════════════════════════════════════════
@@ -1006,9 +997,6 @@ class AUTOSOLVE_OT_smooth_tracks(Operator):
                 # Re-select all tracks for convenience
                 for track in clip.tracking.tracks:
                     track.select = True
-                
-            # ═══════════════════════════════════════════════════════════════
-            # Telemetry recorder removed
 
             
             # ═══════════════════════════════════════════════════════════════

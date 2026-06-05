@@ -59,9 +59,7 @@ class SettingsPredictor:
     
     def predict_settings(self, clip: bpy.types.MovieClip, 
                           robust_mode: bool = False,
-                          footage_type: str = 'AUTO',
-                          motion_class: str = None,
-                          clip_fingerprint: str = None) -> Dict:
+                          footage_type: str = 'AUTO') -> Dict:
         """
         Predict optimal settings for the given clip using presets.
         
@@ -69,8 +67,6 @@ class SettingsPredictor:
             clip: The Movie Clip to analyze
             robust_mode: Use more aggressive settings for difficult footage
             footage_type: User-specified footage type (INDOOR, DRONE, etc.)
-            motion_class: Optional motion classification (ignored/legacy)
-            clip_fingerprint: Optional clip fingerprint (ignored/legacy)
         """
         # Try ONNX Settings Optimizer first
         try:

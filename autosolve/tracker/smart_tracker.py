@@ -6,7 +6,6 @@ SmartTracker with Full Learning Integration.
 
 Hybrid approach:
 - Ships with pre-trained defaults (from developer training)
-- Adapts to user's footage over time (local learning)
 """
 
 import bpy
@@ -66,7 +65,6 @@ VELOCITY_SPIKE_SEVERE = 0.2  # 20% of frame = severe spike (auto-mute)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # These are the "shipped" defaults based on developer testing
-# Users can override with local learning data
 
 
 PRETRAINED_DEFAULTS = {
@@ -293,8 +291,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
     
     Uses:
     1. Pre-trained defaults (shipped with addon)
-    2. Local learning (adapts to user's footage)
-    3. Per-session analysis (real-time adaptation)
+    2. Per-session analysis (real-time adaptation)
     """
     
     ABSOLUTE_MIN_TRACKS = 12
@@ -365,16 +362,12 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.footage_class = f"{self.resolution_class}_{footage_type}"
         self.current_settings: Dict = {}
         self.iteration = 0
-        self.previous_session_id: str = ""  # For linking sessions across multi-attempts
         self.last_analysis: Optional[Dict] = None
         self.known_dead_zones: Set[str] = set()
         
         # Temporal dead zones: {frame_range: {region: failure_count}}
         # Frame ranges are tuples like (start, end) in 50-frame segments
         self.temporal_dead_zones: Dict[Tuple[int, int], Dict[str, int]] = {}
-        
-        # Failed tracks for learning (populated after solve attempts)
-        self.failed_tracks: List[Dict] = []
         
         # Refinement state
         self.refinement_iteration = 0
@@ -392,7 +385,6 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.MAX_STRATEGIC_ITERATIONS = 5
         
         # Mid-session adaptation state
-        self.adaptation_history: List[Dict] = []
         self.last_survival_rate: float = 1.0
         self.adaptation_count: int = 0
         self.MAX_ADAPTATIONS: int = 3
@@ -615,8 +607,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         self.current_settings = self.predictor.predict_settings(
             self.clip,
             robust_mode=False,  # We apply robust mode separately in step 3
-            footage_type=self.footage_type,
-            motion_class=self.motion_class  # May be None on first load, set after motion probe
+            footage_type=self.footage_type
         )
         print(f"AutoSolve: Predicted settings for {self.footage_class}: "
               f"pattern={self.current_settings.get('pattern_size')}px, "
@@ -757,14 +748,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
             self.adaptation_count += 1
             self.configure_settings()
             
-            adaptation_record = {
-                'iteration': self.adaptation_count,
-                'survival_rate': survival_rate,
-                'old_settings': old_settings,
-                'new_settings': self.current_settings.copy(),
-                'changes': changes,
-            }
-            self.adaptation_history.append(adaptation_record)
+
             
             print(f"AutoSolve: MID-SESSION ADAPTATION #{self.adaptation_count}")
             for change in changes:
@@ -1049,21 +1033,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         return region_map[row][col]
     
-    def get_adaptation_summary(self) -> Dict:
-        """
-        Get summary of all mid-session adaptations.
-        
-        Returns:
-            Dict with adaptation history and current state
-        """
-        return {
-            'adaptation_count': self.adaptation_count,
-            'max_adaptations': self.MAX_ADAPTATIONS,
-            'current_settings': self.current_settings.copy(),
-            'region_confidence': self.region_confidence.copy(),
-            'adaptation_history': self.adaptation_history,
-            'known_dead_zones': list(self.known_dead_zones),
-        }
+
     
     def _blend_settings(self, settings_a: Dict, settings_b: Dict, weight_a: float = 0.5) -> Dict:
         """
@@ -1159,217 +1129,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         
         return {k: list(v) for k, v in priority.items()}
     
-    def extract_user_templates(self) -> List[Dict]:
-        """
-        Extract complete settings from user-placed markers.
-        
-        Extracts:
-        - Pattern size, search size
-        - Correlation threshold
-        - Motion model
-        - Region and frame info
-        - For tracked markers: velocity, success metrics
-        
-        Returns:
-            List of template dicts, one per user marker
-        """
-        templates = []
-        
-        for track in self.tracking.tracks:
-            markers = [m for m in track.markers if not m.mute]
-            if not markers:
-                continue
-            
-            # Extract track settings with robust error handling
-            pattern_size = (15, 15)  # Default
-            search_size = (71, 71)   # Default
-            correlation = 0.7
-            motion_model = 'LOCATION'
-            
-            try:
-                # Try to get pattern size from track
-                if hasattr(track, 'pattern_bound_box'):
-                    bb = track.pattern_bound_box
-                    if bb and len(bb) >= 4:
-                        w = abs(float(bb[0]) - float(bb[2]))
-                        h = abs(float(bb[1]) - float(bb[3]))
-                        if w > 0 and h > 0:
-                            pattern_size = (int(w * self.clip.size[0]), int(h * self.clip.size[1]))
-                
-                # Try to get search size
-                if hasattr(track, 'search_max') and hasattr(track, 'search_min'):
-                    sm = track.search_max
-                    sn = track.search_min
-                    if sm and sn:
-                        w = abs(float(sm[0]) - float(sn[0]))
-                        h = abs(float(sm[1]) - float(sn[1]))
-                        if w > 0 and h > 0:
-                            search_size = (int(w * self.clip.size[0]), int(h * self.clip.size[1]))
-                
-                # Get correlation
-                if hasattr(track, 'correlation_min'):
-                    correlation = float(track.correlation_min)
-                
-                # Get motion model
-                if hasattr(track, 'motion_model'):
-                    motion_model = str(track.motion_model)
-                    
-            except (TypeError, ValueError, AttributeError) as e:
-                # Keep defaults on any error
-                pass
-            
-            template = {
-                'name': track.name,
-                'pattern_size': pattern_size,
-                'search_size': search_size,
-                'correlation': correlation,
-                'motion_model': motion_model,
-                'use_brute': getattr(track, 'use_brute', False),
-                'use_normalization': getattr(track, 'use_normalization', False),
-                'region': get_region(markers[0].co.x, markers[0].co.y),
-                'is_tracked': len(markers) > 2,
-            }
-            
-            # For tracked markers, add metrics
-            if len(markers) >= 2:
-                markers_sorted = sorted(markers, key=lambda m: m.frame)
-                template['frame_start'] = markers_sorted[0].frame
-                template['frame_end'] = markers_sorted[-1].frame
-                template['lifespan'] = template['frame_end'] - template['frame_start']
-                
-                # Velocity (average motion per frame)
-                total_motion = 0
-                for i in range(1, len(markers_sorted)):
-                    dx = markers_sorted[i].co.x - markers_sorted[i-1].co.x
-                    dy = markers_sorted[i].co.y - markers_sorted[i-1].co.y
-                    total_motion += (dx**2 + dy**2) ** 0.5
-                template['avg_velocity'] = total_motion / max(len(markers_sorted) - 1, 1)
-                
-                # Success metrics (if have bundle)
-                if track.has_bundle:
-                    template['has_bundle'] = True
-                    template['solve_error'] = track.average_error
-                    template['success'] = track.average_error < 2.0
-                else:
-                    template['has_bundle'] = False
-                    template['success'] = False
-            else:
-                template['lifespan'] = 0
-                template['success'] = None  # Not tracked yet
-            
-            templates.append(template)
-        
-        return templates
-    
-    def learn_from_user_templates(self) -> Dict:
-        """
-        Analyze user templates and learn optimal settings.
-        
-        Computes:
-        - Best settings by region
-        - Success rates by setting combination
-        - Recommended settings for each region
-        
-        Returns:
-            Dict with learned settings
-        """
-        templates = self.extract_user_templates()
-        if not templates:
-            return {}
-        
-        # Group by region
-        by_region: Dict[str, List[Dict]] = {}
-        for t in templates:
-            region = t['region']
-            if region not in by_region:
-                by_region[region] = []
-            by_region[region].append(t)
-        
-        # Analyze each region
-        learned = {
-            'regions': {},
-            'overall': {},
-            'success_rate': 0,
-            'total_templates': len(templates),
-        }
-        
-        successful = [t for t in templates if t.get('success') is True]
-        learned['success_rate'] = len(successful) / max(len([t for t in templates if t.get('success') is not None]), 1)
-        
-        # Learn from successful tracks
-        if successful:
-            learned['overall'] = {
-                'avg_pattern_size': sum(t['pattern_size'][0] for t in successful) / len(successful),
-                'avg_search_size': sum(t['search_size'][0] for t in successful) / len(successful),
-                'avg_correlation': sum(t['correlation'] for t in successful) / len(successful),
-                'avg_velocity': sum(t.get('avg_velocity', 0) for t in successful) / len(successful),
-            }
-        
-        # Learn per region
-        for region, region_templates in by_region.items():
-            region_successful = [t for t in region_templates if t.get('success') is True]
-            learned['regions'][region] = {
-                'template_count': len(region_templates),
-                'success_count': len(region_successful),
-                'success_rate': len(region_successful) / max(len([t for t in region_templates if t.get('success') is not None]), 1),
-            }
-            
-            if region_successful:
-                learned['regions'][region]['recommended'] = {
-                    'pattern_size': int(sum(t['pattern_size'][0] for t in region_successful) / len(region_successful)),
-                    'search_size': int(sum(t['search_size'][0] for t in region_successful) / len(region_successful)),
-                    'correlation': sum(t['correlation'] for t in region_successful) / len(region_successful),
-                }
-        
-        print(f"AutoSolve: Learned from {len(templates)} user templates "
-              f"({learned['success_rate']:.0%} success rate)")
-        
-        return learned
-    
-    def apply_user_template_settings(self, track, region: str, learned: Dict):
-        """
-        Apply learned settings to a new track based on region.
-        
-        Args:
-            track: Blender track object
-            region: Region name
-            learned: Learned settings dict from learn_from_user_templates
-        """
-        settings = None
-        
-        # Try region-specific settings first
-        if region in learned.get('regions', {}):
-            settings = learned['regions'][region].get('recommended')
-        
-        # Fall back to overall settings
-        if not settings and learned.get('overall'):
-            settings = {
-                'pattern_size': int(learned['overall'].get('avg_pattern_size', 15)),
-                'search_size': int(learned['overall'].get('avg_search_size', 71)),
-                'correlation': learned['overall'].get('avg_correlation', 0.7),
-            }
-        
-        if settings:
-            # Apply to track
-            self._apply_track_settings(track)  # Base settings
-            
-            # Override with learned settings
-            if hasattr(track, 'correlation_min'):
-                track.correlation_min = settings.get('correlation', 0.7)
-            
-            # Pattern and search sizes applied at global level
-            # Store for next detection
-            self.current_settings['pattern_size'] = settings.get('pattern_size', 15)
-            self.current_settings['search_size'] = settings.get('search_size', 71)
-    
-    def save_user_learning(self, learned: Dict):
-        """
-        Save learned user template data to local model.
-        
-        Args:
-            learned: Learned settings from learn_from_user_templates
-        """
-        pass
+
 
     
     def preserve_existing_tracks(self) -> int:
@@ -3164,14 +2924,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                 
                 self.temporal_dead_zones[segment][region] += 1
             
-            # Store for analysis
-            self.failed_tracks.append({
-                'name': track.name,
-                'region': region,
-                'frames': (start_frame, end_frame),
-                'has_bundle': track.has_bundle,
-                'error': track.average_error if track.has_bundle else None,
-            })
+
         
         print(f"AutoSolve: Learned from {len(failed)} failed tracks")
         self._print_temporal_dead_zones()
@@ -3989,14 +3742,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
                               f"angular={vel_signal['mean_angular_vel']:.2f}°/f, "
                               f"class={vel_signal['motion_class']}")
 
-                        try:
-                            record = self.reconstruction_reader.export_for_training(
-                                self.clip, poses, raw_error,
-                                self.current_settings, self.footage_class
-                            )
-                            self._append_training_record(record)
-                        except Exception as te:
-                            print(f"AutoSolve: Training record export failed: {te}")
+
 
                 except Exception as re_err:
                     print(f"AutoSolve: Reconstruction readback failed: {re_err}")
@@ -4058,27 +3804,7 @@ class SmartTracker(ValidationMixin, FilteringMixin):
         if muted_count:
             print(f"AutoSolve: Muted {muted_count} markers in {len(bad_frames)} bad frames")
 
-    def _append_training_record(self, record: Dict):
-        """
-        Neural Engine helper: append a training record to the per-clip on-disk dataset.
 
-        Records are written to the ml/data/live/ directory so the training
-        pipeline can pick them up on the next training run.
-        """
-        try:
-            import json
-            from pathlib import Path
-            live_dir = Path(__file__).parent.parent.parent / "ml" / "data" / "live"
-            live_dir.mkdir(parents=True, exist_ok=True)
-
-            # One file per clip fingerprint
-            safe_name = "".join(c for c in self.clip.name if c.isalnum() or c in "._-")[:40]
-            record_file = live_dir / f"{safe_name}_records.jsonl"
-
-            with open(record_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record) + "\n")
-        except Exception as e:
-            print(f"AutoSolve: Could not write training record: {e}")
 
     def analyze_and_learn(self) -> Dict:
         """Analyze tracks and learn from results."""
