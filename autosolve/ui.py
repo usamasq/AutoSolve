@@ -582,10 +582,9 @@ class AUTOSOLVE_PT_turbo_mode(Panel):
                 box.separator(factor=0.5)
                 col2 = box.column(align=True)
                 col2.scale_y = 0.75
-                col2.label(text="To load models:", icon='INFO')
-                col2.label(text="1. python ml/train_settings_model.py")
-                col2.label(text="2. python ml/export_onnx.py")
-                col2.label(text="3. Copy .onnx → autosolve/tracker/models/")
+                col2.label(text="To load/train models:", icon='INFO')
+                col2.label(text="1. Run ml/AutoSolve_Training.ipynb")
+                col2.label(text="2. Models will copy to tracker/models/")
 
             box.separator(factor=0.5)
             box.operator("autosolve.check_turbo_status", text="Refresh", icon='FILE_REFRESH')

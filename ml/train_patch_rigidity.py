@@ -34,32 +34,37 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 
-class PatchRigidityCNN(nn.Module):
-    """Lightweight 2-layer CNN for 32x32 patch rigidity classification."""
-    def __init__(self):
-        super().__init__()
-        if not TORCH_AVAILABLE:
-            return
-        self.features = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2), # 32x32 -> 16x16
-            nn.Conv2d(16, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2, 2)  # 16x16 -> 8x8
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(32 * 8 * 8, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
-        
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
+if TORCH_AVAILABLE:
+    class PatchRigidityCNN(nn.Module):
+        """Lightweight 2-layer CNN for 32x32 patch rigidity classification."""
+        def __init__(self):
+            super().__init__()
+            self.features = nn.Sequential(
+                nn.Conv2d(1, 16, kernel_size=3, padding=1),
+                nn.BatchNorm2d(16),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2), # 32x32 -> 16x16
+                nn.Conv2d(16, 32, kernel_size=3, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(2, 2)  # 16x16 -> 8x8
+            )
+            self.classifier = nn.Sequential(
+                nn.Linear(32 * 8 * 8, 64),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(64, 1),
+                nn.Sigmoid()
+            )
+            
+        def forward(self, x):
+            x = self.features(x)
+            x = x.view(x.size(0), -1)
+            x = self.classifier(x)
+            return x
+else:
+    class PatchRigidityCNN:
+        pass
 
 
 def generate_synthetic_patch_data(num_samples=200) -> tuple:
@@ -98,7 +103,8 @@ def generate_synthetic_patch_data(num_samples=200) -> tuple:
     # Shape: (N, 1, 32, 32)
     X = np.expand_dims(np.array(X, dtype=np.float32), 1)
     y = np.array(y, dtype=np.float32)
-    return X, y
+    clip_ids = [f"synth_clip_{i // 40}" for i in range(num_samples)]
+    return X, y, clip_ids
 
 
 def extract_real_patch_data(clips_dir: str, data_dir: str) -> tuple:
@@ -115,6 +121,7 @@ def extract_real_patch_data(clips_dir: str, data_dir: str) -> tuple:
         
     X_list = []
     y_list = []
+    clip_ids = []
     
     for file_name in solve_files:
         solve_path = os.path.join(data_dir, file_name)
@@ -218,6 +225,7 @@ def extract_real_patch_data(clips_dir: str, data_dir: str) -> tuple:
                             label = track_rigidity[name]
                             X_list.append(patch)
                             y_list.append(label)
+                            clip_ids.append(clip_name)
                             
                 frame_idx += 1
                 
@@ -227,11 +235,11 @@ def extract_real_patch_data(clips_dir: str, data_dir: str) -> tuple:
             print(f"Error processing video patch generation: {e}")
             
     if not X_list:
-        return None
+        return None, None, None
         
     X = np.expand_dims(np.array(X_list, dtype=np.float32), 1)
     y = np.array(y_list, dtype=np.float32)
-    return X, y
+    return X, y, clip_ids
 
 
 def train_rigidity_model(args):
@@ -241,20 +249,24 @@ def train_rigidity_model(args):
         sys.exit(1)
         
     # 1. Gather data
-    X, y = None, None
+    X, y, clip_ids = None, None, None
     if os.path.exists(args.clips_dir) and os.path.exists(args.data_dir):
-        X, y = extract_real_patch_data(args.clips_dir, args.data_dir)
+        X, y, clip_ids = extract_real_patch_data(args.clips_dir, args.data_dir)
         
     if X is None:
-        X, y = generate_synthetic_patch_data(num_samples=400)
+        X, y, clip_ids = generate_synthetic_patch_data(num_samples=400)
         
     print(f"Training dataset size: {len(X)} patches. Rigid ratio: {np.mean(y):.1%}")
     
-    # 2. Split dataset
-    indices = np.arange(len(X))
-    np.random.shuffle(indices)
-    split = int(len(X) * 0.8)
-    train_idx, val_idx = indices[:split], indices[split:]
+    # 2. Split dataset by clip to prevent data leakage
+    unique_clips = list(set(clip_ids))
+    random.seed(42)
+    random.shuffle(unique_clips)
+    split_idx = max(1, int(len(unique_clips) * 0.8))
+    train_clips = set(unique_clips[:split_idx])
+    
+    train_idx = [i for i, c in enumerate(clip_ids) if c in train_clips]
+    val_idx = [i for i, c in enumerate(clip_ids) if c not in train_clips]
     
     train_dataset = TensorDataset(torch.tensor(X[train_idx]), torch.tensor(y[train_idx]).unsqueeze(1))
     val_dataset = TensorDataset(torch.tensor(X[val_idx]), torch.tensor(y[val_idx]).unsqueeze(1))
@@ -264,10 +276,14 @@ def train_rigidity_model(args):
     # 3. Model setup
     model = PatchRigidityCNN()
     criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     
     # 4. Training loop
     print("Training CNN Patch Rigidity model...")
+    best_loss = 9999.0
+    best_weights = None
+    
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_loss = 0.0
@@ -276,10 +292,12 @@ def train_rigidity_model(args):
             outputs = model(batch_x)
             loss = criterion(outputs, batch_y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_loss += loss.item() * batch_x.size(0)
             
         train_loss /= len(train_idx)
+        scheduler.step()
         
         # Validation evaluation
         model.eval()
@@ -288,10 +306,20 @@ def train_rigidity_model(args):
             val_y_t = torch.tensor(y[val_idx]).unsqueeze(1)
             val_preds = model(val_X_t)
             val_loss = criterion(val_preds, val_y_t).item()
-            acc = np.mean((val_preds.numpy() > 0.5) == y[val_idx].reshape(-1, 1))
+            acc = np.mean((val_preds.numpy() > 0.5) == y[val_idx].reshape(-1, 1)) if len(val_idx) > 0 else 1.0
             
         if epoch % 10 == 0 or epoch == 1:
             print(f"Epoch {epoch:2d}/{args.epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {acc:.1%}")
+            
+        # Track best weights
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_weights = {k: v.clone() for k, v in model.state_dict().items()}
+            
+    # Restore best weights
+    if best_weights is not None:
+        model.load_state_dict(best_weights)
+        print(f"\nBest Validation Loss: {best_loss:.4f}")
             
     # 5. Export to ONNX
     os.makedirs(args.out_dir, exist_ok=True)

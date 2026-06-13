@@ -81,35 +81,90 @@ class PixelAnalyzer:
             if w == 0 or h == 0:
                 return None
 
-            # Create a temporary Image to receive pixels
-            img_name = f"__autosolve_px_{clip.name}_{frame}__"
+            arr = None
+            filepath = bpy.path.abspath(clip.filepath)
 
-            # Remove stale image if it exists
-            if img_name in bpy.data.images:
-                bpy.data.images.remove(bpy.data.images[img_name])
+            # Option 1: Try OpenCV first (best compatibility, handles video/sequences fast)
+            try:
+                import cv2
+                cap = cv2.VideoCapture(filepath)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame - 1)  # cv2 is 0-indexed
+                    ret, frame_bgr = cap.read()
+                    cap.release()
+                    if ret:
+                        # Convert BGR to RGB and normalize
+                        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                        h_f, w_f, _ = frame_rgb.shape
+                        
+                        # Resize to clip.size if necessary
+                        if (w_f, h_f) != (w, h):
+                            frame_rgb = cv2.resize(frame_rgb, (w, h))
+                            h_f, w_f = h, w
 
-            # Render the frame into an image buffer
-            img = bpy.data.images.new(img_name, width=w, height=h, alpha=True, float_buffer=True)
+                        # Create float32 RGBA array
+                        arr = np.ones((h_f, w_f, 4), dtype=np.float32)
+                        arr[:, :, :3] = frame_rgb.astype(np.float32) / 255.0
+            except Exception:
+                pass
 
-            # Use the clip's image sequence to grab pixels
-            # clip.filepath gives path to image sequence or movie
-            # We use MovieClipUser to sample at the right frame
-            user = bpy.types.MovieClipUser
-            img.source = 'MOVIE' if clip.source == 'MOVIE' else 'SEQUENCE'
+            # Option 2: Image Sequence fallback (native Blender load without OpenCV)
+            if arr is None and clip.source == 'SEQUENCE':
+                import re
+                import os
+                
+                # Resolve sequence filepath pattern
+                seq_path = filepath
+                if '#' in seq_path:
+                    match = re.search(r'#+', seq_path)
+                    if match:
+                        hashes = match.group(0)
+                        padded_frame = str(frame).zfill(len(hashes))
+                        seq_path = seq_path.replace(hashes, padded_frame)
+                elif '%' in seq_path:
+                    try:
+                        seq_path = seq_path % frame
+                    except Exception:
+                        pass
+                else:
+                    # Trailing digits fallback
+                    base, ext = os.path.splitext(seq_path)
+                    match = re.search(r'(\d+)$', base)
+                    if match:
+                        digits = match.group(1)
+                        padded_frame = str(frame).zfill(len(digits))
+                        seq_path = base[:-len(digits)] + padded_frame + ext
+                
+                if os.path.exists(seq_path):
+                    try:
+                        # Load single frame as Blender Image
+                        img = bpy.data.images.load(seq_path)
+                        # Read pixels (numpy array)
+                        pixels_flat = np.array(img.pixels, dtype=np.float32)
+                        arr = pixels_flat.reshape(h, w, 4)
+                        # Clean up loaded image to prevent memory leaks
+                        img.user_clear()
+                        bpy.data.images.remove(img)
+                    except Exception as img_err:
+                        print(f"AutoSolve PixelAnalyzer: Image sequence load failed for {seq_path}: {img_err}")
 
-            # Directly read via the clip's internal cache using pixels attribute
-            # This works for clips already loaded in the compositor/tracking editor
-            pixels_flat = list(clip.get_frame_pixels(frame, 'RGBA'))
-            if not pixels_flat:
-                bpy.data.images.remove(img)
-                bpy.context.scene.frame_set(current_frame)
-                return None
+            # Option 3: Last resort fallback (try direct image load of the raw filepath)
+            if arr is None and os.path.exists(filepath):
+                try:
+                    img = bpy.data.images.load(filepath)
+                    pixels_flat = np.array(img.pixels, dtype=np.float32)
+                    arr = pixels_flat.reshape(h, w, 4)
+                    img.user_clear()
+                    bpy.data.images.remove(img)
+                except Exception:
+                    pass
 
-            arr = np.array(pixels_flat, dtype=np.float32).reshape(h, w, 4)
-
-            # Cleanup temp image
-            bpy.data.images.remove(img)
+            # Restore original frame
             bpy.context.scene.frame_set(current_frame)
+
+            if arr is None:
+                print(f"AutoSolve PixelAnalyzer: Could not extract pixels for frame {frame} of clip '{clip.name}'")
+                return None
 
             # Cache and return
             self._evict_cache_if_needed()

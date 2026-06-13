@@ -47,28 +47,43 @@ except ImportError:
 
 if TORCH_AVAILABLE:
     class SettingsMLP(nn.Module):
-        """28 → 64 → 32 → 1 MLP for expected reward (must match train_settings_model.py)."""
+        """3-layer MLP for expected reward prediction."""
         def __init__(self):
             super().__init__()
             self.network = nn.Sequential(
-                nn.Linear(28, 64), nn.ReLU(),
-                nn.Linear(64, 32), nn.ReLU(),
-                nn.Linear(32, 1),  nn.Sigmoid(),
+                nn.Linear(28, 64),
+                nn.BatchNorm1d(64),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(64, 32),
+                nn.BatchNorm1d(32),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(32, 1),
+                nn.Sigmoid()
             )
+            
         def forward(self, x):
             return self.network(x)
 
     class TrackMLP(nn.Module):
-        """15 → 64 → 32 → 1 MLP for track survival (must match train_track_predictor.py)."""
+        """3-layer MLP for track survival prediction (matching training, with Sigmoid for ONNX export)."""
         def __init__(self):
             super().__init__()
             self.network = nn.Sequential(
-                nn.Linear(15, 64), nn.ReLU(),
-                nn.Linear(64, 32), nn.ReLU(),
-                nn.Linear(32,  1), nn.Sigmoid(),
+                nn.Linear(15, 64),
+                nn.BatchNorm1d(64),
+                nn.ReLU(),
+                nn.Dropout(0.2),
+                nn.Linear(64, 32),
+                nn.BatchNorm1d(32),
+                nn.ReLU(),
+                nn.Dropout(0.1),
+                nn.Linear(32, 1)
             )
+            
         def forward(self, x):
-            return self.network(x)
+            return torch.sigmoid(self.network(x))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -201,20 +216,29 @@ def export_track_predictor(weights_path: str, out_dir: str) -> bool:
     with open(weights_path, "r") as f:
         raw = json.load(f)
 
-    # track_predictor.json stores weights differently — it's the direct inference format
-    # Keys: layer1_weight, layer1_bias, layer2_weight, layer2_bias, layer3_weight, layer3_bias,
-    #       input_mean, input_std
     model = TrackMLP()
-    # Map from track_predictor.json key names to network.X.weight / network.X.bias
-    mapped_weights = {
-        "network.0.weight": raw["layer1_weight"],
-        "network.0.bias":   raw["layer1_bias"],
-        "network.2.weight": raw["layer2_weight"],
-        "network.2.bias":   raw["layer2_bias"],
-        "network.4.weight": raw["layer3_weight"],
-        "network.4.bias":   raw["layer3_bias"],
-    }
-    _load_json_weights_into_model(model, mapped_weights)
+    
+    if "weights" in raw:
+        # Loads directly from PyTorch model_meta_weights.json
+        _load_json_weights_into_model(model, raw["weights"])
+    else:
+        # Fallback to old format if only track_predictor.json is provided, 
+        # but warn that batch norm parameters will be default initialized.
+        print("   [WARNING] Loading from legacy numpy JSON format. BatchNorm parameters will be identity/zero.")
+        mapped_weights = {
+            "network.0.weight": raw["layer1_weight"],
+            "network.0.bias":   raw["layer1_bias"],
+            "network.4.weight": raw["layer2_weight"],
+            "network.4.bias":   raw["layer2_bias"],
+            "network.8.weight": raw["layer3_weight"],
+            "network.8.bias":   raw["layer3_bias"],
+        }
+        # Create a state dict with default batchnorm values
+        state_dict = model.state_dict()
+        for k, v in mapped_weights.items():
+            state_dict[k] = torch.tensor(v, dtype=torch.float32)
+        model.load_state_dict(state_dict)
+
     model.eval()
 
     os.makedirs(out_dir, exist_ok=True)
@@ -266,7 +290,7 @@ def main():
     )
     parser.add_argument(
         "--track-weights",
-        default="autosolve/tracker/models/track_predictor.json",
+        default="ml/runs/track_predictor/model_meta_weights.json",
         help="Path to track predictor JSON weights"
     )
     parser.add_argument(

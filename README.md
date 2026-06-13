@@ -150,10 +150,15 @@ autosolve/
 ├── clip_state.py       # Multi-clip state manager
 └── tracker/             # Core tracking engine
     ├── __init__.py           # Tracker package registration
-    ├── smart_tracker.py      # Main tracking orchestrator
-    ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
+    ├── smart_tracker.py      # Main tracking orchestrator (inherits all mixins)
     ├── validation.py         # ValidationMixin - pre-solve validation
     ├── filtering.py          # FilteringMixin - track cleanup & averaging
+    ├── probe_cache.py        # ProbeCacheMixin - motion probe execution & caching
+    ├── detection.py          # DetectionMixin - region feature detection
+    ├── strategic.py          # StrategicMixin - strategic timeline loops & gap filling
+    ├── learning.py           # LearningMixin - presets adaptation & dead zone learning
+    ├── cleanup.py            # CleanupMixin - clustered track cleanups & lost track extensions
+    ├── analyzers.py          # TrackAnalyzer & CoverageAnalyzer classes
     ├── averaging.py          # TrackAverager - cluster averaging for noise reduction
     ├── smoothing.py          # Track smoothing utilities
     ├── constants.py          # Shared constants (REGIONS, TIERED_SETTINGS)
@@ -169,12 +174,16 @@ autosolve/
         └── region_weights.json # Empirical track survivability region weights
 
 ml/
+├── AutoSolve_Training.ipynb   # Unified Jupyter training notebook (Settings & Track)
+├── beginner_training_guide.md # Beginner-friendly step-by-step training guide
 ├── extract_video_features.py  # OpenCV video feature extraction script
 ├── extract_cotracker_trajectories.py # PyTorch/CoTracker trajectory extractor
 ├── collect_data.py           # Headless validation/collection script (Blender)
 ├── run_collection.py         # Batch runner for Blender validation/collection
 ├── prepare_dataset.py        # Dataset preprocessing for settings optimizer
+├── train_settings_model.py   # Train Settings expected reward PyTorch model
 ├── train_track_predictor.py  # Train Track Quality Predictor PyTorch model
+├── train_patch_rigidity.py   # Train CNN model for temporal patch rigidity
 ├── train_trackability_model.py # Calculate empirical region weights
 ├── export_numpy_model.py     # Export predictor weights to JSON
 ├── evaluate_model.py         # Evaluate settings expected reward model

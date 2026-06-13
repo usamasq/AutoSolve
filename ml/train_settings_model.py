@@ -34,9 +34,13 @@ if TORCH_AVAILABLE:
             super().__init__()
             self.network = nn.Sequential(
                 nn.Linear(28, 64),
+                nn.BatchNorm1d(64),
                 nn.ReLU(),
+                nn.Dropout(0.2),
                 nn.Linear(64, 32),
+                nn.BatchNorm1d(32),
                 nn.ReLU(),
+                nn.Dropout(0.1),
                 nn.Linear(32, 1),
                 nn.Sigmoid()  # Reward is in [0, 1] range
             )
@@ -157,8 +161,9 @@ def train_model(args):
         else:
             print(f"Pretrained weight file not found at '{args.pretrained}'. Proceeding with fresh training.")
 
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    criterion = nn.BCELoss()
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     
     # Simple training loop
     best_val_loss = float('inf')
@@ -169,13 +174,27 @@ def train_model(args):
         train_loss = 0.0
         for batch_x, batch_y in train_loader:
             optimizer.zero_grad()
-            outputs = model(batch_x)
+            
+            # Data Augmentation: add low-magnitude Gaussian noise to continuous features
+            if model.training:
+                noise = torch.randn_like(batch_x) * 0.01
+                # Zero out noise for binary switches and one-hot encodings (4, 5, 10-23)
+                for col_idx in range(batch_x.shape[1]):
+                    if col_idx in (4, 5) or (10 <= col_idx < 24):
+                        noise[:, col_idx] = 0.0
+                batch_x_augmented = batch_x + noise
+            else:
+                batch_x_augmented = batch_x
+                
+            outputs = model(batch_x_augmented)
             loss = criterion(outputs, batch_y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_loss += loss.item() * batch_x.size(0)
             
         train_loss /= len(train_loader.dataset)
+        scheduler.step()
         
         # Validation evaluation
         model.eval()

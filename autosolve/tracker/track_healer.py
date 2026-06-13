@@ -501,7 +501,7 @@ class TrackHealer:
     # =========================================================================
     
     def interpolate_with_anchors(self, candidate: HealingCandidate, 
-                                  anchors: List[AnchorTrack]) -> List[List[float]]:
+                                  anchors: List[AnchorTrack], tracking) -> List[List[float]]:
         """
         Interpolate positions for gap frames using anchor motion.
         
@@ -520,8 +520,39 @@ class TrackHealer:
         spanning = [a for a in anchors if a.covers_gap(gap_start, gap_end)]
         
         if not spanning:
-            # Fallback to simple linear interpolation
-            return self._linear_interpolate(start_pos, end_pos, gap_end - gap_start)
+            # Fallback to cubic Hermite spline interpolation
+            start_vel = [0.0, 0.0]
+            end_vel = [0.0, 0.0]
+            
+            track_a = next((t for t in tracking.tracks if t.name == candidate.track_a_name), None)
+            if track_a:
+                markers_a = sorted([m for m in track_a.markers if not m.mute], key=lambda m: m.frame)
+                if len(markers_a) >= 2:
+                    vels = []
+                    for k in range(max(1, len(markers_a) - 3), len(markers_a)):
+                        prev_m = markers_a[k - 1]
+                        curr_m = markers_a[k]
+                        fd = curr_m.frame - prev_m.frame
+                        if fd > 0:
+                            vels.append([(curr_m.co.x - prev_m.co.x) / fd, (curr_m.co.y - prev_m.co.y) / fd])
+                    if vels:
+                        start_vel = [sum(v[0] for v in vels) / len(vels), sum(v[1] for v in vels) / len(vels)]
+                        
+            track_b = next((t for t in tracking.tracks if t.name == candidate.track_b_name), None)
+            if track_b:
+                markers_b = sorted([m for m in track_b.markers if not m.mute], key=lambda m: m.frame)
+                if len(markers_b) >= 2:
+                    vels = []
+                    for k in range(1, min(4, len(markers_b))):
+                        prev_m = markers_b[k - 1]
+                        curr_m = markers_b[k]
+                        fd = curr_m.frame - prev_m.frame
+                        if fd > 0:
+                            vels.append([(curr_m.co.x - prev_m.co.x) / fd, (curr_m.co.y - prev_m.co.y) / fd])
+                    if vels:
+                        end_vel = [sum(v[0] for v in vels) / len(vels), sum(v[1] for v in vels) / len(vels)]
+                        
+            return self._cubic_interpolate(start_pos, end_pos, start_vel, end_vel, gap_end - gap_start)
         
         # Build path using weighted anchor velocities
         path = [start_pos]
@@ -564,6 +595,28 @@ class TrackHealer:
         # Adjust path to ensure it ends at target
         path = self._adjust_path_to_endpoint(path, start_pos, end_pos)
         
+        return path
+
+    def _cubic_interpolate(self, start: List[float], end: List[float], 
+                           start_vel: List[float], end_vel: List[float], 
+                           num_frames: int) -> List[List[float]]:
+        """Cubic Hermite Spline interpolation fallback."""
+        path = []
+        m0 = [start_vel[0] * num_frames, start_vel[1] * num_frames]
+        m1 = [end_vel[0] * num_frames, end_vel[1] * num_frames]
+        for i in range(1, num_frames):
+            t = i / num_frames
+            t2 = t * t
+            t3 = t2 * t
+            h00 = 2 * t3 - 3 * t2 + 1
+            h10 = t3 - 2 * t2 + t
+            h01 = -2 * t3 + 3 * t2
+            h11 = t3 - t2
+            pos = [
+                h00 * start[0] + h10 * m0[0] + h01 * end[0] + h11 * m1[0],
+                h00 * start[1] + h10 * m0[1] + h01 * end[1] + h11 * m1[1]
+            ]
+            path.append(pos)
         return path
     
     def _linear_interpolate(self, start: List[float], end: List[float], 

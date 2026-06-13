@@ -87,19 +87,58 @@ def export_numpy_model(args):
             
         weights = meta["weights"]
         
-        # Map PyTorch Sequential keys to layers
+        # Check if batchnorm weights exist in checkpoint to perform folding
+        if "network.1.weight" in weights:
+            # We have batchnorm layers to fold!
+            import numpy as np
+            
+            def fold_bn(linear_w, linear_b, bn_w, bn_b, bn_mean, bn_var, eps=1e-5):
+                lw = np.array(linear_w, dtype=np.float32)
+                lb = np.array(linear_b, dtype=np.float32)
+                bw = np.array(bn_w, dtype=np.float32)
+                bb = np.array(bn_b, dtype=np.float32)
+                bm = np.array(bn_mean, dtype=np.float32)
+                bv = np.array(bn_var, dtype=np.float32)
+                
+                scale = bw / np.sqrt(bv + eps)
+                w_fold = lw * scale[:, np.newaxis]
+                b_fold = (lb - bm) * scale + bb
+                return w_fold.tolist(), b_fold.tolist()
+
+            print("Folding BatchNorm layers into Linear layers...")
+            l1_w, l1_b = fold_bn(
+                weights["network.0.weight"], weights["network.0.bias"],
+                weights["network.1.weight"], weights["network.1.bias"],
+                weights["network.1.running_mean"], weights["network.1.running_var"]
+            )
+            l2_w, l2_b = fold_bn(
+                weights["network.4.weight"], weights["network.4.bias"],
+                weights["network.5.weight"], weights["network.5.bias"],
+                weights["network.5.running_mean"], weights["network.5.running_var"]
+            )
+            l3_w = weights["network.8.weight"]
+            l3_b = weights["network.8.bias"]
+        else:
+            # Old architecture fallback or simple mapping
+            l1_w = weights["network.0.weight"]
+            l1_b = weights["network.0.bias"]
+            l2_w = weights["network.2.weight"] if "network.2.weight" in weights else weights["network.4.weight"]
+            l2_b = weights["network.2.bias"] if "network.2.bias" in weights else weights["network.4.bias"]
+            l3_w = weights["network.4.weight"] if "network.4.weight" in weights else weights["network.8.weight"]
+            l3_b = weights["network.4.bias"] if "network.4.bias" in weights else weights["network.8.bias"]
+
         numpy_model = {
-            "layer1_weight": weights["network.0.weight"],
-            "layer1_bias": weights["network.0.bias"],
-            "layer2_weight": weights["network.2.weight"],
-            "layer2_bias": weights["network.2.bias"],
-            "layer3_weight": weights["network.4.weight"],
-            "layer3_bias": weights["network.4.bias"],
+            "layer1_weight": l1_w,
+            "layer1_bias": l1_b,
+            "layer2_weight": l2_w,
+            "layer2_bias": l2_b,
+            "layer3_weight": l3_w,
+            "layer3_bias": l3_b,
             "input_mean": meta["input_mean"],
             "input_std": meta["input_std"],
             "activation": "relu"
         }
-        print("Successfully mapped PyTorch weights to numpy-compatible format.")
+        print("Successfully mapped and folded PyTorch weights to numpy-compatible format.")
     else:
         if args.input_json:
             print(f"Input file '{args.input_json}' not found. Falling back to pre-baked defaults.")

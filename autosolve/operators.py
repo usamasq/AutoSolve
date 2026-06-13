@@ -97,6 +97,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
         clip = context.edit_movieclip
         settings = context.scene.autosolve
         
+        if settings.is_solving:
+            self.report({'WARNING'}, "AutoSolve tracking is already running")
+            return {'CANCELLED'}
+            
         if clip.frame_duration < 10:
             self.report({'ERROR'}, "Clip must have at least 10 frames")
             return {'CANCELLED'}
@@ -240,7 +244,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 _state.markers_detected = len(tracker.tracking.tracks)
                 _state.phase = 'TRACK_FORWARD'
                 _state.segment_start = _state.frame_current
-                context.area.tag_redraw()
+                if context.area:
+                    context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
@@ -275,7 +280,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     context.scene.frame_set(_state.frame_current)
                     
                     tracker.select_all_tracks()
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 
                 # Frame-by-frame mode with ADAPTIVE monitoring
@@ -335,7 +341,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     )
                     # Go to healing phase
                     _state.phase = 'HEAL_TRACKS'
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 
                 # Frame-by-frame mode with ADAPTIVE monitoring
@@ -352,7 +359,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     if _state.frame_current % tracker.MONITOR_INTERVAL == 0:
                         tracker.monitor_and_replenish(_state.frame_current, backwards=True)
                     
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
                     # Calculate survived backward
@@ -423,7 +431,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     # Go directly to cleanup (adaptive monitoring handles gaps)
                     _state.phase = 'FILTER_SHORT'
                 
-                context.area.tag_redraw()
+                if context.area:
+                    context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
             # Real-time adaptive monitoring handles coverage gaps
@@ -470,7 +479,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     _state.phase = 'DETECT'
                     _state.frame_current = _state.frame_start
                     context.scene.frame_set(_state.frame_start)
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
 
                 else:
@@ -511,7 +521,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     self.report({'WARNING'}, f"Pre-solve issues: {'; '.join(issues[:2])}")
                 
                 _state.phase = 'SOLVE_DRAFT'
-                context.area.tag_redraw()
+                if context.area:
+                    context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
@@ -551,7 +562,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     else:
                         _state.phase = 'SOLVE_FINAL'
                 
-                context.area.tag_redraw()
+                if context.area:
+                    context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
@@ -565,7 +577,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 tracker.filter_high_error(max_error=2.0)
                 
                 _state.phase = 'SOLVE_FINAL'
-                context.area.tag_redraw()
+                if context.area:
+                    context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
@@ -615,10 +628,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         preserved = tracker.preserve_good_tracks()
                         _state.preserved_tracks = preserved
                         _state.phase = 'DETECT'
-                        context.area.tag_redraw()
+                        if context.area:
+                            context.area.tag_redraw()
                         return {'RUNNING_MODAL'}
                     else:
                         # Already tried robust mode or max iterations reached
+                        quality_failure = getattr(tracker, '_solve_quality_failure', False)
                         if quality_failure:
                             self.report({'ERROR'}, "Solve failed - check camera focal length and lens distortion")
                         else:
@@ -634,7 +649,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if error > 2.0:
                     # Start refinement loop
                     _state.phase = 'REFINE'
-                    context.area.tag_redraw()
+                    if context.area:
+                        context.area.tag_redraw()
                     return {'RUNNING_MODAL'}
                 else:
                     # Good enough, finish
@@ -652,7 +668,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 if tracker.should_continue_refinement():
                     success = tracker.refine_solve()
                     if success:
-                        context.area.tag_redraw()
+                        if context.area:
+                            context.area.tag_redraw()
                         return {'RUNNING_MODAL'}
                 
                 # Done refining (or can't improve further)

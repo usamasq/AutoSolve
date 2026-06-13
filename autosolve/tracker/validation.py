@@ -84,6 +84,30 @@ class ValidationMixin:
             'tracks_to_mute': [],
         }
         
+        # 1. First pass: Collect displacements to compute adaptive spike threshold
+        displacements = []
+        track_displacements = {}
+        for track in self.tracking.tracks:
+            marker = track.markers.find_frame(frame)
+            if not marker or marker.mute:
+                continue
+            prev_marker = track.markers.find_frame(frame - 1)
+            if prev_marker and not prev_marker.mute:
+                dx = marker.co.x - prev_marker.co.x
+                dy = marker.co.y - prev_marker.co.y
+                disp = (dx**2 + dy**2) ** 0.5
+                displacements.append(disp)
+                track_displacements[track.name] = disp
+
+        # 2. Determine adaptive threshold (3x median displacement, floor at 0.05)
+        if displacements:
+            import numpy as np
+            median_disp = float(np.median(displacements))
+            spike_threshold = max(3.0 * median_disp, 0.05)
+        else:
+            spike_threshold = 0.1  # Fallback to absolute 10%
+        
+        # 3. Second pass: Validate each active track
         for track in self.tracking.tracks:
             marker = track.markers.find_frame(frame)
             if not marker or marker.mute:
@@ -102,15 +126,10 @@ class ValidationMixin:
                 result['tracks_to_mute'].append(track.name)
                 continue
             
-            # Check velocity spike (compare to previous frame)
-            prev_marker = track.markers.find_frame(frame - 1)
-            if prev_marker and not prev_marker.mute:
-                dx = abs(marker.co.x - prev_marker.co.x)
-                dy = abs(marker.co.y - prev_marker.co.y)
-                displacement = (dx**2 + dy**2) ** 0.5
-                
-                # If displacement > 10% of frame in one step, likely a spike
-                if displacement > 0.1:
+            # Check velocity spike using the adaptive threshold
+            if track.name in track_displacements:
+                displacement = track_displacements[track.name]
+                if displacement > spike_threshold:
                     result['velocity_spikes'].append(track.name)
                     result['tracks_to_mute'].append(track.name)
         
@@ -122,7 +141,7 @@ class ValidationMixin:
                     marker.mute = True
         
         if result['tracks_to_mute']:
-            print(f"AutoSolve: Frame {frame} - Muted {len(result['tracks_to_mute'])} bad tracks")
+            print(f"AutoSolve: Frame {frame} - Muted {len(result['tracks_to_mute'])} bad tracks (spike threshold: {spike_threshold:.4f})")
         
         return result
     
@@ -375,7 +394,7 @@ class ValidationMixin:
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
                 print(f"AutoSolve: Sanitized {len(tracks_to_remove)} bad tracks before solve")
-            except:
+            except Exception:
                 pass
         
         return len(tracks_to_remove)

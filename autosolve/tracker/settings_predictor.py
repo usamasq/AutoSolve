@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Dict, Optional, Set
 import bpy
+import numpy as np
 
 from .constants import TIERED_SETTINGS, DEFAULT_SETTINGS
 from .utils import classify_footage as classify_footage_util
@@ -105,14 +106,36 @@ class SettingsPredictor:
                     else:
                         m_model_oh[1] = 1.0
                         
-                    # 6. Video features (4) (using average representative values matching training metadata)
-                    v_feats = [0.5, 0.0, 0.0, 0.003] # mean_motion, zoom_divergence, distortion_factor, noise_ratio
-                    if footage_type == 'ACTION':
+                    # 6. Video features (4) (estimating motion dynamically from tracks)
+                    mean_motion = 0.5
+                    try:
+                        if clip.tracking.tracks:
+                            disps = []
+                            current_frame = bpy.context.scene.frame_current
+                            for track in clip.tracking.tracks:
+                                markers = [m for m in track.markers if not m.mute]
+                                recent_markers = [m for m in markers if current_frame - 5 <= m.frame <= current_frame]
+                                if len(recent_markers) >= 2:
+                                    recent_markers.sort(key=lambda x: x.frame)
+                                    track_disps = []
+                                    for i in range(1, len(recent_markers)):
+                                        dx = recent_markers[i].co.x - recent_markers[i-1].co.x
+                                        dy = recent_markers[i].co.y - recent_markers[i-1].co.y
+                                        track_disps.append((dx**2 + dy**2) ** 0.5)
+                                    if track_disps:
+                                        disps.append(np.mean(track_disps))
+                            if disps:
+                                # Scale by 100 to match feature normalization scale in training
+                                mean_motion = float(np.mean(disps)) * 100.0
+                    except Exception:
+                        pass
+
+                    v_feats = [mean_motion, 0.0, 0.0, 0.003] # mean_motion, zoom_divergence, distortion_factor, noise_ratio
+                    if footage_type == 'ACTION' and mean_motion == 0.5:
                         v_feats[0] = 3.5
                     elif footage_type == 'DRONE':
                         v_feats[1] = 0.5
                         
-                    import numpy as np
                     return np.array(
                         [width, height, fps, frame_count, tripod, robust, pattern, search, corr, thresh] +
                         f_type_oh + m_model_oh + v_feats,

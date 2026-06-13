@@ -46,11 +46,14 @@ if TORCH_AVAILABLE:
             super().__init__()
             self.network = nn.Sequential(
                 nn.Linear(15, 64),
+                nn.BatchNorm1d(64),
                 nn.ReLU(),
+                nn.Dropout(0.2),
                 nn.Linear(64, 32),
+                nn.BatchNorm1d(32),
                 nn.ReLU(),
-                nn.Linear(32, 1),
-                nn.Sigmoid()
+                nn.Dropout(0.1),
+                nn.Linear(32, 1)
             )
             
         def forward(self, x):
@@ -265,8 +268,9 @@ def train_model(args):
         else:
             print(f"Pretrained weight file not found at '{args.pretrained}'. Proceeding with fresh training.")
 
-    criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     
     # Training Loop
     print("\nTraining MLP model...")
@@ -278,23 +282,38 @@ def train_model(args):
         epoch_loss = 0.0
         for batch_x, batch_y in train_loader:
             optimizer.zero_grad()
-            preds = model(batch_x)
-            loss = criterion(preds, batch_y)
+            
+            # Data Augmentation: add low-magnitude Gaussian noise to continuous features
+            if model.training:
+                noise = torch.randn_like(batch_x) * 0.01
+                # Zero out noise for region_idx, footage_idx, robust_mode (12, 13, 14)
+                for col_idx in range(batch_x.shape[1]):
+                    if col_idx in (12, 13, 14):
+                        noise[:, col_idx] = 0.0
+                batch_x_augmented = batch_x + noise
+            else:
+                batch_x_augmented = batch_x
+                
+            logits = model(batch_x_augmented)
+            loss = criterion(logits, batch_y)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             epoch_loss += loss.item() * len(batch_x)
             
         epoch_loss /= len(X_train)
+        scheduler.step()
         
         # Validation evaluation
         if len(X_val) > 0:
             model.eval()
             with torch.no_grad():
-                val_preds = model(torch.tensor(X_val))
-                val_loss = criterion(val_preds, torch.tensor(y_val).unsqueeze(1)).item()
+                val_logits = model(torch.tensor(X_val))
+                val_loss = criterion(val_logits, torch.tensor(y_val).unsqueeze(1)).item()
                 
-                # Check metrics (accuracy)
-                bin_preds = (val_preds.numpy() > 0.5).astype(np.float32)
+                # Check metrics (accuracy) using Sigmoid on logits
+                probs = torch.sigmoid(val_logits)
+                bin_preds = (probs.numpy() > 0.5).astype(np.float32)
                 acc = np.mean(bin_preds == y_val.reshape(-1, 1))
                 
             if epoch % 10 == 0 or epoch == 1:

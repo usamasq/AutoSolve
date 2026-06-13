@@ -10,7 +10,7 @@ Strategy:
   3. Cache InferenceSession so loading only happens once per Blender session
 
 Models bundled in autosolve/tracker/models/:
-  - settings_model.onnx   → maps (24 clip features) → expected reward [0,1]
+  - settings_model.onnx   → maps (28 clip features) → expected reward [0,1]
   - track_predictor.onnx  → maps (15 track features) → survival prob [0,1]
 
 Both are exported from the PyTorch checkpoints via ml/export_onnx.py.
@@ -108,12 +108,32 @@ class _OnnxSession:
             raise RuntimeError("ONNX session is not available")
 
         x = features.astype(np.float32)
+        
+        # Validate input dimensions
+        try:
+            expected_shape = self.session.get_inputs()[0].shape
+            if expected_shape and len(expected_shape) > 1:
+                expected_dim = expected_shape[-1]
+                # If shape is dynamic or text like 'batch_size', skip dimension check, otherwise validate
+                if isinstance(expected_dim, int) and expected_dim > 0:
+                    if x.shape[-1] != expected_dim:
+                        raise ValueError(
+                            f"ONNX Model input size mismatch: expected last dimension to be {expected_dim}, "
+                            f"but got input of shape {x.shape}."
+                        )
+        except Exception as shape_err:
+            if isinstance(shape_err, ValueError):
+                raise shape_err
+            print(f"AutoSolve OnnxPredictor: shape validation warning: {shape_err}")
+
         # Apply normalization if defined in metadata and shape matches
         if self.input_mean is not None and self.input_mean.shape == x.shape[1:]:
             x = (x - self.input_mean) / self.input_std
 
         output = self.session.run([self.output_name], {self.input_name: x})
         return np.array(output[0], dtype=np.float32).flatten()
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -228,7 +248,7 @@ class OnnxPredictor:
         Predict expected tracking reward from clip+settings feature vector.
 
         Args:
-            clip_features: (24,) float32 vector of clip and settings features
+            clip_features: (28,) float32 vector of clip and settings features
 
         Returns:
             float reward in [0, 1], or None if model unavailable.
@@ -246,7 +266,7 @@ class OnnxPredictor:
     def rank_settings_candidates(
         self,
         candidates: list,          # list of (settings_dict)
-        feature_fn,                # callable: settings_dict → np.ndarray (24,)
+        feature_fn,                # callable: settings_dict → np.ndarray (28,)
     ) -> list:
         """
         Given a list of candidate settings dicts, score each with the ONNX

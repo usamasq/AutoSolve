@@ -279,7 +279,7 @@ class FilteringMixin:
             print(f"AutoSolve: Removing {len(to_delete)} outliers")
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
-            except:
+            except Exception:
                 pass
             self.select_all_tracks()
     
@@ -421,7 +421,7 @@ class FilteringMixin:
         print(f"AutoSolve: Removing {len(to_delete)} duplicate tracks")
         try:
             self._run_ops(bpy.ops.clip.delete_track)
-        except:
+        except Exception:
             pass
         self.select_all_tracks()
     
@@ -580,7 +580,7 @@ class FilteringMixin:
             print(f"AutoSolve: Removing {len(to_delete)} non-rigid tracks")
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
-            except:
+            except Exception:
                 pass
             self.select_all_tracks()
     
@@ -694,7 +694,7 @@ class FilteringMixin:
             print(f"AutoSolve: Removing {len(to_delete)} high-error tracks")
             try:
                 self._run_ops(bpy.ops.clip.delete_track)
-            except:
+            except Exception:
                 pass
     
     def average_clustered_tracks(self, proximity_threshold_px: int = 15) -> int:

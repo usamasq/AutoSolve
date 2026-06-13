@@ -10,7 +10,7 @@ This document chronicles the development journey of AutoSolve from its initial c
   * Deleted `session_recorder.py` and `behavior_recorder.py` to stop all user tracking and background session logging.
   * Restructured the repository by moving purely algorithmic modules (`track_healer.py` and `failure_diagnostics.py`) out of the learning directory to `tracker/`.
   * Removed telemetry-related UI components, operator registration, and property descriptors (e.g. `record_edits`).
-  * Updated all project documentation (`README.md`, `ARCHITECTURE.md`, `CONTRIBUTING_DATA.md`, `TRAINING_DATA.md`) to reflect the new layout and honest positioning.
+  * Updated project documentation (`README.md`, `ARCHITECTURE.md`) to reflect the new layout and honest positioning.
 
 ---
 
@@ -71,3 +71,18 @@ All developer-side training and preprocessing pipelines inside the `ml/` directo
 * **Dataset Preprocessing**: Synthesizes structured data samples for testing.
 * **Expected Reward MLP**: Generates heuristic-based weights when PyTorch is not available.
 * **Evaluation & Exporter**: Runs list-based feedforward calculations natively without requiring any external matrix library.
+
+---
+
+## Milestone 7: QA Audit, ML Upgrades & Mixin Refactoring
+* **Goal**: Refactor the massive `smart_tracker.py` file, improve machine learning quality, fold batch normalization, and resolve all systematic bugs.
+* **Key Achievements**:
+  * **SmartTracker Modularization**: De-bloated the god object `smart_tracker.py` (originally >3,900 lines) by extracting functional domains into five clean mixin classes: `probe_cache.py`, `detection.py`, `strategic.py`, `learning.py`, and `cleanup.py`.
+  * **ML Data Leakage Prevention**: fit scaling parameters (`StandardScaler`) strictly on the training folds and grouped train/validation splits by Clip ID to prevent evaluation correlation.
+  * **Training Loop Optimization**: Upgraded PyTorch training configurations across standalone scripts and the Jupyter Notebook:
+    * Standardized models (`SettingsMLP`, `TrackMLP`, `PatchRigidityCNN`) with `nn.BatchNorm` and `nn.Dropout`.
+    * Implemented `AdamW` (weight decay `1e-4`), gradient clipping (`max_norm=1.0`), and `CosineAnnealingLR` learning rate scheduling.
+    * Added Gaussian noise ($\sigma=0.01$) to continuous features as a data regularizer.
+  * **Numpy Parameter Folding**: Developed folding math inside the exporters to collapse BatchNorm parameters directly into linear layer weights and biases, allowing the addon's numpy inference engine to run the upgraded PyTorch models with zero overhead.
+  * **Algorithmic Enhancements**: Upgraded `track_healer.py` to Cubic Hermite Spline interpolation for smooth velocity-preserving track gap filling. Added relative adaptive velocity spike thresholds in `validation.py` to support fast camera pans.
+  * **Verification Suite**: Created [test_smart_tracker.py](file:///c:/Users/usama/OneDrive/Desktop/AutoSolve/scratch/test_smart_tracker.py) with mocked Blender namespaces to verify mixin binding and neural engine prediction correctness. All tests compile and execute successfully.

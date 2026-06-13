@@ -13,9 +13,6 @@ blender_version_max = "6.0.0"
 license = ["SPDX:GPL-3.0-or-later"]
 copyright = ["2025 Usama Bin Shahid"]
 
-[permissions]
-files = "Access movie clip data for tracking and writing live training records to disk"
-
 # Bundled Python wheels — installed automatically by Blender at addon install time.
 # onnxruntime 1.26.0 for Python 3.13 (Blender 5.x) — three major platforms.
 wheels = [
@@ -23,3 +20,7 @@ wheels = [
   "./wheels/onnxruntime-1.26.0-cp313-cp313-macosx_14_0_arm64.whl",
   "./wheels/onnxruntime-1.26.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
 ]
+
+[permissions]
+files = "Read movie clip data for tracking analysis"
+

@@ -265,6 +265,9 @@ def prepare_dataset(args):
         
     print(f"Total samples loaded: {len(raw_samples)}")
     
+    # Set random seed for reproducibility
+    random.seed(args.seed)
+    
     # 1. Group samples by clip_name for clean splitting
     by_clip = {}
     for sample in raw_samples:
@@ -272,23 +275,32 @@ def prepare_dataset(args):
         by_clip.setdefault(clip_name, []).append(sample)
         
     clip_names = list(by_clip.keys())
-    random.shuffle(clip_names)
-    
-    # Split 80% train / 20% validation by clip
-    split_idx = int(len(clip_names) * 0.8)
-    train_clips = set(clip_names[:split_idx])
-    val_clips = set(clip_names[split_idx:])
     
     train_raw = []
     val_raw = []
-    for c_name, samples in by_clip.items():
-        if c_name in train_clips:
-            train_raw.extend(samples)
-        else:
-            val_raw.extend(samples)
-            
-    print(f"Split results: {len(train_clips)} train clips ({len(train_raw)} samples), "
-          f"{len(val_clips)} val clips ({len(val_raw)} samples)")
+    
+    if len(clip_names) > 1:
+        random.shuffle(clip_names)
+        # Split 80% train / 20% validation by clip
+        split_idx = max(1, int(len(clip_names) * 0.8))
+        train_clips = set(clip_names[:split_idx])
+        val_clips = set(clip_names[split_idx:])
+        
+        for c_name, samples in by_clip.items():
+            if c_name in train_clips:
+                train_raw.extend(samples)
+            else:
+                val_raw.extend(samples)
+        print(f"Split results: {len(train_clips)} train clips ({len(train_raw)} samples), "
+              f"{len(val_clips)} val clips ({len(val_raw)} samples)")
+    else:
+        # Fallback for single clip: split samples within the clip randomly
+        all_samples = by_clip[clip_names[0]]
+        random.shuffle(all_samples)
+        split_idx = max(1, int(len(all_samples) * 0.8))
+        train_raw = all_samples[:split_idx]
+        val_raw = all_samples[split_idx:]
+        print(f"Single clip split results: 1 clip, {len(train_raw)} train samples, {len(val_raw)} val samples")
           
     # 2. Extract features and targets
     train_X = [extract_sample_features(s, video_meta_lookup.get(s["clip_metadata"]["clip_name"])) for s in train_raw]
@@ -298,12 +310,21 @@ def prepare_dataset(args):
     val_y = [calculate_reward(s) for s in val_raw]
     
     # 3. Compute normalization parameters (means & stds) from training set only
+    if not train_X:
+        raise ValueError("Training set is empty. Cannot prepare dataset.")
+        
     num_features = len(train_X[0])
     means = [0.0] * num_features
     stds = [1.0] * num_features
     
     num_samples = len(train_X)
     for j in range(num_features):
+        # Indices 4, 5 (boolean switches) and 10:24 (one-hot vectors) should not be Z-score normalized
+        if j in (4, 5) or (10 <= j < 24):
+            means[j] = 0.0
+            stds[j] = 1.0
+            continue
+            
         col_sum = sum(train_X[i][j] for i in range(num_samples))
         means[j] = col_sum / num_samples
         
@@ -322,7 +343,7 @@ def prepare_dataset(args):
     val_X_norm = normalize_X(val_X)
     
     # 4. Save processed dataset
-    output_dir = os.path.dirname(args.output_json)
+    output_dir = os.path.dirname(args.output_json) if os.path.dirname(args.output_json) else "."
     os.makedirs(output_dir, exist_ok=True)
     
     dataset = {
@@ -348,6 +369,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AutoSolve Prepare Settings Dataset")
     parser.add_argument("--data-dir", default="ml/data/raw", help="Directory containing raw JSON samples")
     parser.add_argument("--output-json", default="ml/data/processed/settings_dataset.json", help="Path to save processed dataset")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     
     parsed_args = parser.parse_args()
     prepare_dataset(parsed_args)
