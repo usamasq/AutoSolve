@@ -130,7 +130,7 @@ class SettingsPredictor:
                     except Exception:
                         pass
 
-                    v_feats = [mean_motion, 0.0, 0.0, 0.003] # mean_motion, zoom_divergence, distortion_factor, noise_ratio
+                    v_feats = [mean_motion, 0.0, 0.0, 0.003, 0.0] # mean_motion, zoom_divergence, distortion_factor, grain_noise, dynamic_area_ratio
                     if footage_type == 'ACTION' and mean_motion == 0.5:
                         v_feats[0] = 3.5
                     elif footage_type == 'DRONE':

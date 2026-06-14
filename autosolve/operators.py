@@ -9,6 +9,7 @@ Learns from tracking failures and improves over iterations.
 
 import bpy
 from bpy.types import Operator
+from .worker.client import is_port_in_use, start_worker, stop_worker, send_worker_command_async, poll_request_status
 
 
 class TrackingState:
@@ -27,6 +28,7 @@ class TrackingState:
         self.tripod_mode = False
         self.iteration = 0
         self.last_analysis = None
+        self.sam2_masks = None
         
         # Report fields
         self.start_time = 0.0
@@ -70,6 +72,52 @@ def _generate_clip_fingerprint(clip):
         return ""
 
 
+def prepare_solve_data(clip):
+    recon = clip.tracking.reconstruction
+    
+    # Map tracks to point indices
+    point_idx = 0
+    track_idx_to_point_idx = {}
+    init_points = []
+    
+    for idx, track in enumerate(clip.tracking.tracks):
+        # We only optimize tracks that have a bundle from the draft solve
+        if track.has_bundle:
+            init_points.append([track.bundle[0], track.bundle[1], track.bundle[2]])
+            track_idx_to_point_idx[idx] = point_idx
+            point_idx += 1
+            
+    # Gather observations
+    obs_data = []
+    for idx, track in enumerate(clip.tracking.tracks):
+        p_idx = track_idx_to_point_idx.get(idx)
+        if p_idx is None:
+            continue
+        for marker in track.markers:
+            if not marker.mute:
+                frame_idx = marker.frame - clip.frame_start
+                # uv is normalized [0, 1]
+                obs_data.append({
+                    "frame": int(frame_idx),
+                    "point_idx": int(p_idx),
+                    "uv": [float(marker.co.x), float(marker.co.y)]
+                })
+                
+    # Gather cameras
+    init_cameras = []
+    for f_idx in range(clip.frame_duration):
+        scene_frame = clip.frame_start + f_idx
+        camera = recon.cameras.find_frame(frame=scene_frame)
+        if camera:
+            # camera.matrix is a 4x4 matrix
+            matrix_list = [list(camera.matrix[i]) for i in range(4)]
+            init_cameras.append(matrix_list)
+        else:
+            init_cameras.append(None)
+            
+    return obs_data, init_cameras, init_points, track_idx_to_point_idx
+
+
 class AUTOSOLVE_OT_run_solve(Operator):
     """Adaptive learning auto-tracking."""
     
@@ -104,6 +152,13 @@ class AUTOSOLVE_OT_run_solve(Operator):
         if clip.frame_duration < 10:
             self.report({'ERROR'}, "Clip must have at least 10 frames")
             return {'CANCELLED'}
+        
+        # Check for framerate alignment mismatch (potential Variable Frame Rate or misaligned render settings)
+        scene = context.scene
+        scene_fps = scene.render.fps / scene.render.fps_base if scene.render.fps_base > 0 else scene.render.fps
+        clip_fps = clip.fps
+        if abs(scene_fps - clip_fps) > 0.1:
+            self.report({'WARNING'}, f"Framerate mismatch! Scene: {scene_fps:.2f} FPS, Clip: {clip_fps:.2f} FPS. Consider matching scene FPS or transcoding clip to Constant Frame Rate to prevent drift.")
         
         from .tracker.smart_tracker import SmartTracker, sync_scene_to_clip
         
@@ -191,6 +246,59 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     self.report({'ERROR'}, f"Validation failed: {'; '.join(issues)}")
                     return self._finish(context, success=False)
                 
+                # Route to external AI worker if enabled
+                if settings.use_external_worker:
+                    python_path = settings.external_python_path
+                    if not python_path:
+                        from .worker.client import detect_system_python
+                        python_path = detect_system_python()
+                        if python_path:
+                            settings.external_python_path = python_path
+                            self.report({'INFO'}, f"Auto-detected Python path: {python_path}")
+                        else:
+                            self.report({'ERROR'}, "Failed to start External AI Worker: Python path not specified.")
+                            return self._finish(context, success=False)
+                            
+                    from .worker.client import check_dependencies
+                    if not check_dependencies(python_path):
+                        self.report({'ERROR'}, "Required AI packages (torch, scipy, ultralytics, opencv-python) are missing. Please click Install first.")
+                        settings.installer_state = 'FAILED'
+                        settings.installer_progress = "Required AI packages are missing."
+                        return self._finish(context, success=False)
+
+                    if not is_port_in_use():
+                        success, msg = start_worker(python_path)
+                        if not success:
+                            self.report({'ERROR'}, f"Failed to start External AI Worker: {msg}")
+                            return self._finish(context, success=False)
+                            
+                    if settings.masking_backend == 'SAM2':
+                        import time
+                        send_worker_command_async("sam2_mask", {"video_path": bpy.path.abspath(clip.filepath)})
+                        _state.phase = 'WAITING_FOR_WORKER_MASK'
+                        _state.request_start_time = time.time()
+                        settings.solve_status = "Waiting for SAM 2 Dynamic Masking..."
+                        settings.solve_progress = 0.04
+                        if context.area:
+                            context.area.tag_redraw()
+                        return {'RUNNING_MODAL'}
+                        
+                    elif settings.tracking_backend == 'COTRACKER':
+                        import time
+                        grid_size = 8
+                        if settings.quality_preset == 'FAST':
+                            grid_size = 6
+                        elif settings.quality_preset == 'QUALITY':
+                            grid_size = 10
+                        send_worker_command_async("cotrack", {"video_path": bpy.path.abspath(clip.filepath), "grid_size": grid_size})
+                        _state.phase = 'WAITING_FOR_WORKER_TRACK'
+                        _state.request_start_time = time.time()
+                        settings.solve_status = "Waiting for CoTracker AI tracking..."
+                        settings.solve_progress = 0.05
+                        if context.area:
+                            context.area.tag_redraw()
+                        return {'RUNNING_MODAL'}
+
                 _state.phase = 'DETECT'
                 # Use optimal start frame (middle of clip for bidirectional tracking)
                 _state.optimal_start = tracker.get_optimal_start_frame()
@@ -200,6 +308,117 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
             
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: WAITING FOR SAM2 MASK
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'WAITING_FOR_WORKER_MASK':
+                import time
+                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
+                    from .worker.client import kill_worker
+                    kill_worker()
+                    self.report({'ERROR'}, "SAM2 Masking timed out after 90 seconds. Aborting.")
+                    return self._finish(context, success=False)
+                completed, result, error = poll_request_status()
+                if completed:
+                    if error:
+                        self.report({'ERROR'}, f"SAM2 Masking Error: {error}")
+                        return self._finish(context, success=False)
+                    
+                    _state.sam2_masks = result.get("masks", {})
+                    print(f"AutoSolve: Received dynamic masks for {len(_state.sam2_masks)} frames.")
+                    
+                    # Next step: check if CoTracker tracking is enabled
+                    if settings.tracking_backend == 'COTRACKER':
+                        import time
+                        grid_size = 8
+                        if settings.quality_preset == 'FAST':
+                            grid_size = 6
+                        elif settings.quality_preset == 'QUALITY':
+                            grid_size = 10
+                        send_worker_command_async("cotrack", {"video_path": bpy.path.abspath(clip.filepath), "grid_size": grid_size})
+                        _state.phase = 'WAITING_FOR_WORKER_TRACK'
+                        _state.request_start_time = time.time()
+                        settings.solve_status = "Waiting for CoTracker AI tracking..."
+                        settings.solve_progress = 0.08
+                    else:
+                        # Fallback to standard detect
+                        _state.phase = 'DETECT'
+                        _state.optimal_start = tracker.get_optimal_start_frame()
+                        _state.frame_current = _state.optimal_start
+                        context.scene.frame_set(_state.optimal_start)
+                else:
+                    settings.solve_status = "Running dynamic object masking in background..."
+                
+                if context.area:
+                    context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: WAITING FOR COTRACKER TRACK
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'WAITING_FOR_WORKER_TRACK':
+                import time
+                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
+                    from .worker.client import kill_worker
+                    kill_worker()
+                    self.report({'ERROR'}, "CoTracker Tracking timed out after 90 seconds. Aborting.")
+                    return self._finish(context, success=False)
+                completed, result, error = poll_request_status()
+                if completed:
+                    if error:
+                        self.report({'ERROR'}, f"CoTracker Tracking Error: {error}")
+                        return self._finish(context, success=False)
+                    
+                    trajectories = result.get("trajectories", [])
+                    meta = result.get("meta", {})
+                    
+                    # Apply SAM2 masking filter if available
+                    if _state.sam2_masks:
+                        filtered_trajectories = []
+                        for traj in trajectories:
+                            keep = True
+                            if traj:
+                                x_start, y_start = traj[0]
+                                y_start_td = 1.0 - y_start
+                                
+                                boxes = _state.sam2_masks.get("0", [])
+                                for box in boxes:
+                                    bx1, by1, bx2, by2 = box
+                                    if bx1 <= x_start <= bx2 and by1 <= y_start_td <= by2:
+                                        keep = False
+                                        break
+                            if keep:
+                                truncated_traj = []
+                                for f_idx, (x, y) in enumerate(traj):
+                                    y_td = 1.0 - y
+                                    frame_boxes = _state.sam2_masks.get(str(f_idx), [])
+                                    hit = False
+                                    for box in frame_boxes:
+                                        bx1, by1, bx2, by2 = box
+                                        if bx1 <= x <= bx2 and by1 <= y_td <= by2:
+                                            hit = True
+                                            break
+                                    if hit:
+                                        break
+                                    truncated_traj.append((x, y))
+                                if len(truncated_traj) >= tracker.min_lifespan:
+                                    filtered_trajectories.append(truncated_traj)
+                        
+                        print(f"AutoSolve: SAM2 Masking filtered out {len(trajectories) - len(filtered_trajectories)} of {len(trajectories)} trajectories.")
+                        trajectories = filtered_trajectories
+                    
+                    tracker.import_external_trajectories(trajectories, meta)
+                    
+                    # Jump directly to filtering
+                    _state.phase = 'FILTER_SHORT'
+                    settings.solve_progress = 0.50
+                else:
+                    settings.solve_status = "Running CoTracker AI tracking on GPU/CPU..."
+                
+                if context.area:
+                    context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+
             # ═══════════════════════════════════════════════════════════════
             # PHASE: SMART DETECT (Unified detection with learning)
             # ═══════════════════════════════════════════════════════════════
@@ -553,7 +772,36 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 success = tracker.solve_camera(tripod_mode=_state.tripod_mode)
                 
                 if success:
-                    _state.phase = 'FILTER_ERROR'
+                    if settings.use_external_worker and settings.solving_backend == 'PRECISION':
+                        if not is_port_in_use():
+                            success_w, msg_w = start_worker(settings.external_python_path)
+                            if not success_w:
+                                self.report({'WARNING'}, f"Failed to start worker: {msg_w}. Falling back to native solver.")
+                                _state.phase = 'FILTER_ERROR'
+                                if context.area:
+                                    context.area.tag_redraw()
+                                return {'RUNNING_MODAL'}
+                        
+                        obs, cams, pts, idx_map = prepare_solve_data(clip)
+                        _state.track_idx_map = idx_map
+                        init_f = clip.tracking.camera.focal_length / clip.tracking.camera.sensor_width
+                        
+                        send_worker_command_async("precision_solve", {
+                            "obs_data": obs,
+                            "init_cameras": cams,
+                            "init_points": pts,
+                            "init_f": init_f,
+                            "init_k1": float(clip.tracking.camera.k1),
+                            "init_k2": float(clip.tracking.camera.k2)
+                        })
+                        
+                        import time
+                        _state.phase = 'WAITING_FOR_WORKER_SOLVE'
+                        _state.request_start_time = time.time()
+                        settings.solve_status = "Waiting for Precision Bundle Solver..."
+                        settings.solve_progress = 0.82
+                    else:
+                        _state.phase = 'FILTER_ERROR'
                 else:
                     # Solve failed - retry with adjusted settings if iterations remaining
                     if _state.iteration < tracker.MAX_ITERATIONS:
@@ -561,6 +809,65 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         _state.phase = 'RETRY_DECISION'
                     else:
                         _state.phase = 'SOLVE_FINAL'
+                
+                if context.area:
+                    context.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+            
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE: WAITING FOR PRECISION SOLVE
+            # ═══════════════════════════════════════════════════════════════
+            elif _state.phase == 'WAITING_FOR_WORKER_SOLVE':
+                import time
+                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
+                    from .worker.client import kill_worker
+                    kill_worker()
+                    self.report({'WARNING'}, "Precision Solver timed out after 90 seconds. Falling back to native solve.")
+                    _state.phase = 'FILTER_ERROR'
+                    if context.area:
+                        context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+                
+                completed, result, error = poll_request_status()
+                if completed:
+                    if error:
+                        self.report({'WARNING'}, f"Precision Solver error: {error}. Falling back to native solve.")
+                        _state.phase = 'FILTER_ERROR'
+                    else:
+                        cameras_c2w = result.get("cameras", [])
+                        points_3d = result.get("points", [])
+                        f_opt = result.get("f", 1.0)
+                        k1_opt = result.get("k1", 0.0)
+                        k2_opt = result.get("k2", 0.0)
+                        
+                        recon = clip.tracking.reconstruction
+                        
+                        # 1. Update camera matrices
+                        for f_idx in range(clip.frame_duration):
+                            scene_frame = clip.frame_start + f_idx
+                            camera = recon.cameras.find_frame(frame=scene_frame)
+                            if camera and f_idx < len(cameras_c2w) and cameras_c2w[f_idx] is not None:
+                                camera.matrix = cameras_c2w[f_idx]
+                                
+                        # 2. Update track bundles
+                        track_idx_map = getattr(_state, "track_idx_map", {})
+                        for track_idx, track in enumerate(clip.tracking.tracks):
+                            point_idx = track_idx_map.get(track_idx)
+                            if point_idx is not None and point_idx < len(points_3d):
+                                track.bundle = points_3d[point_idx]
+                                track.has_bundle = True
+                                
+                        # 3. Update camera parameters
+                        clip.tracking.camera.focal_length = f_opt * clip.tracking.camera.sensor_width
+                        clip.tracking.camera.k1 = k1_opt
+                        clip.tracking.camera.k2 = k2_opt
+                        
+                        # Mark solve success
+                        self.report({'INFO'}, f"Precision Solve complete. Focal length: {clip.tracking.camera.focal_length:.2f}mm")
+                        _state.phase = 'COMPLETE'
+                        settings.solve_progress = 1.0
+                else:
+                    settings.solve_status = "Running multi-pass least-squares solver in SciPy..."
                 
                 if context.area:
                     context.area.tag_redraw()
@@ -1365,6 +1672,157 @@ class AUTOSOLVE_OT_check_turbo_status(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class AUTOSOLVE_OT_detect_python(bpy.types.Operator):
+    """Auto-detect system Python path."""
+    bl_idname = "autosolve.detect_python"
+    bl_label = "Auto-Detect Python Path"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        settings = context.scene.autosolve
+        from .worker.client import detect_system_python, check_dependencies
+        path = detect_system_python()
+        if path:
+            settings.external_python_path = path
+            self.report({'INFO'}, f"Python path auto-detected: {path}")
+            if check_dependencies(path):
+                settings.installer_state = 'SUCCESS'
+                settings.installer_progress = "AI Packages are already installed."
+            else:
+                settings.installer_state = 'IDLE'
+                settings.installer_progress = "Packages missing. Click Install below."
+        else:
+            self.report({'WARNING'}, "Could not auto-detect Python on standard paths. Please enter the path manually.")
+        return {'FINISHED'}
+
+
+class AUTOSOLVE_OT_install_deps(bpy.types.Operator):
+    """Install required AI packages asynchronously."""
+    bl_idname = "autosolve.install_deps"
+    bl_label = "Install AI Packages"
+    bl_options = {'REGISTER'}
+
+    _timer = None
+
+    def modal(self, context, event):
+        if event.type == 'ESC':
+            self.report({'INFO'}, "Installation monitoring cancelled. Background process may still be running.")
+            return self.cancel_modal(context)
+
+        if event.type == 'TIMER':
+            settings = context.scene.autosolve
+            from .worker.client import poll_install_status
+            completed, success, message = poll_install_status()
+            
+            # Update progress
+            settings.installer_progress = message
+            
+            if completed:
+                if success:
+                    settings.installer_state = 'SUCCESS'
+                    self.report({'INFO'}, "AI dependencies installed successfully!")
+                else:
+                    settings.installer_state = 'FAILED'
+                    self.report({'ERROR'}, f"AI Installation failed: {message}")
+                
+                # Cleanup timer
+                if self._timer:
+                    context.window_manager.event_timer_remove(self._timer)
+                    self._timer = None
+                return {'FINISHED'}
+
+        return {'PASS_THROUGH'}
+
+    def cancel_modal(self, context):
+        if self._timer:
+            context.window_manager.event_timer_remove(self._timer)
+            self._timer = None
+        settings = context.scene.autosolve
+        settings.installer_state = 'FAILED'
+        settings.installer_progress = "Installation cancelled."
+        return {'CANCELLED'}
+
+    def execute(self, context):
+        settings = context.scene.autosolve
+        python_path = settings.external_python_path
+        
+        # If no path specified, try to auto-detect first
+        if not python_path:
+            from .worker.client import detect_system_python
+            python_path = detect_system_python()
+            if python_path:
+                settings.external_python_path = python_path
+                self.report({'INFO'}, f"Auto-detected Python path: {python_path}")
+            else:
+                self.report({'ERROR'}, "Please specify/detect the External Python Path first.")
+                return {'CANCELLED'}
+
+        from .worker.client import run_install_async
+        success = run_install_async(python_path)
+        
+        if success:
+            settings.installer_state = 'INSTALLING'
+            settings.installer_progress = "Starting installation..."
+            
+            # Add timer and register modal
+            self._timer = context.window_manager.event_timer_add(0.2, window=context.window)
+            context.window_manager.modal_handler_add(self)
+            return {'RUNNING_MODAL'}
+        else:
+            self.report({'WARNING'}, "Installer is already running.")
+            return {'CANCELLED'}
+
+
+class AUTOSOLVE_OT_start_worker(bpy.types.Operator):
+    """Start the background external AI worker process."""
+    bl_idname = "autosolve.start_worker"
+    bl_label = "Start External AI Worker"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        settings = context.scene.autosolve
+        python_path = settings.external_python_path
+        
+        # Auto-detect if empty
+        if not python_path:
+            from .worker.client import detect_system_python
+            python_path = detect_system_python()
+            if python_path:
+                settings.external_python_path = python_path
+                self.report({'INFO'}, f"Auto-detected Python path: {python_path}")
+            else:
+                self.report({'ERROR'}, "Please specify/detect the External Python Path first.")
+                return {'CANCELLED'}
+            
+        from .worker.client import check_dependencies, start_worker
+        if not check_dependencies(python_path):
+            self.report({'ERROR'}, "Required AI packages (torch, scipy, ultralytics, opencv-python) are missing. Please click Install first.")
+            settings.installer_state = 'FAILED'
+            settings.installer_progress = "Required AI packages are missing."
+            return {'CANCELLED'}
+            
+        success, msg = start_worker(python_path)
+        if success:
+            self.report({'INFO'}, f"AutoSolve Worker started: {msg}")
+        else:
+            self.report({'ERROR'}, f"Failed to start Worker: {msg}")
+            
+        return {'FINISHED'}
+
+
+class AUTOSOLVE_OT_stop_worker(bpy.types.Operator):
+    """Stop the background external AI worker process."""
+    bl_idname = "autosolve.stop_worker"
+    bl_label = "Stop External AI Worker"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .worker.client import stop_worker
+        stop_worker()
+        self.report({'INFO'}, "AutoSolve Worker stopped.")
+        return {'FINISHED'}
+
+
 # Registration
 
 classes = (
@@ -1380,6 +1838,11 @@ classes = (
     # Neural Engine
     AUTOSOLVE_OT_install_onnx,
     AUTOSOLVE_OT_check_turbo_status,
+    # Worker operators
+    AUTOSOLVE_OT_detect_python,
+    AUTOSOLVE_OT_install_deps,
+    AUTOSOLVE_OT_start_worker,
+    AUTOSOLVE_OT_stop_worker,
 )
 
 

@@ -9,9 +9,9 @@
 
 > **"We shouldn't have to leave the open-source ecosystem to get a modern, automated workflow."**
 >
-> AutoSolve automates Blender's camera tracking workflow with smart defaults, quality-aware cleanup, and automatic failure recovery. No external dependencies — 100% Blender-native.
+> AutoSolve automates Blender's camera tracking workflow with smart defaults, quality-aware cleanup, and automatic failure recovery. Supports both 100% native Blender tracking and advanced deep-learning AI backends completely offline.
 
-AutoSolve is a Blender addon that **automates the entire camera tracking workflow** - from feature detection to camera solve. It handles the manual steps dynamically to give you a solid solve in one click.
+AutoSolve is a Blender addon that **automates the entire camera tracking workflow** - from feature detection to camera solve. It handles the manual steps dynamically to give you a solid solve in one click, supporting both native Blender engines and state-of-the-art AI networks (CoTracker v3, YOLOv8) via an out-of-process worker.
 
 [Watch Launch Video](https://youtu.be/NzI5vurW5C4)
 
@@ -19,14 +19,14 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 
 ## What It Does
 
-| Step                     | Manual Workflow                               | AutoSolve                                                  |
+| Step                     | Manual Workflow                               | AutoSolve (Native & AI)                                    |
 | ------------------------ | --------------------------------------------- | ---------------------------------------------------------- |
-| **1. Feature Detection** | Place markers manually or use Detect Features | ✅ Smart detection with balanced region coverage           |
-| **2. Tracking**          | Track forward/backward, fix lost markers      | ✅ Bidirectional tracking with automatic replenishment     |
-| **3. Track Cleanup**     | Delete short/bad tracks manually              | ✅ Automatic filtering of jittery, short, and spike tracks |
-| **4. Camera Solve**      | Run solver, hope for low error                | ✅ Iterative refinement with failure diagnosis             |
+| **1. Feature Detection** | Place markers manually or use Detect Features | ✅ Smart grid detection or dense tracking                   |
+| **2. Tracking**          | Track forward/backward, fix lost markers      | ✅ Bidirectional native KLT or CoTracker v3 (AI)           |
+| **3. Track Cleanup**     | Delete short/bad tracks manually              | ✅ Automatic ML validation or YOLOv8 (AI) dynamic masking  |
+| **4. Camera Solve**      | Run solver, hope for low error                | ✅ Iterative native solve or Precision SciPy Solver (AI)   |
 
-> **Note:** AutoSolve uses Blender's native tracking - no external dependencies required.
+> **Note:** AutoSolve works 100% offline. Heavy AI backends run via an out-of-process worker using your system Python to keep Blender's UI responsive and stable.
 
 ---
 
@@ -35,6 +35,9 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | Feature                    | Description                                                     |
 | -------------------------- | --------------------------------------------------------------- |
 | **One-Click Tracking**     | Automatic feature detection, tracking, cleanup, and solve       |
+| **CoTracker v3 (AI)**       | Dense transformer tracking across dynamic moves, fast pans, and severe occlusions |
+| **Dynamic Masking (AI)**    | Automatically ignores non-rigid elements (people, vehicles, pets) utilizing YOLOv8 |
+| **Precision Solver (AI)**   | Custom SciPy bundle adjustment utilizing Trust Region Reflective with robust Cauchy loss |
 | **Smart Detection**        | Balanced marker placement across all screen regions             |
 | **Region Control**         | Draw inclusion/exclusion zones using annotations to guide the tracker |
 | **Bidirectional Tracking** | Starts from mid-clip for better frame coverage                  |
@@ -46,13 +49,15 @@ AutoSolve is a Blender addon that **automates the entire camera tracking workflo
 | **Footage Type Presets**   | Optimized settings for DRONE, INDOOR, HANDHELD, etc.            |
 | **Zoom Detection**         | Detects zoom/dolly motion from radial velocity patterns         |
 | **Smoothing**              | Reduces jitter with track motion smoothing                      |
+| **100% Offline Support**   | Pre-bundled ONNX Runtime wheels and model weights out-of-the-box |
 
 ---
 
 ## Requirements
 
 - **Blender 4.2.0** or later
-- No external dependencies (uses Blender's native tracking only)
+- **System Python Interpreter** (only if using AI backends; requires `torch`, `scipy`, `opencv-python`, and `ultralytics` installed on your system environment)
+- **Nvidia GPU / Apple Silicon GPU** (Highly recommended for fast AI tracking and segmentation)
 
 ---
 
@@ -148,6 +153,16 @@ autosolve/
 ├── properties.py        # Scene properties and settings
 ├── ui.py               # N-Panel UI in Movie Clip Editor
 ├── clip_state.py       # Multi-clip state manager
+├── models/             # Bundled offline AI model weights
+│   ├── yolov8n-seg.pt       # YOLOv8 segmentation model checkpoint
+│   └── cotracker3_offline.pth # CoTracker v3 offline tracking checkpoint
+├── worker/             # External out-of-process Python worker
+│   ├── server.py            # JSON-IPC socket server listening on port 47832
+│   ├── client.py            # Addon client interface to spawn & control worker
+│   ├── cotracker_runner.py  # Wrapper script executing offline CoTracker
+│   ├── sam2_runner.py       # Wrapper script executing offline YOLOv8 masking
+│   ├── ba_solver.py         # SciPy Trust Region Reflective bundle adjustment solver
+│   └── cotracker_src/       # Cloned local CoTracker repository source
 └── tracker/             # Core tracking engine
     ├── __init__.py           # Tracker package registration
     ├── smart_tracker.py      # Main tracking orchestrator (inherits all mixins)

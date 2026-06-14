@@ -39,6 +39,16 @@ python ml/extract_video_features.py --clips-dir ml/clips/ --out-dir ml/data/raw/
 python ml/extract_cotracker_trajectories.py --clips-dir ml/clips/ --out-dir ml/data/raw/
 ```
 
+### Jupyter Notebook Alternative
+Alternatively, you can run the entire feature extraction, simulation, and training pipeline interactively in the standalone [AutoSolve_Training.ipynb](file:///c:/Users/usama/OneDrive/Desktop/AutoSolve/ml/AutoSolve_Training.ipynb) (designed for zero-dependency execution in Google Colab with GPU acceleration). 
+
+This notebook requires no repository reference and supports:
+* **Google Drive Integration:** Automatic loading and saving of clips directly from `AutoSolve_ML_Data/clips/` in your Drive.
+* **AI Extraction (CoTracker & YOLOv8):** Runs high-accuracy Meta CoTracker v3 tracking and YOLOv8 object segmentation on GPU, downloading model weights automatically from Hugging Face.
+* **CPU & OpenCV Fallbacks:** If run on a CPU runtime or without installing these packages, the notebook automatically falls back to OpenCV's Shi-Tomasi/Lucas-Kanade flow tracker and standard video features to ensure a 100% crash-proof run.
+* **Incremental Processing:** Skips already-processed clips to save execution time.
+* **Zipped Downloader:** Compiles and packs all 10 trained models, metadata, and presets into `autosolve_models.zip` for instant browser download.
+
 ### Validate Raw Dataset
 Verify the integrity of the collected solve logs:
 ```bash

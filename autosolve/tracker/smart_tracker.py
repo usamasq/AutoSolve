@@ -449,6 +449,42 @@ class SmartTracker(
         except Exception:
             pass
 
+    def import_external_trajectories(self, trajectories, clip_meta):
+        """
+        Import CoTracker trajectories as native Blender tracking markers.
+        """
+        # Clear non-locked tracks to start fresh
+        for track in list(self.tracking.tracks):
+            if hasattr(track, 'lock') and track.lock:
+                continue
+            self.tracking.tracks.remove(track)
+            
+        print(f"AutoSolve: Importing {len(trajectories)} external trajectories...")
+        
+        for idx, traj in enumerate(trajectories):
+            if not traj:
+                continue
+            
+            # Create a new track
+            track = self.tracking.tracks.new(name=f"AI_Track_{idx:03d}")
+            track.lock = False
+            
+            # Add markers for each frame in the trajectory
+            for f_idx, (nx, ny) in enumerate(traj):
+                # CoTracker frames are 0-indexed relative to the video file, convert to 1-indexed for clip_to_scene_frame
+                scene_frame = self.clip_to_scene_frame(f_idx + 1)
+                
+                # Check bounds
+                if scene_frame < self.clip.frame_start or scene_frame >= self.clip.frame_start + self.clip.frame_duration:
+                    continue
+                    
+                # Create marker
+                marker = track.markers.new(frame=scene_frame)
+                marker.co = (nx, 1.0 - ny)
+                # Keep it active
+                marker.mute = False
+
+
     def count_active_tracks(self, frame: int) -> int:
         """Count tracks active at frame."""
         count = 0

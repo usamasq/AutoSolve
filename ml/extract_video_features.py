@@ -134,6 +134,7 @@ def extract_features_from_video(video_path: str, sample_rate: int = 5) -> Option
         "motion_class": motion_class,
         "zoom_divergence": mean_zoom,
         "distortion_factor": mean_curvature,
+        "grain_noise": mean_noise,
         "noise_ratio": mean_noise
     }
 

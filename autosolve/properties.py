@@ -56,6 +56,69 @@ class AutoSolveSettings(PropertyGroup):
                     "Uses larger search areas and more forgiving thresholds",
         default=False,
     )
+
+    use_external_worker: BoolProperty(
+        name="Use External Worker",
+        description="Use background out-of-process worker to run heavy PyTorch/SciPy tasks",
+        default=False,
+    )
+
+    external_python_path: StringProperty(
+        name="External Python Path",
+        description="Path to system Python environment with PyTorch and SciPy (e.g. C:\\Python310\\python.exe)",
+        default="",
+        subtype='FILE_PATH',
+    )
+
+    installer_state: EnumProperty(
+        name="Installer State",
+        description="Status of the AI dependencies installer",
+        items=[
+            ('IDLE', "Idle", "Installer is not active"),
+            ('INSTALLING', "Installing", "Dependencies are currently installing"),
+            ('SUCCESS', "Success", "Dependencies installed successfully"),
+            ('FAILED', "Failed", "Dependency installation failed"),
+        ],
+        default='IDLE',
+        options={'SKIP_SAVE'},
+    )
+
+    installer_progress: StringProperty(
+        name="Installer Progress",
+        description="Status messages from the active package installer",
+        default="",
+        options={'SKIP_SAVE'},
+    )
+
+    tracking_backend: EnumProperty(
+        name="Tracking Backend",
+        description="Core tracking algorithm",
+        items=[
+            ('NATIVE', "Blender Native (KLT)", "Use Blender's built-in KLT feature tracker", 'TRACKING', 0),
+            ('COTRACKER', "CoTracker v3 (AI)", "Use Meta's CoTracker v3 deep learning model (requires CUDA/MPS)", 'NODE_INSERT', 1),
+        ],
+        default='NATIVE',
+    )
+
+    masking_backend: EnumProperty(
+        name="Dynamic Masking",
+        description="Detect and ignore dynamic elements like moving people or vehicles during tracking",
+        items=[
+            ('NONE', "None", "Do not run dynamic masking", 'X', 0),
+            ('SAM2', "SAM 2 / YOLO (AI)", "Automatically mask out moving objects using YOLOv8 segmenter (requires GPU)", 'MOD_MASK', 1),
+        ],
+        default='NONE',
+    )
+
+    solving_backend: EnumProperty(
+        name="Solving Backend",
+        description="Solver used for camera reconstruction",
+        items=[
+            ('NATIVE', "Blender Native", "Use Blender's built-in bundle adjuster", 'RENDER_STILL', 0),
+            ('PRECISION', "Precision Solver (AI)", "Use custom multi-pass Levenberg-Marquardt adjuster (requires SciPy)", 'DECORATE_DRIVER', 1),
+        ],
+        default='NATIVE',
+    )
     
     footage_type: EnumProperty(
         name="Footage Type",

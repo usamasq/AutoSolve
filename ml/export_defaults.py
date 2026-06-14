@@ -64,26 +64,49 @@ def sigmoid(A: List[List[float]]) -> List[List[float]]:
     return A
 
 
+def batchnorm1d(X: List[List[float]], weight: List[float], bias: List[float], running_mean: List[float], running_var: List[float], eps: float = 1e-5) -> List[List[float]]:
+    N = len(X)
+    C = len(X[0])
+    out = [[0.0] * C for _ in range(N)]
+    for i in range(N):
+        for j in range(C):
+            out[i][j] = (X[i][j] - running_mean[j]) / math.sqrt(running_var[j] + eps) * weight[j] + bias[j]
+    return out
+
+
 def predict_batch(X: List[List[float]], weights: Dict[str, Any]) -> List[float]:
     """Runs forward pass on a batch of feature vectors."""
     if not X:
         return []
-    # Layer 1
+    # Layer 1: Linear -> BatchNorm -> ReLU
     x1 = matmul(X, weights["network.0.weight"])
     x1 = add_bias(x1, weights["network.0.bias"])
+    x1 = batchnorm1d(
+        x1,
+        weights["network.1.weight"],
+        weights["network.1.bias"],
+        weights["network.1.running_mean"],
+        weights["network.1.running_var"]
+    )
     x1 = relu(x1)
     
-    # Layer 2
-    x2 = matmul(x1, weights["network.2.weight"])
-    x2 = add_bias(x2, weights["network.2.bias"])
+    # Layer 2: Linear -> BatchNorm -> ReLU
+    x2 = matmul(x1, weights["network.4.weight"])
+    x2 = add_bias(x2, weights["network.4.bias"])
+    x2 = batchnorm1d(
+        x2,
+        weights["network.5.weight"],
+        weights["network.5.bias"],
+        weights["network.5.running_mean"],
+        weights["network.5.running_var"]
+    )
     x2 = relu(x2)
     
-    # Layer 3
-    x3 = matmul(x2, weights["network.4.weight"])
-    x3 = add_bias(x3, weights["network.4.bias"])
-    x3 = sigmoid(x3)
+    # Layer 3: Linear
+    x3 = matmul(x2, weights["network.8.weight"])
+    x3 = add_bias(x3, weights["network.8.bias"])
     
-    return [row[0] for row in x3]
+    return [max(0.0, min(1.0, row[0])) for row in x3]
 
 
 def get_resolution_metadata(res_class: str) -> Tuple[float, float, float, float]:

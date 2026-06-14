@@ -51,7 +51,7 @@ if TORCH_AVAILABLE:
         def __init__(self):
             super().__init__()
             self.network = nn.Sequential(
-                nn.Linear(28, 64),
+                nn.Linear(29, 64),
                 nn.BatchNorm1d(64),
                 nn.ReLU(),
                 nn.Dropout(0.2),
@@ -59,8 +59,7 @@ if TORCH_AVAILABLE:
                 nn.BatchNorm1d(32),
                 nn.ReLU(),
                 nn.Dropout(0.1),
-                nn.Linear(32, 1),
-                nn.Sigmoid()
+                nn.Linear(32, 1)
             )
             
         def forward(self, x):
@@ -71,7 +70,7 @@ if TORCH_AVAILABLE:
         def __init__(self):
             super().__init__()
             self.network = nn.Sequential(
-                nn.Linear(15, 64),
+                nn.Linear(20, 64),
                 nn.BatchNorm1d(64),
                 nn.ReLU(),
                 nn.Dropout(0.2),
@@ -163,7 +162,7 @@ def export_settings_model(weights_path: str, out_dir: str) -> bool:
     os.makedirs(out_dir, exist_ok=True)
 
     onnx_path = os.path.join(out_dir, "settings_model.onnx")
-    dummy_input = torch.zeros(1, 28, dtype=torch.float32)
+    dummy_input = torch.zeros(1, 29, dtype=torch.float32)
 
     torch.onnx.export(
         model,
@@ -177,17 +176,17 @@ def export_settings_model(weights_path: str, out_dir: str) -> bool:
     print(f"   Exported → {onnx_path}")
 
     # Validate
-    sample = np.random.randn(4, 28).astype(np.float32)
+    sample = np.random.randn(4, 29).astype(np.float32)
     _validate_onnx_vs_torch(model, onnx_path, sample)
 
     # Write meta (normalisation + model info)
     meta_out = {
-        "input_mean":   meta.get("input_mean", [0.0] * 28),
-        "input_std":    meta.get("input_std",  [1.0] * 28),
-        "input_size":   28,
+        "input_mean":   meta.get("input_mean", [0.0] * 29),
+        "input_std":    meta.get("input_std",  [1.0] * 29),
+        "input_size":   29,
         "output_size":  1,
         "best_val_loss": meta.get("best_val_loss", None),
-        "description":  "Settings expected-reward predictor. Input: clip+settings features (28-dim). Output: reward in [0,1]."
+        "description":  "Settings expected-reward predictor. Input: clip+settings features (29-dim). Output: reward in [0,1]."
     }
     meta_path = os.path.join(out_dir, "settings_model_meta.json")
     with open(meta_path, "w") as f:
@@ -244,7 +243,7 @@ def export_track_predictor(weights_path: str, out_dir: str) -> bool:
     os.makedirs(out_dir, exist_ok=True)
 
     onnx_path = os.path.join(out_dir, "track_predictor.onnx")
-    dummy_input = torch.zeros(1, 15, dtype=torch.float32)
+    dummy_input = torch.zeros(1, 20, dtype=torch.float32)
 
     torch.onnx.export(
         model,
@@ -258,16 +257,16 @@ def export_track_predictor(weights_path: str, out_dir: str) -> bool:
     print(f"   Exported → {onnx_path}")
 
     # Validate
-    sample = np.random.randn(8, 15).astype(np.float32)
+    sample = np.random.randn(8, 20).astype(np.float32)
     _validate_onnx_vs_torch(model, onnx_path, sample)
 
     # Write meta
     meta_out = {
-        "input_mean":  raw.get("input_mean",  [0.0] * 15),
-        "input_std":   raw.get("input_std",   [1.0] * 15),
-        "input_size":  15,
+        "input_mean":  raw.get("input_mean",  [0.0] * 20),
+        "input_std":   raw.get("input_std",   [1.0] * 20),
+        "input_size":  20,
         "output_size": 1,
-        "description": "Track survival predictor. Input: 15-dim trajectory features. Output: survival prob in [0,1]."
+        "description": "Track survival predictor. Input: 20-dim trajectory features. Output: survival prob in [0,1]."
     }
     meta_path = os.path.join(out_dir, "track_predictor_meta.json")
     with open(meta_path, "w") as f:

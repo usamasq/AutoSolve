@@ -16,23 +16,15 @@ def extract_features_from_history(
     region_idx: int,
     footage_idx: int,
     robust_mode: bool,
-    history_len: int = 6
+    history_len: int = 6,
+    dist_to_dynamic_mask: float = 1.0,
+    on_dynamic_mask: float = 0.0,
+    flow_consensus_deviation: float = 0.0
 ) -> np.ndarray:
     """
-    Extract a 15-dimensional feature vector for a track based on its history.
-    
-    Args:
-        coords: List of (x, y) coordinates for this track, ending at the current frame.
-        neighbors_coords: List of lists of (x, y) coordinates for neighboring tracks, ending at current frame.
-        region_idx: Index of screen region (0 to 8).
-        footage_idx: Index of footage type (0 to 9).
-        robust_mode: Whether robust tracking mode is active.
-        history_len: Length of history to inspect (default 6 frames to compute 5 deltas).
-        
-    Returns:
-        np.ndarray: 15-dimensional feature vector.
+    Extract a 20-dimensional feature vector for a track based on its history and semantic boundaries.
     """
-    features = np.zeros(15, dtype=np.float32)
+    features = np.zeros(20, dtype=np.float32)
     
     track_len = len(coords)
     if track_len == 0:
@@ -105,5 +97,12 @@ def extract_features_from_history(
     features[12] = float(region_idx)  # region_index
     features[13] = float(footage_idx)  # footage_type_index
     features[14] = 1.0 if robust_mode else 0.0  # robust_mode
+    
+    # 8. Semantic Mask & Consensual Flow features
+    features[15] = float(dist_to_dynamic_mask)  # distance to closest dynamic object mask
+    features[16] = float(on_dynamic_mask)       # 1.0 if directly inside dynamic object, else 0.0
+    features[17] = float(flow_consensus_deviation) # RANSAC flow consensus difference
+    features[18] = float(np.std(vel_x + vel_y)) if vel_x else 0.0  # Jitter standard dev
+    features[19] = float(len(neighbors_coords))  # Local neighbor track density
     
     return features

@@ -34,6 +34,16 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 
+SKIP_SUFFIXES = {
+    '_video_meta.json', 'settings_dataset.json', 'recommended_defaults.json',
+    'track_predictor.json', '_semantic_meta.json', 'defaults.json', '_base_trajectories.json'
+}
+
+
+def is_solve_json(filename: str) -> bool:
+    return filename.endswith('.json') and not any(filename.endswith(s) for s in SKIP_SUFFIXES)
+
+
 if TORCH_AVAILABLE:
     class PatchRigidityCNN(nn.Module):
         """Lightweight 2-layer CNN for 32x32 patch rigidity classification."""
@@ -111,13 +121,13 @@ def extract_real_patch_data(clips_dir: str, data_dir: str) -> tuple:
     """Scan solve samples, load associated videos, and run homography RANSAC to label rigid vs dynamic patches."""
     if not OPENCV_AVAILABLE:
         print("Warning: OpenCV is not available. Cannot extract patches from real video.")
-        return None
+        return None, None, None
         
     # Find solve files
-    solve_files = [f for f in os.listdir(data_dir) if f.endswith('.json') and not f.endswith('_video_meta.json') and not f.endswith('settings_dataset.json')]
+    solve_files = [f for f in os.listdir(data_dir) if is_solve_json(f)]
     if not solve_files:
         print("No solve files found in data directory.")
-        return None
+        return None, None, None
         
     X_list = []
     y_list = []
@@ -147,89 +157,89 @@ def extract_real_patch_data(clips_dir: str, data_dir: str) -> tuple:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 continue
+            try:
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
-            tracks = solve_data["tracks"]
-            # Track coordinates dictionary: track_name -> {frame_idx: (x, y)}
-            track_points = {}
-            for t in tracks:
-                positions = t["positions"]
-                track_points[t["track_name"]] = {idx: pos for idx, pos in enumerate(positions)}
+                tracks = solve_data["tracks"]
+                # Track coordinates dictionary: track_name -> {frame_idx: (x, y)}
+                track_points = {}
+                for t in tracks:
+                    positions = t["positions"]
+                    track_points[t["track_name"]] = {idx: pos for idx, pos in enumerate(positions)}
+                    
+                num_frames = max(len(t["positions"]) for t in tracks)
                 
-            num_frames = max(len(t["positions"]) for t in tracks)
-            
-            # Map frames to tracks and inliers count
-            track_outlier_votes = {t["track_name"]: {"outlier": 0, "total": 0} for t in tracks}
-            
-            # Run RANSAC across frame transitions to label outlier/dynamic tracks
-            for f_idx in range(num_frames - 1):
-                src_pts = []
-                dst_pts = []
-                names = []
+                # Map frames to tracks and inliers count
+                track_outlier_votes = {t["track_name"]: {"outlier": 0, "total": 0} for t in tracks}
                 
-                for name, pos_map in track_points.items():
-                    if f_idx in pos_map and (f_idx + 1) in pos_map:
-                        x0, y0 = pos_map[f_idx]
-                        x1, y1 = pos_map[f_idx + 1]
-                        src_pts.append([x0 * width, y0 * height])
-                        dst_pts.append([x1 * width, y1 * height])
-                        names.append(name)
-                        
-                if len(src_pts) >= 8:
-                    src_pts = np.array(src_pts, dtype=np.float32)
-                    dst_pts = np.array(dst_pts, dtype=np.float32)
+                # Run RANSAC across frame transitions to label outlier/dynamic tracks
+                for f_idx in range(num_frames - 1):
+                    src_pts = []
+                    dst_pts = []
+                    names = []
                     
-                    # Find homography of dominant background camera motion
-                    H, inliers = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-                    
-                    if inliers is not None:
-                        for i, name in enumerate(names):
-                            track_outlier_votes[name]["total"] += 1
-                            if inliers[i][0] == 0:
-                                track_outlier_votes[name]["outlier"] += 1
-                                
-            # Final labeling of tracks based on outlier ratio
-            track_rigidity = {}
-            for name, votes in track_outlier_votes.items():
-                if votes["total"] > 0:
-                    outlier_ratio = votes["outlier"] / votes["total"]
-                    # If track behaves as outlier > 35% of the time, it's non-rigid/dynamic
-                    track_rigidity[name] = 0.0 if outlier_ratio > 0.35 else 1.0
-                else:
-                    track_rigidity[name] = 1.0  # default to rigid
-                    
-            # Load frames and extract patches
-            frame_idx = 0
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                # Sample tracks active at this frame
-                for name, pos_map in track_points.items():
-                    # Limit sample count to avoid bloating the dataset with consecutive frame duplicates
-                    if frame_idx in pos_map and frame_idx % 10 == 0:
-                        x, y = pos_map[frame_idx]
-                        px = int(x * width)
-                        py = int(y * height)
-                        
-                        # Pad boundary patches safely
-                        y0, y1 = py - 16, py + 16
-                        x0, x1 = px - 16, px + 16
-                        
-                        if y0 >= 0 and y1 < height and x0 >= 0 and x1 < width:
-                            patch = gray[y0:y1, x0:x1].astype(np.float32) / 255.0
-                            label = track_rigidity[name]
-                            X_list.append(patch)
-                            y_list.append(label)
-                            clip_ids.append(clip_name)
+                    for name, pos_map in track_points.items():
+                        if f_idx in pos_map and (f_idx + 1) in pos_map:
+                            x0, y0 = pos_map[f_idx]
+                            x1, y1 = pos_map[f_idx + 1]
+                            src_pts.append([x0 * width, y0 * height])
+                            dst_pts.append([x1 * width, y1 * height])
+                            names.append(name)
                             
-                frame_idx += 1
-                
-            cap.release()
+                    if len(src_pts) >= 8:
+                        src_pts = np.array(src_pts, dtype=np.float32)
+                        dst_pts = np.array(dst_pts, dtype=np.float32)
+                        
+                        # Find homography of dominant background camera motion
+                        H, inliers = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                        
+                        if inliers is not None:
+                            for i, name in enumerate(names):
+                                track_outlier_votes[name]["total"] += 1
+                                if inliers[i][0] == 0:
+                                    track_outlier_votes[name]["outlier"] += 1
+                                    
+                # Final labeling of tracks based on outlier ratio
+                track_rigidity = {}
+                for name, votes in track_outlier_votes.items():
+                    if votes["total"] > 0:
+                        outlier_ratio = votes["outlier"] / votes["total"]
+                        # If track behaves as outlier > 35% of the time, it's non-rigid/dynamic
+                        track_rigidity[name] = 0.0 if outlier_ratio > 0.35 else 1.0
+                    else:
+                        track_rigidity[name] = 1.0  # default to rigid
+                        
+                # Load frames and extract patches
+                frame_idx = 0
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                        
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    # Sample tracks active at this frame
+                    for name, pos_map in track_points.items():
+                        # Limit sample count to avoid bloating the dataset with consecutive frame duplicates
+                        if frame_idx in pos_map and frame_idx % 10 == 0:
+                            x, y = pos_map[frame_idx]
+                            px = int(x * width)
+                            py = int(y * height)
+                            
+                            # Pad boundary patches safely
+                            y0, y1 = py - 16, py + 16
+                            x0, x1 = px - 16, px + 16
+                            
+                            if y0 >= 0 and y1 < height and x0 >= 0 and x1 < width:
+                                patch = gray[y0:y1, x0:x1].astype(np.float32) / 255.0
+                                label = track_rigidity[name]
+                                X_list.append(patch)
+                                y_list.append(label)
+                                clip_ids.append(clip_name)
+                                
+                    frame_idx += 1
+            finally:
+                cap.release()
             
         except Exception as e:
             print(f"Error processing video patch generation: {e}")

@@ -1,0 +1,1 @@
+# AutoSolve worker package

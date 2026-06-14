@@ -10,7 +10,7 @@ Strategy:
   3. Cache InferenceSession so loading only happens once per Blender session
 
 Models bundled in autosolve/tracker/models/:
-  - settings_model.onnx   → maps (28 clip features) → expected reward [0,1]
+  - settings_model.onnx   → maps (29 clip features) → expected reward [0,1]
   - track_predictor.onnx  → maps (15 track features) → survival prob [0,1]
 
 Both are exported from the PyTorch checkpoints via ml/export_onnx.py.
@@ -248,7 +248,7 @@ class OnnxPredictor:
         Predict expected tracking reward from clip+settings feature vector.
 
         Args:
-            clip_features: (28,) float32 vector of clip and settings features
+            clip_features: (29,) float32 vector of clip and settings features
 
         Returns:
             float reward in [0, 1], or None if model unavailable.
@@ -266,7 +266,7 @@ class OnnxPredictor:
     def rank_settings_candidates(
         self,
         candidates: list,          # list of (settings_dict)
-        feature_fn,                # callable: settings_dict → np.ndarray (28,)
+        feature_fn,                # callable: settings_dict → np.ndarray (29,)
     ) -> list:
         """
         Given a list of candidate settings dicts, score each with the ONNX

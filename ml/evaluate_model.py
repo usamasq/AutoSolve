@@ -53,30 +53,53 @@ def sigmoid(A: List[List[float]]) -> List[List[float]]:
     return A
 
 
+def batchnorm1d(X: List[List[float]], weight: List[float], bias: List[float], running_mean: List[float], running_var: List[float], eps: float = 1e-5) -> List[List[float]]:
+    N = len(X)
+    C = len(X[0])
+    out = [[0.0] * C for _ in range(N)]
+    for i in range(N):
+        for j in range(C):
+            out[i][j] = (X[i][j] - running_mean[j]) / math.sqrt(running_var[j] + eps) * weight[j] + bias[j]
+    return out
+
+
 def run_inference(X: List[List[float]], weights: Dict[str, Any]) -> List[float]:
     """Runs dependency-free feedforward inference over input matrix X."""
-    # Layer 1
+    # Layer 1: Linear -> BatchNorm -> ReLU
     w1 = weights["network.0.weight"]
     b1 = weights["network.0.bias"]
     x1 = matmul(X, w1)
     x1 = add_bias(x1, b1)
+    x1 = batchnorm1d(
+        x1,
+        weights["network.1.weight"],
+        weights["network.1.bias"],
+        weights["network.1.running_mean"],
+        weights["network.1.running_var"]
+    )
     x1 = relu(x1)
     
-    # Layer 2
-    w2 = weights["network.2.weight"]
-    b2 = weights["network.2.bias"]
+    # Layer 2: Linear -> BatchNorm -> ReLU
+    w2 = weights["network.4.weight"]
+    b2 = weights["network.4.bias"]
     x2 = matmul(x1, w2)
     x2 = add_bias(x2, b2)
+    x2 = batchnorm1d(
+        x2,
+        weights["network.5.weight"],
+        weights["network.5.bias"],
+        weights["network.5.running_mean"],
+        weights["network.5.running_var"]
+    )
     x2 = relu(x2)
     
-    # Layer 3
-    w3 = weights["network.4.weight"]
-    b3 = weights["network.4.bias"]
+    # Layer 3: Linear
+    w3 = weights["network.8.weight"]
+    b3 = weights["network.8.bias"]
     x3 = matmul(x2, w3)
     x3 = add_bias(x3, b3)
-    x3 = sigmoid(x3)
     
-    return [row[0] for row in x3]
+    return [max(0.0, min(1.0, row[0])) for row in x3]
 
 
 def evaluate_model(args):

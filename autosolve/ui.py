@@ -601,6 +601,95 @@ class AUTOSOLVE_PT_turbo_mode(Panel):
             col.label(text="Window > System Console for details.")
 
 
+class AUTOSOLVE_PT_external_worker(Panel):
+    """Configuration for out-of-process deep learning worker."""
+    
+    bl_label = "External AI Worker"
+    bl_idname = "AUTOSOLVE_PT_external_worker"
+    bl_space_type = 'CLIP_EDITOR'
+    bl_region_type = 'TOOLS'
+    bl_category = "AutoSolve"
+    bl_parent_id = "AUTOSOLVE_PT_main_panel"
+    bl_order = 10
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        settings = context.scene.autosolve
+        
+        # Check connection status
+        from .worker.client import ping_worker, is_port_in_use
+        port_in_use = is_port_in_use()
+        
+        box = layout.box()
+        box.prop(settings, "use_external_worker", text="Use External AI Worker")
+        
+        if settings.use_external_worker:
+            box.separator()
+            
+            # Step 1: Python environment
+            env_box = box.box()
+            env_box.label(text="1. Python Environment Setup", icon='PROPERTIES')
+            row = env_box.row(align=True)
+            row.prop(settings, "external_python_path", text="Executable")
+            row.operator("autosolve.detect_python", text="Auto-Detect", icon='ZOOM_ALL')
+            
+            # Step 2: Package installation
+            pkg_box = box.box()
+            pkg_box.label(text="2. Deep Learning Dependencies", icon='NODE_INSERT')
+            
+            state = settings.installer_state
+            progress_msg = settings.installer_progress
+            
+            if state == 'IDLE':
+                # Self-verify if they are actually installed already
+                from .worker.client import check_dependencies
+                if settings.external_python_path and check_dependencies(settings.external_python_path):
+                    settings.installer_state = 'SUCCESS'
+                    pkg_box.label(text="AI Packages: Ready & Verified", icon='CHECKMARK')
+                    pkg_box.operator("autosolve.install_deps", text="Update AI Packages", icon='FILE_REFRESH')
+                else:
+                    pkg_box.label(text="AI Packages: Missing or Unchecked", icon='QUESTION')
+                    pkg_box.operator("autosolve.install_deps", text="Install AI Packages (One-Click)", icon='IMPORT')
+            elif state == 'INSTALLING':
+                pkg_box.label(text="Status: Installing...", icon='LOAD_FACTOR')
+                col = pkg_box.column(align=True)
+                col.label(text=progress_msg or "Starting installation...", icon='INFO')
+                col.label(text="Please wait - this will not freeze Blender.", icon='RADIOACTIVE')
+            elif state == 'SUCCESS':
+                pkg_box.label(text="AI Packages: Ready & Verified", icon='CHECKMARK')
+                pkg_box.operator("autosolve.install_deps", text="Update AI Packages", icon='FILE_REFRESH')
+            elif state == 'FAILED':
+                pkg_box.label(text="Status: Installation Failed", icon='ERROR')
+                if progress_msg:
+                    pkg_box.label(text=f"Info: {progress_msg}")
+                pkg_box.operator("autosolve.install_deps", text="Retry Installation", icon='IMPORT')
+                
+            # Step 3: Worker process control
+            worker_box = box.box()
+            worker_box.label(text="3. External Worker Status", icon='SYSTEM')
+            row = worker_box.row()
+            if port_in_use:
+                status = ping_worker()
+                if status.get("ok"):
+                    device_str = "GPU" if status.get("cuda") else "CPU"
+                    row.label(text=f"Connected ({device_str})", icon='CHECKMARK')
+                    row.operator("autosolve.stop_worker", text="Stop Worker", icon='CANCEL')
+                    
+                    # Backend selection
+                    worker_box.separator()
+                    worker_box.label(text="Active Backends:", icon='PREFERENCES')
+                    col = worker_box.column(align=True)
+                    col.prop(settings, "tracking_backend", text="Tracking")
+                    col.prop(settings, "masking_backend", text="Masking")
+                    col.prop(settings, "solving_backend", text="Solving")
+                else:
+                    row.label(text="Binding Error", icon='ERROR')
+                    row.operator("autosolve.start_worker", text="Restart Worker", icon='FILE_REFRESH')
+            else:
+                row.label(text="Offline", icon='OFF')
+                row.operator("autosolve.start_worker", text="Start AI Worker", icon='PLAY')
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REGISTRATION
@@ -613,6 +702,7 @@ classes = (
     AUTOSOLVE_PT_phase2_scene,
     AUTOSOLVE_PT_phase3_refine,
     AUTOSOLVE_PT_turbo_mode,
+    AUTOSOLVE_PT_external_worker,
 )
 
 

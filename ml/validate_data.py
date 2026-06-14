@@ -13,18 +13,23 @@ from typing import Dict, Any
 
 
 def validate_json_schema(data: Dict[str, Any], file_path: str) -> bool:
-    """Validate JSON fields against the expected SolveSample schema."""
+    """Validate JSON fields against the expected SolveSample or BaseTrajectories schema."""
     filename = os.path.basename(file_path)
+    is_base = filename.endswith('_base_trajectories.json')
     
-    # SolveSample root keys
-    root_keys = {
-        "clip_metadata", "settings", "tracks", 
-        "solve_success", "solve_error", "bundle_count", 
-        "bundle_ratio", "runtime_seconds"
-    }
+    # Root keys
+    if is_base:
+        root_keys = {"clip_metadata", "tracks"}
+    else:
+        root_keys = {
+            "clip_metadata", "settings", "tracks", 
+            "solve_success", "solve_error", "bundle_count", 
+            "bundle_ratio", "runtime_seconds"
+        }
+        
     if not root_keys.issubset(data.keys()):
         missing = root_keys - data.keys()
-        print(f"[{filename}] Invalid SolveSample: Missing root keys: {missing}")
+        print(f"[{filename}] Invalid schema: Missing root keys: {missing}")
         return False
         
     # ClipMetadata keys
@@ -35,25 +40,30 @@ def validate_json_schema(data: Dict[str, Any], file_path: str) -> bool:
         print(f"[{filename}] Invalid ClipMetadata: Missing keys: {missing}")
         return False
         
-    # TrackingSettings keys
-    settings = data["settings"]
-    settings_keys = {
-        "quality_preset", "footage_type", "robust_mode", 
-        "tripod_mode", "pattern_size", "search_size", 
-        "correlation", "threshold", "motion_model"
-    }
-    if not settings_keys.issubset(settings.keys()):
-        missing = settings_keys - settings.keys()
-        print(f"[{filename}] Invalid TrackingSettings: Missing keys: {missing}")
-        return False
+    if not is_base:
+        # TrackingSettings keys
+        settings = data["settings"]
+        settings_keys = {
+            "quality_preset", "footage_type", "robust_mode", 
+            "tripod_mode", "pattern_size", "search_size", 
+            "correlation", "threshold", "motion_model"
+        }
+        if not settings_keys.issubset(settings.keys()):
+            missing = settings_keys - settings.keys()
+            print(f"[{filename}] Invalid TrackingSettings: Missing keys: {missing}")
+            return False
         
     # TrackSample keys
     tracks = data["tracks"]
-    track_keys = {
-        "track_name", "region", "positions", "velocities", 
-        "jitter_scores", "lifespan", "survived", "has_bundle", 
-        "average_error"
-    }
+    if is_base:
+        track_keys = {"track_name", "region", "positions"}
+    else:
+        track_keys = {
+            "track_name", "region", "positions", "velocities", 
+            "jitter_scores", "lifespan", "survived", "has_bundle", 
+            "average_error"
+        }
+        
     for idx, t in enumerate(tracks):
         if not track_keys.issubset(t.keys()):
             missing = track_keys - t.keys()
@@ -72,7 +82,7 @@ def run_validation(args):
     json_files = [
         os.path.join(args.data_dir, f) 
         for f in os.listdir(args.data_dir) 
-        if f.endswith('.json') and not f.endswith('_video_meta.json')
+        if f.endswith('.json') and not f.endswith('_video_meta.json') and not f.endswith('_semantic_meta.json') and not f.endswith('settings_dataset.json')
     ]
     
     total_files = len(json_files)
@@ -104,6 +114,22 @@ def run_validation(args):
             if validate_json_schema(data, file_path):
                 valid_count += 1
                 
+                # If it's a base trajectories file, simulate standard variation for validation stats
+                if file_path.endswith('_base_trajectories.json'):
+                    try:
+                        import sys
+                        project_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        if project_path not in sys.path:
+                            sys.path.append(project_path)
+                        from ml.extract_cotracker_trajectories import simulate_variation
+                        meta = data["clip_metadata"]
+                        base_trajectories = [t["positions"] for t in data["tracks"]]
+                        # Simulate standard variation
+                        data = simulate_variation(base_trajectories, meta, "BALANCED", False, False)
+                    except Exception as e:
+                        print(f"Warning: Failed to simulate variation for validation: {e}")
+                        continue
+                
                 # Gather stats from valid sample
                 solve_success = data["solve_success"]
                 if solve_success:
@@ -132,9 +158,9 @@ def run_validation(args):
             invalid_count += 1
             
     # Print summary report
-    print("═" * 45)
+    print("=" * 45)
     print(" AutoSolve ML Dataset Summary Report")
-    print("═" * 45)
+    print("=" * 45)
     print(f"Valid Files:   {valid_count} / {total_files}")
     print(f"Invalid Files: {invalid_count} / {total_files}")
     
@@ -159,7 +185,7 @@ def run_validation(args):
             print(f"  Survived Tracks:   {survived_tracks_count} ({survived_rate:.1f}%) [Positive Samples]")
             print(f"  Filtered Tracks:   {failed_tracks_count} ({failed_rate:.1f}%) [Negative Samples]")
             print(f"  3D Bundles (Z!=0):  {bundle_tracks_count} ({bundle_rate:.1f}%)")
-    print("═" * 45)
+    print("=" * 45)
 
 
 if __name__ == "__main__":

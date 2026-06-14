@@ -86,3 +86,26 @@ All developer-side training and preprocessing pipelines inside the `ml/` directo
   * **Numpy Parameter Folding**: Developed folding math inside the exporters to collapse BatchNorm parameters directly into linear layer weights and biases, allowing the addon's numpy inference engine to run the upgraded PyTorch models with zero overhead.
   * **Algorithmic Enhancements**: Upgraded `track_healer.py` to Cubic Hermite Spline interpolation for smooth velocity-preserving track gap filling. Added relative adaptive velocity spike thresholds in `validation.py` to support fast camera pans.
   * **Verification Suite**: Created [test_smart_tracker.py](file:///c:/Users/usama/OneDrive/Desktop/AutoSolve/scratch/test_smart_tracker.py) with mocked Blender namespaces to verify mixin binding and neural engine prediction correctness. All tests compile and execute successfully.
+
+---
+
+## Milestone 8: Hollywood-Grade Matchmoving
+* **Goal**: Implement deep-learning dense tracking (CoTracker v3), semantic masking (YOLOv8), and a custom bundle adjuster (SciPy) via an out-of-process background worker with offline bundling.
+* **Key Achievements**:
+  * **Client-Worker IPC Server:** Implemented a multi-threaded TCP/JSON-IPC socket server (`autosolve/worker/server.py`) and Blender client (`autosolve/worker/client.py`) running in the system Python to avoid blocking Blender's single-thread UI.
+  * **CoTracker v3 Offline Tracking:** Bundled the CoTracker source repository and v3 offline model weights (`cotracker3_offline.pth` ~100MB) locally, loading the model offline via PyTorch Hub (`source="local"`) with a custom key-prefix mapping adapter.
+  * **YOLOv8 Semantic Masking:** Bundled `yolov8n-seg.pt` (~7MB) for dynamic object masking (people, vehicles, animals), preventing tracks from instantiating on non-rigid elements.
+  * **Precision SciPy Solver:** Created a multi-pass bundle adjustment solver (`autosolve/worker/ba_solver.py`) using `scipy.optimize.least_squares` with robust Cauchy loss via Trust Region Reflective (`trf`) optimization.
+  * **Offline Wheels Bundling:** Restored pre-compiled `onnxruntime` wheels under `wheels/` and re-declared them in `blender_manifest.toml` for automatic zero-download installation at addon setup time.
+  * **Verification:** Built `test_worker.py` to verify the IPC server, precision solver convergence, and clean shutdown protocol. All tests pass successfully.
+
+---
+
+## Milestone 9: Stability Audit & Native Blender Integration Gaps
+* **Goal**: Conduct an audit of data portability, process stability, and coordinate precision between the out-of-process worker and Blender's native tracking system, and fix all identified integration gaps.
+* **Key Achievements**:
+  * **Timeline Frame Alignment**: Fixed a 1-frame offset bug in `import_external_trajectories` where 0-indexed trajectory points were shifted by -1 frame on the Blender timeline.
+  * **Y-Coordinate Inversion**: Resolved the coordinate space mismatch (CoTracker's top-down vs Blender's bottom-up) by inverting normalized y-coordinates (`1.0 - ny`).
+  * **Aspect-Ratio Preserving Normalization**: Modified the frame loading and resizing loops in CoTracker to pad widescreen (16:9) and vertical (9:16) footage with black letterbox/pillarbox margins (fitting `288x384`), and updated normalization math to reverse these padding offsets (`nx = (px - pad_w) / new_w` and `ny = (py - pad_h) / new_h`) for distortion-free tracking. This logic was also integrated into the dataset generation scripts (`ml/extract_cotracker_trajectories.py`) and the Google Colab training notebook (`ml/AutoSolve_Training.ipynb`) to ensure coordinate representation parity between training and runtime.
+  * **VFR & Framerate Validation**: Added a non-blocking check during operator execution comparing clip FPS with scene render FPS, displaying a Blender warning banner on mismatch to alert users of potential solve drift.
+  * **Background Task Robustness**: Implemented 90-second timeouts and clean TCP/process termination (`kill_worker`) for SAM2 and CoTracker background workers to ensure Blender's UI never hangs.

@@ -177,42 +177,122 @@ def run_cotracker_tracking(video_path: str, grid_size: int = 8) -> Tuple[List[Li
     if fps <= 0:
         fps = 24.0
 
-    frames = []
-    # Read and resize frames to a smaller resolution for CoTracker processing to fit in typical VRAM
+    # Calculate aspect-ratio preserving scaled dimensions and padding offsets
     target_h, target_w = 288, 384
-    
+    scale = min(target_w / width, target_h / height)
+    new_w = int(width * scale)
+    new_h = int(height * scale)
+    pad_w = (target_w - new_w) // 2
+    pad_h = (target_h - new_h) // 2
+
+    frames = []
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        # Convert BGR to RGB
+        # Convert BGR to RGB and resize preserving aspect ratio
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame_resized = cv2.resize(frame_rgb, (target_w, target_h))
-        frames.append(frame_resized)
+        frame_resized = cv2.resize(frame_rgb, (new_w, new_h))
+        
+        # Pad with black pixels to fit target_w x target_h canvas
+        padded_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        padded_frame[pad_h:pad_h+new_h, pad_w:pad_w+new_w] = frame_resized
+        frames.append(padded_frame)
 
     cap.release()
 
     if not frames:
         raise RuntimeError(f"Failed to read any frames from: {video_path}")
 
+    # Subsample frames to reduce VRAM usage
+    FRAME_SKIP = 2
+    frames = frames[::FRAME_SKIP]
+
     # Convert to torch tensor [1, T, 3, H, W]
-    video_tensor = torch.from_numpy(np.stack(frames, axis=0)).float() # [T, H, W, 3]
+    video_tensor = torch.from_numpy(np.stack(frames, axis=0))
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    video_tensor = video_tensor.float()
     video_tensor = video_tensor.permute(0, 3, 1, 2) # [T, 3, H, W]
     video_tensor = video_tensor.unsqueeze(0) # [1, T, 3, H, W]
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     video_tensor = video_tensor.to(device)
 
-    print(f"Loading CoTracker model from torch.hub on device: {device}...")
-    # Clean cache directory if needed, load from hub
-    model = torch.hub.load("facebookresearch/co-tracker", "cotracker2")
-    model = model.to(device)
-    model.eval()
+    print(f"Loading CoTracker3 offline model locally on device: {device}...")
+    try:
+        # Resolve paths relative to where the script or python runs
+        cotracker_src_dir = os.path.join("autosolve", "worker", "cotracker_src")
+        models_dir = os.path.join("autosolve", "models")
+        
+        # Check subfolder structure if run from ml/
+        if not os.path.exists(cotracker_src_dir):
+            cotracker_src_dir = os.path.join("..", "autosolve", "worker", "cotracker_src")
+            models_dir = os.path.join("..", "autosolve", "models")
+            
+        checkpoint_path = os.path.join(models_dir, "cotracker3_offline.pth")
+        
+        if not os.path.exists(cotracker_src_dir) or not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(
+                f"Required files not found locally.\n"
+                f"Expected CoTracker source at: '{cotracker_src_dir}'\n"
+                f"Expected model weights at: '{checkpoint_path}'\n"
+                "Please make sure you have the full AutoSolve repository structure."
+            )
+            
+        global _cotracker_model_cache
+        if '_cotracker_model_cache' not in globals():
+            _cotracker_model_cache = {}
 
-    print(f"Running CoTracker inference (grid size {grid_size}x{grid_size})...")
-    with torch.no_grad():
-        # pred_tracks: [1, T, N, 2], pred_visibility: [1, T, N]
-        pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size)
+        cache_key = (cotracker_src_dir, checkpoint_path, device)
+        if cache_key in _cotracker_model_cache:
+            model = _cotracker_model_cache[cache_key]
+            print("Successfully loaded CoTracker3 offline model from cache.")
+        else:
+            # Load model structure locally
+            model = torch.hub.load(
+                cotracker_src_dir,
+                "cotracker3_offline",
+                source="local",
+                pretrained=False
+            )
+            
+            # Load state dict
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            if isinstance(checkpoint, dict) and "model" in checkpoint:
+                state_dict = checkpoint["model"]
+            else:
+                state_dict = checkpoint
+                
+            # Add model. prefix if missing
+            sample_key = next(iter(state_dict.keys()))
+            if not sample_key.startswith("model."):
+                state_dict = {"model." + k: v for k, v in state_dict.items()}
+                
+            model.load_state_dict(state_dict)
+            model = model.to(device)
+            model.eval()
+            _cotracker_model_cache[cache_key] = model
+            print("Successfully loaded CoTracker3 offline model locally.")
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to load CoTracker3 model offline: {str(e)}.\n"
+            "This training requires CoTracker v3 trajectories. Make sure 'cotracker3_offline.pth' "
+            "is located in 'autosolve/models/'."
+        ) from e
+
+    print(f"Running CoTracker v3 inference (grid size {grid_size}x{grid_size})...")
+    try:
+        with torch.no_grad():
+            if device == "cuda":
+                with torch.amp.autocast(device_type="cuda"):
+                    pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size)
+            else:
+                pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size)
+    except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+        if device == "cuda" and ("out of memory" in str(e).lower() or isinstance(e, torch.cuda.OutOfMemoryError)):
+            torch.cuda.empty_cache()
+            print(f"  CoTracker OOM on {os.path.basename(video_path)}, falling back to OpenCV LK tracker.")
+            return run_opencv_tracking(video_path, grid_size)
+        else:
+            raise e
 
     # Convert tensors back to CPU numpy
     pred_tracks = pred_tracks.cpu().numpy()[0] # [T, N, 2]
@@ -226,9 +306,9 @@ def run_cotracker_tracking(video_path: str, grid_size: int = 8) -> Tuple[List[Li
             # If point is visible at this frame, save normalized coords
             if pred_visibility[f_idx, t_idx]:
                 px, py = pred_tracks[f_idx, t_idx]
-                # Normalize using the target_h and target_w shape of the resized video
-                nx = float(px / target_w)
-                ny = float(py / target_h)
+                # Normalize using the aspect-ratio scaled dimensions after removing padding
+                nx = float((px - pad_w) / new_w)
+                ny = float((py - pad_h) / new_h)
                 # Keep coordinates clipped to [0, 1]
                 nx = max(0.0, min(1.0, nx))
                 ny = max(0.0, min(1.0, ny))
@@ -310,7 +390,7 @@ def simulate_variation(
             for x, y in base_coords:
                 nx = x + random.normalvariate(0.0, noise_std)
                 ny = y + random.normalvariate(0.0, noise_std)
-                coords.append((max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny))))
+                coords.append((round(max(0.0, min(1.0, nx)), 5), round(max(0.0, min(1.0, ny)), 5)))
             survived_count += 1
             average_error = random.uniform(0.15, 0.45)
         else:
@@ -329,21 +409,21 @@ def simulate_variation(
                 else:
                     nx = x + random.normalvariate(0.0, noise_std)
                     ny = y + random.normalvariate(0.0, noise_std)
-                coords.append((max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny))))
+                coords.append((round(max(0.0, min(1.0, nx)), 5), round(max(0.0, min(1.0, ny)), 5)))
             
             average_error = random.uniform(0.8, 5.0)
 
         # Calculate velocities
         velocities = []
         for i in range(1, len(coords)):
-            velocities.append((coords[i][0] - coords[i-1][0], coords[i][1] - coords[i-1][1]))
+            velocities.append((round(coords[i][0] - coords[i-1][0], 5), round(coords[i][1] - coords[i-1][1], 5)))
 
         # Calculate jitter (difference in velocities)
         jitter_scores = []
         for i in range(1, len(velocities)):
             dv_x = velocities[i][0] - velocities[i-1][0]
             dv_y = velocities[i][1] - velocities[i-1][1]
-            jitter_scores.append(math.sqrt(dv_x**2 + dv_y**2))
+            jitter_scores.append(round(math.sqrt(dv_x**2 + dv_y**2), 5))
 
         # Build TrackSample dictionary matching the schema
         track_sample = {
@@ -405,7 +485,7 @@ def simulate_variation(
 
 
 def process_video(video_path: str, args: argparse.Namespace):
-    """Run tracking model on the video and generate all 5 settings variations."""
+    """Run tracking model on the video and generate only a single base trajectories JSON."""
     clip_name = os.path.splitext(os.path.basename(video_path))[0]
     print(f"\nProcessing clip: {clip_name}")
 
@@ -416,15 +496,13 @@ def process_video(video_path: str, args: argparse.Namespace):
     use_cotracker = TORCH_AVAILABLE and not args.no_cotracker
     
     if use_cotracker:
+        # User requested CoTracker, do not allow silent fallback to OpenCV tracking
+        trajectories, meta = run_cotracker_tracking(video_path, grid_size=args.grid_size)
+        print(f"Successfully extracted {len(trajectories)} trajectories using CoTracker v3.")
+    else:
+        # Fallback to OpenCV tracking
         try:
-            trajectories, meta = run_cotracker_tracking(video_path, grid_size=args.grid_size)
-            print(f"Successfully extracted {len(trajectories)} trajectories using CoTracker.")
-        except Exception as e:
-            print(f"CoTracker tracking failed: {e}. Falling back to OpenCV tracking...")
-            use_cotracker = False
-
-    if not use_cotracker:
-        try:
+            print("Using OpenCV tracking (no CoTracker)...")
             trajectories, meta = run_opencv_tracking(video_path, grid_size=args.grid_size)
             print(f"Successfully extracted {len(trajectories)} trajectories using OpenCV LK tracker.")
         except Exception as e:
@@ -435,26 +513,38 @@ def process_video(video_path: str, args: argparse.Namespace):
         print(f"No trajectories extracted for clip: {clip_name}")
         return
 
-    # Define standard settings variations to generate
-    variations = [
-        # (quality, robust_mode, tripod_mode, suffix)
-        ("BALANCED", False, False, "balanced_standard"),
-        ("FAST", False, False, "fast_standard"),
-        ("QUALITY", False, False, "quality_standard"),
-        ("BALANCED", True, False, "balanced_robust"),
-        ("BALANCED", False, True, "balanced_tripod"),
-    ]
+    # Round trajectories coordinates to 5 decimal places
+    rounded_trajectories = []
+    for track in trajectories:
+        rounded_track = [(round(x, 5), round(y, 5)) for x, y in track]
+        rounded_trajectories.append(rounded_track)
+    trajectories = rounded_trajectories
 
-    for quality, robust, tripod, suffix in variations:
-        out_name = f"{clip_name}_{suffix}.json"
-        out_path = os.path.join(args.out_dir, out_name)
+    # Format base trajectories output
+    out_name = f"{clip_name}_base_trajectories.json"
+    out_path = os.path.join(args.out_dir, out_name)
 
-        print(f"  -> Generating variation {suffix}...")
-        solve_sample = simulate_variation(trajectories, meta, quality, robust, tripod)
+    tracks_list = []
+    for idx, track in enumerate(trajectories):
+        if len(track) < 6:
+            continue
+        fx, fy = track[0]
+        region = classify_region(fx, fy)
+        tracks_list.append({
+            "track_name": f"track_{idx:03d}",
+            "region": region,
+            "positions": track
+        })
 
-        with open(out_path, 'w') as f:
-            json.dump(solve_sample, f, indent=4)
-        print(f"     Saved dataset variation to: {out_name}")
+    base_sample = {
+        "clip_metadata": meta,
+        "tracks": tracks_list
+    }
+
+    print(f"  -> Writing base trajectories JSON...")
+    with open(out_path, 'w') as f:
+        json.dump(base_sample, f, indent=4)
+    print(f"     Saved base trajectories to: {out_name}")
 
 
 def main():
@@ -494,6 +584,10 @@ def main():
         print(f"Found {len(video_files)} video clips to process in '{args.clips_dir}'")
         for video_path in video_files:
             process_video(video_path, args)
+            import gc
+            gc.collect()
+            if TORCH_AVAILABLE and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     print("\nTrajectory extraction complete.")
 

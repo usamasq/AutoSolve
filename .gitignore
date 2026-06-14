@@ -10,3 +10,7 @@ __pycache__/
 *.pyc
 /ml/data/
 /ml/runs/
+/autosolve/models/
+/ml/clips/
+/ml/dataset_summary.json
+/scratch/

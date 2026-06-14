@@ -13,6 +13,13 @@ import random
 import math
 from typing import Dict, List, Tuple, Any
 
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+
+
 # Fixed catalog of footage types and motion models for one-hot encoding
 FOOTAGE_TYPES = ['AUTO', 'INDOOR', 'OUTDOOR', 'DRONE', 'HANDHELD', 'GIMBAL', 'ACTION', 'VFX', 'SCREEN', 'CINEMATIC']
 MOTION_MODELS = ['Loc', 'LocRot', 'Affine', 'Perspective']
@@ -29,9 +36,42 @@ def get_one_hot(value: str, catalog: List[str]) -> List[float]:
     return one_hot
 
 
+def compute_dynamic_pixel_ratio(semantic_fp: str) -> float | None:
+    """Returns mean dynamic object area ratio across frames, or None on failure."""
+    try:
+        with open(semantic_fp, 'r', encoding='utf-8') as f:
+            sem_d = json.load(f)
+        frames = sem_d.get("frames", [])
+        if not frames:
+            return None
+        total = 0.0
+        for frame in frames:
+            area = 0.0
+            for det in frame.get("detections", []):
+                if det.get("is_dynamic", False):
+                    box = det.get("box", [0, 0, 0, 0])
+                    area += max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+            total += min(1.0, area)
+        return round(total / len(frames), 4)
+    except Exception as e:
+        print(f"Warning: dynamic ratio calculation failed ({e})")
+        return None
+
+
+SKIP_SUFFIXES = {
+    '_video_meta.json', 'settings_dataset.json', 'recommended_defaults.json',
+    'track_predictor.json', '_semantic_meta.json', 'defaults.json', '_base_trajectories.json'
+}
+
+
+def is_solve_json(filename: str) -> bool:
+    """Check if the JSON file is a simulated solve attempt log."""
+    return filename.endswith('.json') and not any(filename.endswith(s) for s in SKIP_SUFFIXES)
+
+
 def extract_sample_features(sample: Dict[str, Any], video_meta: Dict[str, float] = None) -> List[float]:
     """
-    Extracts a 28-dimensional feature vector from a SolveSample dictionary.
+    Extracts a 29-dimensional feature vector from a SolveSample dictionary.
     Vector structure:
     [0:4] clip: width, height, fps, frame_count
     [4] tripod_mode
@@ -39,7 +79,7 @@ def extract_sample_features(sample: Dict[str, Any], video_meta: Dict[str, float]
     [6:10] settings: pattern_size, search_size, correlation, threshold
     [10:20] footage_type one-hot
     [20:24] motion_model one-hot
-    [24:28] video features: mean_motion, zoom_divergence, distortion_factor, noise_ratio
+    [24:29] video features: mean_motion, zoom_divergence, distortion_factor, grain_noise, dynamic_area_ratio
     """
     meta = sample["clip_metadata"]
     settings = sample["settings"]
@@ -70,14 +110,15 @@ def extract_sample_features(sample: Dict[str, Any], video_meta: Dict[str, float]
     f_type_oh = get_one_hot(settings.get("footage_type", "AUTO"), FOOTAGE_TYPES)
     m_model_oh = get_one_hot(settings.get("motion_model", "LocRot"), MOTION_MODELS)
     
-    # 5. Video features (4)
+    # 5. Video features (5)
     if video_meta is None:
         video_meta = {}
     v_feats = [
         float(video_meta.get("mean_motion", 0.5)),
         float(video_meta.get("zoom_divergence", 0.0)),
         float(video_meta.get("distortion_factor", 0.0)),
-        float(video_meta.get("noise_ratio", 0.003))
+        float(video_meta.get("grain_noise", video_meta.get("noise_ratio", 0.003))),
+        float(video_meta.get("dynamic_area_ratio", 0.0))
     ]
     
     return clip_feats + switches + setting_feats + f_type_oh + m_model_oh + v_feats
@@ -240,21 +281,69 @@ def prepare_dataset(args):
                     meta = json.load(f)
                     c_name = meta.get("clip_name")
                     if c_name:
+                        # Compute dynamic_pixel_ratio if semantic features exist
+                        semantic_fp = os.path.join(args.data_dir, f"{c_name}_semantic_meta.json")
+                        meta["dynamic_area_ratio"] = 0.0
+                        if os.path.exists(semantic_fp):
+                            ratio = compute_dynamic_pixel_ratio(semantic_fp)
+                            if ratio is not None:
+                                meta["dynamic_area_ratio"] = ratio
                         video_meta_lookup[c_name] = meta
             except Exception as e:
                 print(f"Error loading video meta {fp}: {e}")
 
         # 2. Load actual solve sample JSONs if present
-        for f in os.listdir(args.data_dir):
-            if f.endswith('.json') and not f.endswith('_video_meta.json') and not f.endswith('settings_dataset.json'):
-                fp = os.path.join(args.data_dir, f)
-                try:
-                    with open(fp, 'r', encoding='utf-8') as fh:
-                        sample = json.load(fh)
-                        if isinstance(sample, dict) and "clip_metadata" in sample and "settings" in sample:
-                            real_samples.append(sample)
-                except Exception as e:
-                    print(f"Error loading solve sample {fp}: {e}")
+        base_files = [f for f in os.listdir(args.data_dir) if f.endswith('_base_trajectories.json')]
+        
+        if base_files:
+            print(f"Found {len(base_files)} base trajectory files. Simulating variations in-memory...")
+            try:
+                import sys
+                project_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if project_path not in sys.path:
+                    sys.path.append(project_path)
+                from ml.extract_cotracker_trajectories import simulate_variation
+            except ImportError as ie:
+                print(f"Warning: Failed to import simulate_variation: {ie}")
+                simulate_variation = None
+                
+            if simulate_variation:
+                for f in base_files:
+                    fp = os.path.join(args.data_dir, f)
+                    try:
+                        with open(fp, 'r', encoding='utf-8') as fh:
+                            base_data = json.load(fh)
+                        
+                        meta = base_data["clip_metadata"]
+                        base_trajectories = [t["positions"] for t in base_data["tracks"]]
+                        
+                        # Run the 5 preset simulations in-memory
+                        variations = [
+                            ("BALANCED", False, False),
+                            ("FAST", False, False),
+                            ("QUALITY", False, False),
+                            ("BALANCED", True, False),
+                            ("BALANCED", False, True),
+                        ]
+                        for quality, robust, tripod in variations:
+                            solve_sample = simulate_variation(base_trajectories, meta, quality, robust, tripod)
+                            real_samples.append(solve_sample)
+                    except Exception as e:
+                        print(f"Error processing base trajectories from {fp}: {e}")
+            else:
+                print("Could not import simulate_variation. Skipping base trajectories simulation.")
+        else:
+            # Fallback for old multi-file JSONs
+            for f in os.listdir(args.data_dir):
+                if is_solve_json(f):
+                    fp = os.path.join(args.data_dir, f)
+                    try:
+                        with open(fp, 'r', encoding='utf-8') as fh:
+                            sample = json.load(fh)
+                            if isinstance(sample, dict) and "clip_metadata" in sample and "settings" in sample:
+                                real_samples.append(sample)
+                    except Exception as e:
+                        print(f"Error loading solve sample {fp}: {e}")
 
     if real_samples:
         print(f"Loaded {len(real_samples)} actual solve samples from '{args.data_dir}'.")
@@ -314,22 +403,30 @@ def prepare_dataset(args):
         raise ValueError("Training set is empty. Cannot prepare dataset.")
         
     num_features = len(train_X[0])
-    means = [0.0] * num_features
-    stds = [1.0] * num_features
-    
-    num_samples = len(train_X)
-    for j in range(num_features):
-        # Indices 4, 5 (boolean switches) and 10:24 (one-hot vectors) should not be Z-score normalized
-        if j in (4, 5) or (10 <= j < 24):
-            means[j] = 0.0
-            stds[j] = 1.0
-            continue
-            
-        col_sum = sum(train_X[i][j] for i in range(num_samples))
-        means[j] = col_sum / num_samples
+    if NUMPY_AVAILABLE:
+        X_arr = np.array(train_X, dtype=np.float32)
+        means = X_arr.mean(axis=0).tolist()
+        stds = X_arr.std(axis=0)
+        stds[stds < 1e-8] = 1.0
+        stds = stds.tolist()
         
-        variance = sum((train_X[i][j] - means[j]) ** 2 for i in range(num_samples)) / num_samples
-        stds[j] = math.sqrt(variance) if variance > 1e-8 else 1.0
+        # Reset means/stds to 0.0/1.0 for binary/one-hot columns
+        for j in range(num_features):
+            if j in (4, 5) or (10 <= j < 24):
+                means[j] = 0.0
+                stds[j] = 1.0
+    else:
+        # Fallback manual loop
+        means = [0.0] * num_features
+        stds = [1.0] * num_features
+        num_samples = len(train_X)
+        for j in range(num_features):
+            if j in (4, 5) or (10 <= j < 24):
+                continue
+            col_sum = sum(train_X[i][j] for i in range(num_samples))
+            means[j] = col_sum / num_samples
+            variance = sum((train_X[i][j] - means[j]) ** 2 for i in range(num_samples)) / num_samples
+            stds[j] = math.sqrt(variance) if variance > 1e-8 else 1.0
         
     # Normalize datasets
     def normalize_X(X):
