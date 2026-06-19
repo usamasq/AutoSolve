@@ -19,8 +19,57 @@ from bpy.props import (
 from bpy.types import PropertyGroup
 
 
+def _on_python_path_update(self, context):
+    self.installer_state = 'IDLE'
+    self.installer_progress = ""
+    try:
+        from .ui import clear_status_cache
+        clear_status_cache()
+    except Exception:
+        pass
+
+
+def _on_use_external_worker_update(self, context):
+    if self.use_external_worker and not self.external_python_path:
+        try:
+            import bpy
+            bpy.ops.autosolve.detect_python('INVOKE_DEFAULT')
+        except Exception:
+            pass
+
+
+def _on_tracking_mode_update(self, context):
+    if self.tracking_mode == 'AI':
+        self.use_external_worker = True
+        self.tracking_backend = 'COTRACKER'
+        self.masking_backend = 'SAM2'
+        self.solving_backend = 'PRECISION'
+        if not self.external_python_path:
+            try:
+                import bpy
+                bpy.ops.autosolve.detect_python('INVOKE_DEFAULT')
+            except Exception:
+                pass
+    else:
+        self.use_external_worker = False
+        self.tracking_backend = 'NATIVE'
+        self.masking_backend = 'NONE'
+        self.solving_backend = 'NATIVE'
+
+
 class AutoSolveSettings(PropertyGroup):
     """Main settings for AutoSolve."""
+
+    tracking_mode: EnumProperty(
+        name="Tracking Mode",
+        description="Choose between Standard native tracking and Local AI-assisted tracking",
+        items=[
+            ('STANDARD', "Standard", "Fast native KLT tracking and solving. Zero setup required", 'TRACKING', 0),
+            ('AI', "AI-Assisted", "Local AI-assisted dense tracking, dynamic masking, and precision solving (runs entirely on your PC)", 'LIGHT', 1),
+        ],
+        default='STANDARD',
+        update=_on_tracking_mode_update,
+    )
     
     # ═══════════════════════════════════════════════════════════
     # SOLVER OPTIONS
@@ -58,9 +107,10 @@ class AutoSolveSettings(PropertyGroup):
     )
 
     use_external_worker: BoolProperty(
-        name="Use External Worker",
-        description="Use background out-of-process worker to run heavy PyTorch/SciPy tasks",
+        name="Use Advanced AI Features",
+        description="Use deep-learning models for dense tracking (CoTracker v3) and dynamic object masking",
         default=False,
+        update=_on_use_external_worker_update,
     )
 
     external_python_path: StringProperty(
@@ -68,6 +118,7 @@ class AutoSolveSettings(PropertyGroup):
         description="Path to system Python environment with PyTorch and SciPy (e.g. C:\\Python310\\python.exe)",
         default="",
         subtype='FILE_PATH',
+        update=_on_python_path_update,
     )
 
     installer_state: EnumProperty(
@@ -95,7 +146,7 @@ class AutoSolveSettings(PropertyGroup):
         description="Core tracking algorithm",
         items=[
             ('NATIVE', "Blender Native (KLT)", "Use Blender's built-in KLT feature tracker", 'TRACKING', 0),
-            ('COTRACKER', "CoTracker v3 (AI)", "Use Meta's CoTracker v3 deep learning model (requires CUDA/MPS)", 'NODE_INSERT', 1),
+            ('COTRACKER', "CoTracker v3 (AI)", "Use Meta's CoTracker v3 deep learning model (requires CUDA/MPS)", 'SYSTEM', 1),
         ],
         default='NATIVE',
     )
@@ -105,7 +156,7 @@ class AutoSolveSettings(PropertyGroup):
         description="Detect and ignore dynamic elements like moving people or vehicles during tracking",
         items=[
             ('NONE', "None", "Do not run dynamic masking", 'X', 0),
-            ('SAM2', "SAM 2 / YOLO (AI)", "Automatically mask out moving objects using YOLOv8 segmenter (requires GPU)", 'MOD_MASK', 1),
+            ('SAM2', "YOLO (AI)", "Automatically mask out moving objects using YOLOv8 segmenter (runs locally)", 'MOD_MASK', 1),
         ],
         default='NONE',
     )

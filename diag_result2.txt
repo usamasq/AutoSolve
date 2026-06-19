@@ -1,0 +1,36 @@
+Blender Python Diagnostic 2 Started
+sys.executable: C:\Program Files\WindowsApps\BlenderFoundation.Blender_5.1.2.0_x64__ppwjx1n5r4v9t\Blender\5.1\python\bin\python.exe
+Searching in: C:\Users\usama\AppData\Local\Programs\Python
+Candidates found: ['C:\\Users\\usama\\AppData\\Local\\Programs\\Python\\Python313\\python.exe', 'C:\\Users\\usama\\AppData\\Local\\Microsoft\\WindowsApps\\python3.EXE', 'C:\\Users\\usama\\AppData\\Local\\Microsoft\\WindowsApps\\python.EXE']
+
+Server script path: c:\Users\usama\OneDrive\Desktop\AutoSolve\autosolve\worker\server.py
+Server script exists: True
+
+=== Candidate: C:\Users\usama\AppData\Local\Programs\Python\Python313\python.exe ===
+  Basic execution: returncode=0
+  Basic stdout: 'OK\n'
+  Basic stderr: ''
+  File check execution: returncode=0
+  File check stdout: 'True\n'
+  File check stderr: ''
+  verify_python_environment result: READY
+
+=== Candidate: C:\Users\usama\AppData\Local\Microsoft\WindowsApps\python3.EXE ===
+  Basic execution: returncode=0
+  Basic stdout: 'OK\n'
+  Basic stderr: ''
+  File check execution: returncode=0
+  File check stdout: 'True\n'
+  File check stderr: ''
+  verify_python_environment result: READY
+
+=== Candidate: C:\Users\usama\AppData\Local\Microsoft\WindowsApps\python.EXE ===
+  Basic execution: returncode=0
+  Basic stdout: 'OK\n'
+  Basic stderr: ''
+  File check execution: returncode=0
+  File check stdout: 'True\n'
+  File check stderr: ''
+  verify_python_environment result: READY
+
+Blender Python Diagnostic 2 Completed

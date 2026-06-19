@@ -276,6 +276,10 @@ class LearningMixin:
                     
                 features_batch = np.array(features_list, dtype=np.float32)
                 
+                # Slice features to the 15 dimensions expected by the Track Predictor
+                if features_batch.ndim == 2 and features_batch.shape[1] > 15:
+                    features_batch = features_batch[:, :15]
+                
                 if hasattr(self.track_predictor, 'predict_track_survival'):
                     probs = self.track_predictor.predict_track_survival(features_batch)
                 else:

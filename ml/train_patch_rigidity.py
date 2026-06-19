@@ -338,15 +338,25 @@ def train_rigidity_model(args):
     print(f"Exporting model to ONNX: '{onnx_path}'...")
     dummy_input = torch.zeros(1, 1, 32, 32, dtype=torch.float32)
     
-    torch.onnx.export(
-        model,
-        dummy_input,
-        onnx_path,
-        input_names=["patch_pixels"],
-        output_names=["rigidity_score"],
-        opset_version=17,
-        dynamic_axes={"patch_pixels": {0: "batch"}, "rigidity_score": {0: "batch"}}
-    )
+    try:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            input_names=["patch_pixels"],
+            output_names=["rigidity_score"],
+            opset_version=17,
+            dynamic_axes={"patch_pixels": {0: "batch"}, "rigidity_score": {0: "batch"}}
+        )
+    except ModuleNotFoundError as e:
+        if "onnxscript" in str(e):
+            print("\n" + "=" * 80)
+            print("Error: Exporting to ONNX failed because 'onnxscript' is not installed.")
+            print("In newer versions of PyTorch (2.4+), exporting to ONNX requires the 'onnxscript' library.")
+            print("Please install it by running:")
+            print("    pip install onnxscript")
+            print("=" * 80 + "\n")
+        raise
     
     # Write meta JSON with normalization metadata
     meta = {

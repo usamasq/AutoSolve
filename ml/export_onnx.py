@@ -164,15 +164,25 @@ def export_settings_model(weights_path: str, out_dir: str) -> bool:
     onnx_path = os.path.join(out_dir, "settings_model.onnx")
     dummy_input = torch.zeros(1, 29, dtype=torch.float32)
 
-    torch.onnx.export(
-        model,
-        dummy_input,
-        onnx_path,
-        input_names=["clip_features"],
-        output_names=["reward"],
-        opset_version=17,
-        dynamic_axes={"clip_features": {0: "batch"}, "reward": {0: "batch"}},
-    )
+    try:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            input_names=["clip_features"],
+            output_names=["reward"],
+            opset_version=17,
+            dynamic_axes={"clip_features": {0: "batch"}, "reward": {0: "batch"}},
+        )
+    except ModuleNotFoundError as e:
+        if "onnxscript" in str(e):
+            print("\n" + "=" * 80)
+            print("Error: Exporting to ONNX failed because 'onnxscript' is not installed.")
+            print("In newer versions of PyTorch (2.4+), exporting to ONNX requires the 'onnxscript' library.")
+            print("Please install it by running:")
+            print("    pip install onnxscript")
+            print("=" * 80 + "\n")
+        raise
     print(f"   Exported → {onnx_path}")
 
     # Validate
@@ -245,15 +255,25 @@ def export_track_predictor(weights_path: str, out_dir: str) -> bool:
     onnx_path = os.path.join(out_dir, "track_predictor.onnx")
     dummy_input = torch.zeros(1, 20, dtype=torch.float32)
 
-    torch.onnx.export(
-        model,
-        dummy_input,
-        onnx_path,
-        input_names=["track_features"],
-        output_names=["survival_prob"],
-        opset_version=17,
-        dynamic_axes={"track_features": {0: "batch"}, "survival_prob": {0: "batch"}},
-    )
+    try:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            onnx_path,
+            input_names=["track_features"],
+            output_names=["survival_prob"],
+            opset_version=17,
+            dynamic_axes={"track_features": {0: "batch"}, "survival_prob": {0: "batch"}},
+        )
+    except ModuleNotFoundError as e:
+        if "onnxscript" in str(e):
+            print("\n" + "=" * 80)
+            print("Error: Exporting to ONNX failed because 'onnxscript' is not installed.")
+            print("In newer versions of PyTorch (2.4+), exporting to ONNX requires the 'onnxscript' library.")
+            print("Please install it by running:")
+            print("    pip install onnxscript")
+            print("=" * 80 + "\n")
+        raise
     print(f"   Exported → {onnx_path}")
 
     # Validate

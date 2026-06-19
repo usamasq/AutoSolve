@@ -186,8 +186,8 @@ def export_defaults(args):
                 f_type_oh = get_one_hot(f_type, FOOTAGE_TYPES)
                 m_model_oh = get_one_hot(cand["motion_model"], MOTION_MODELS)
                 
-                # 5. Video features (4) (using average representative values matching training metadata)
-                v_feats = [0.5, 0.0, 0.0, 0.003] # mean_motion, zoom_divergence, distortion_factor, noise_ratio
+                # 5. Video features (5) (using average representative values matching training metadata)
+                v_feats = [0.5, 0.0, 0.0, 0.003, 0.0] # mean_motion, zoom_divergence, distortion_factor, noise_ratio, dynamic_area_ratio
                 if f_type == "ACTION":
                     v_feats[0] = 3.5
                 elif f_type == "DRONE":

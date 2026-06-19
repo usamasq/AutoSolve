@@ -253,6 +253,11 @@ class ProbeCacheMixin:
             
             markers_sorted = sorted(markers, key=lambda m: m.frame)
             
+            # Calculate region early to avoid referencing stale/leaked loop variables
+            avg_x = sum(m.co.x for m in markers_sorted) / len(markers_sorted)
+            avg_y = sum(m.co.y for m in markers_sorted) / len(markers_sorted)
+            region = get_region(avg_x, avg_y)
+            
             # Calculate velocity
             total_displacement = 0
             for i in range(1, len(markers_sorted)):
@@ -284,10 +289,6 @@ class ProbeCacheMixin:
                     region_success[region].setdefault('velocities', []).append(avg_velocity)
             
             # Track region success
-            avg_x = sum(m.co.x for m in markers_sorted) / len(markers_sorted)
-            avg_y = sum(m.co.y for m in markers_sorted) / len(markers_sorted)
-            region = get_region(avg_x, avg_y)
-            
             lifespan = len(markers_sorted)
             if region not in region_success:
                 region_success[region] = {'total': 0, 'success': 0, 'jitters': [], 'velocities': []}

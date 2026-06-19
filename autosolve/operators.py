@@ -160,6 +160,12 @@ class AUTOSOLVE_OT_run_solve(Operator):
         if abs(scene_fps - clip_fps) > 0.1:
             self.report({'WARNING'}, f"Framerate mismatch! Scene: {scene_fps:.2f} FPS, Clip: {clip_fps:.2f} FPS. Consider matching scene FPS or transcoding clip to Constant Frame Rate to prevent drift.")
         
+        # Check for image sequence source block if AI backend is enabled
+        if settings.use_external_worker and clip.source == 'SEQUENCE':
+            if settings.tracking_backend == 'COTRACKER' or settings.masking_backend == 'SAM2':
+                self.report({'ERROR'}, "AI tracking (CoTracker) and masking (YOLO) require a movie file clip. Please use Blender Native tracking or transcode your sequence.")
+                return {'CANCELLED'}
+        
         from .tracker.smart_tracker import SmartTracker, sync_scene_to_clip
         
         robust = getattr(settings, 'robust_mode', False)
@@ -246,7 +252,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     self.report({'ERROR'}, f"Validation failed: {'; '.join(issues)}")
                     return self._finish(context, success=False)
                 
-                # Route to external AI worker if enabled
+                # Route to local AI service if enabled
                 if settings.use_external_worker:
                     python_path = settings.external_python_path
                     if not python_path:
@@ -256,7 +262,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                             settings.external_python_path = python_path
                             self.report({'INFO'}, f"Auto-detected Python path: {python_path}")
                         else:
-                            self.report({'ERROR'}, "Failed to start External AI Worker: Python path not specified.")
+                            self.report({'ERROR'}, "Failed to start Local AI Service: Python path not specified.")
                             return self._finish(context, success=False)
                             
                     from .worker.client import check_dependencies
@@ -269,7 +275,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     if not is_port_in_use():
                         success, msg = start_worker(python_path)
                         if not success:
-                            self.report({'ERROR'}, f"Failed to start External AI Worker: {msg}")
+                            self.report({'ERROR'}, f"Failed to start Local AI Service: {msg}")
                             return self._finish(context, success=False)
                             
                     if settings.masking_backend == 'SAM2':
@@ -277,7 +283,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         send_worker_command_async("sam2_mask", {"video_path": bpy.path.abspath(clip.filepath)})
                         _state.phase = 'WAITING_FOR_WORKER_MASK'
                         _state.request_start_time = time.time()
-                        settings.solve_status = "Waiting for SAM 2 Dynamic Masking..."
+                        settings.solve_status = "Waiting for YOLO Dynamic Masking..."
                         settings.solve_progress = 0.04
                         if context.area:
                             context.area.tag_redraw()
@@ -309,19 +315,19 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 return {'RUNNING_MODAL'}
             
             # ═══════════════════════════════════════════════════════════════
-            # PHASE: WAITING FOR SAM2 MASK
+            # PHASE: WAITING FOR DYNAMIC MASK
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'WAITING_FOR_WORKER_MASK':
                 import time
                 if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
                     from .worker.client import kill_worker
                     kill_worker()
-                    self.report({'ERROR'}, "SAM2 Masking timed out after 90 seconds. Aborting.")
+                    self.report({'ERROR'}, "YOLO Masking timed out after 90 seconds. Aborting.")
                     return self._finish(context, success=False)
                 completed, result, error = poll_request_status()
                 if completed:
                     if error:
-                        self.report({'ERROR'}, f"SAM2 Masking Error: {error}")
+                        self.report({'ERROR'}, f"YOLO Masking Error: {error}")
                         return self._finish(context, success=False)
                     
                     _state.sam2_masks = result.get("masks", {})
@@ -404,7 +410,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                                 if len(truncated_traj) >= tracker.min_lifespan:
                                     filtered_trajectories.append(truncated_traj)
                         
-                        print(f"AutoSolve: SAM2 Masking filtered out {len(trajectories) - len(filtered_trajectories)} of {len(trajectories)} trajectories.")
+                        print(f"AutoSolve: YOLO Masking filtered out {len(trajectories) - len(filtered_trajectories)} of {len(trajectories)} trajectories.")
                         trajectories = filtered_trajectories
                     
                     tracker.import_external_trajectories(trajectories, meta)
@@ -1607,7 +1613,7 @@ class AUTOSOLVE_OT_resolve(Operator):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NEURAL ENGINE — ONNX OPERATORS
+# LOCAL AI ASSISTANT OPERATORS
 # ═══════════════════════════════════════════════════════════════════════════
 
 class AUTOSOLVE_OT_install_onnx(bpy.types.Operator):
@@ -1615,7 +1621,7 @@ class AUTOSOLVE_OT_install_onnx(bpy.types.Operator):
     that do not support bundled extension wheels."""
 
     bl_idname  = "autosolve.install_onnx"
-    bl_label   = "Install Neural Engine"
+    bl_label   = "Install AI Assistant"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1632,7 +1638,7 @@ class AUTOSOLVE_OT_install_onnx(bpy.types.Operator):
             if success:
                 self.report({'INFO'},
                     "AutoSolve: onnxruntime installed! "
-                    "Restart Blender once to activate neural net inference.")
+                    "Restart Blender once to activate local AI assistant.")
             else:
                 self.report({'WARNING'},
                     "AutoSolve: Installation failed — check System Console for details.")
@@ -1644,10 +1650,10 @@ class AUTOSOLVE_OT_install_onnx(bpy.types.Operator):
 
 
 class AUTOSOLVE_OT_check_turbo_status(bpy.types.Operator):
-    """Refresh the Neural Engine status panel."""
+    """Refresh the Local AI Assistant status panel."""
 
     bl_idname  = "autosolve.check_turbo_status"
-    bl_label   = "Refresh Neural Engine Status"
+    bl_label   = "Refresh AI Assistant Status"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -1659,15 +1665,15 @@ class AUTOSOLVE_OT_check_turbo_status(bpy.types.Operator):
                 track_ok    = predictor.track_model_available
                 settings_ok = predictor.settings_model_available
                 self.report({'INFO'},
-                    f"Neural Engine: onnxruntime {version} | "
-                    f"Track model: {'loaded' if track_ok else 'missing'} | "
-                    f"Settings model: {'loaded' if settings_ok else 'missing'}")
+                    f"AI Assistant: onnxruntime {version} | "
+                    f"Tracking Predictor: {'Active' if track_ok else 'Missing'} | "
+                    f"Settings Optimizer: {'Active' if settings_ok else 'Missing'}")
             else:
                 self.report({'WARNING'},
-                    "Neural Engine: onnxruntime not found. "
+                    "AI Assistant: onnxruntime not found. "
                     "Reinstall the addon or check System Console.")
         except Exception as e:
-            self.report({'ERROR'}, f"Neural Engine status error: {e}")
+            self.report({'ERROR'}, f"AI Assistant status error: {e}")
 
         return {'FINISHED'}
 
@@ -1721,6 +1727,11 @@ class AUTOSOLVE_OT_install_deps(bpy.types.Operator):
                 if success:
                     settings.installer_state = 'SUCCESS'
                     self.report({'INFO'}, "AI dependencies installed successfully!")
+                    try:
+                        from .ui import clear_status_cache
+                        clear_status_cache()
+                    except Exception:
+                        pass
                 else:
                     settings.installer_state = 'FAILED'
                     self.report({'ERROR'}, f"AI Installation failed: {message}")
@@ -1774,9 +1785,9 @@ class AUTOSOLVE_OT_install_deps(bpy.types.Operator):
 
 
 class AUTOSOLVE_OT_start_worker(bpy.types.Operator):
-    """Start the background external AI worker process."""
+    """Start the background local AI service process."""
     bl_idname = "autosolve.start_worker"
-    bl_label = "Start External AI Worker"
+    bl_label = "Start Local AI Service"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -1791,7 +1802,7 @@ class AUTOSOLVE_OT_start_worker(bpy.types.Operator):
                 settings.external_python_path = python_path
                 self.report({'INFO'}, f"Auto-detected Python path: {python_path}")
             else:
-                self.report({'ERROR'}, "Please specify/detect the External Python Path first.")
+                self.report({'ERROR'}, "Please specify/detect the Local Python Path first.")
                 return {'CANCELLED'}
             
         from .worker.client import check_dependencies, start_worker
@@ -1803,23 +1814,33 @@ class AUTOSOLVE_OT_start_worker(bpy.types.Operator):
             
         success, msg = start_worker(python_path)
         if success:
-            self.report({'INFO'}, f"AutoSolve Worker started: {msg}")
+            self.report({'INFO'}, f"Local AI Service started: {msg}")
+            try:
+                from .ui import clear_status_cache
+                clear_status_cache()
+            except Exception:
+                pass
         else:
-            self.report({'ERROR'}, f"Failed to start Worker: {msg}")
+            self.report({'ERROR'}, f"Failed to start Local AI Service: {msg}")
             
         return {'FINISHED'}
 
 
 class AUTOSOLVE_OT_stop_worker(bpy.types.Operator):
-    """Stop the background external AI worker process."""
+    """Stop the background local AI service process."""
     bl_idname = "autosolve.stop_worker"
-    bl_label = "Stop External AI Worker"
+    bl_label = "Stop Local AI Service"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         from .worker.client import stop_worker
         stop_worker()
-        self.report({'INFO'}, "AutoSolve Worker stopped.")
+        self.report({'INFO'}, "Local AI Service stopped.")
+        try:
+            from .ui import clear_status_cache
+            clear_status_cache()
+        except Exception:
+            pass
         return {'FINISHED'}
 
 

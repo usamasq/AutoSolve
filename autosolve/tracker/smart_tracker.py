@@ -454,10 +454,18 @@ class SmartTracker(
         Import CoTracker trajectories as native Blender tracking markers.
         """
         # Clear non-locked tracks to start fresh
-        for track in list(self.tracking.tracks):
+        any_selected = False
+        for track in self.tracking.tracks:
             if hasattr(track, 'lock') and track.lock:
-                continue
-            self.tracking.tracks.remove(track)
+                track.select = False
+            else:
+                track.select = True
+                any_selected = True
+        if any_selected:
+            try:
+                self._run_ops(bpy.ops.clip.delete_track)
+            except Exception as e:
+                print(f"AutoSolve: Error clearing tracks before import: {e}")
             
         print(f"AutoSolve: Importing {len(trajectories)} external trajectories...")
         

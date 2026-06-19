@@ -181,6 +181,278 @@ class AUTOSOLVE_PT_main_panel(Panel):
 
 
 
+import threading
+import time
+
+# Worker status cache
+_last_worker_check = 0.0
+_cached_port_in_use = False
+_cached_ping_status = {"ok": False, "error": "Offline"}
+_is_checking_worker = False
+_worker_check_thread = None
+
+# Dependency verification cache/thread
+_dep_check_thread = None
+_dep_check_result = None  # None, "CHECKING", "READY", "MISSING", "MS_STORE_PYTHON", "INVALID_PATH", "NOT_FUNCTIONAL"
+_dep_check_path = None
+
+def check_worker_status_async(force=False):
+    global _worker_check_thread, _last_worker_check, _is_checking_worker
+    
+    now = time.time()
+    if not force and (now - _last_worker_check < 3.0):
+        return
+        
+    if _is_checking_worker:
+        return
+        
+    _is_checking_worker = True
+    _last_worker_check = now
+    
+    def target():
+        global _cached_port_in_use, _cached_ping_status, _is_checking_worker
+        try:
+            from .worker.client import is_port_in_use, ping_worker
+            port_in_use = is_port_in_use()
+            if port_in_use:
+                ping_status = ping_worker()
+            else:
+                ping_status = {"ok": False, "error": "Offline"}
+            
+            _cached_port_in_use = port_in_use
+            _cached_ping_status = ping_status
+        except Exception as e:
+            _cached_port_in_use = False
+            _cached_ping_status = {"ok": False, "error": str(e)}
+        finally:
+            _is_checking_worker = False
+            
+    _worker_check_thread = threading.Thread(target=target, daemon=True)
+    _worker_check_thread.start()
+
+def check_dependencies_async(python_path):
+    global _dep_check_thread, _dep_check_result, _dep_check_path
+    if _dep_check_thread and _dep_check_thread.is_alive():
+        return
+    
+    _dep_check_path = python_path
+    _dep_check_result = "CHECKING"
+    
+    def target():
+        global _dep_check_result
+        try:
+            from .worker.client import verify_python_environment
+            _dep_check_result = verify_python_environment(python_path)
+        except Exception:
+            _dep_check_result = "MISSING"
+            
+    _dep_check_thread = threading.Thread(target=target, daemon=True)
+    _dep_check_thread.start()
+
+def clear_status_cache():
+    global _last_worker_check, _dep_check_result, _dep_check_path, _cached_port_in_use, _cached_ping_status
+    _last_worker_check = 0.0
+    _cached_port_in_use = False
+    _cached_ping_status = {"ok": False, "error": "Offline"}
+    _dep_check_result = None
+    _dep_check_path = None
+
+
+def _draw_tracking_settings(layout, settings, context):
+    # Tracking Mode Toggle (Large and Prominent Box)
+    toggle_box = layout.box()
+    row = toggle_box.row(align=True)
+    row.scale_y = 1.5
+    row.prop(settings, "tracking_mode", expand=True)
+    
+    # Core settings
+    col = layout.column(align=True)
+    row = col.row(align=True)
+    row.prop(settings, "quality_preset", text="")
+    row.prop(settings, "footage_type", text="")
+    
+    row = col.row(align=True)
+    row.prop(settings, "tripod_mode", toggle=True, text="Tripod")
+    row.prop(settings, "robust_mode", toggle=True, text="Robust")
+    row.prop(settings, "batch_tracking", toggle=True, text="Batch")
+    
+    # Inline Local AI Setup card (only shows in AI mode)
+    if settings.tracking_mode == 'AI':
+        # Trigger non-blocking check
+        check_worker_status_async()
+        port_in_use = _cached_port_in_use
+        
+        worker_connected = False
+        device_str = "CPU"
+        if port_in_use:
+            status = _cached_ping_status
+            if status.get("ok"):
+                worker_connected = True
+                device_str = "GPU" if status.get("cuda") else "CPU"
+                
+        try:
+            from .tracker.onnx_predictor import is_onnx_installed
+            onnx_installed = is_onnx_installed()
+        except Exception:
+            onnx_installed = False
+            
+        ai_box = layout.box()
+        ai_box.label(text="Local AI Environment", icon='SYSTEM')
+        
+        # 1. ONNX Optimizer Engine
+        onnx_row = ai_box.row(align=True)
+        if onnx_installed:
+            onnx_row.label(text="Local Optimizer: Ready", icon='CHECKMARK')
+        else:
+            onnx_row.label(text="Local Optimizer: Not Installed", icon='ERROR')
+            onnx_row.operator("autosolve.install_onnx", text="Install Engine", icon='IMPORT')
+            
+        # 2. PyTorch Precision/Tracking Service
+        py_row = ai_box.row(align=True)
+        py_row.prop(settings, "external_python_path", text="Python Path")
+        py_row.operator("autosolve.detect_python", text="Auto-Detect", icon='ZOOM_ALL')
+        
+        state = settings.installer_state
+        progress_msg = settings.installer_progress
+        
+        status_box = ai_box.box()
+        if state == 'INSTALLING':
+            status_box.label(text="Status: Installing AI Packages...", icon='PREVIEW_LOADING')
+            col_p = status_box.column(align=True)
+            col_p.label(text=progress_msg or "Starting installation...", icon='INFO')
+            col_p.label(text="Please wait - this will not freeze Blender.", icon='INFO')
+        elif worker_connected:
+            status_box.label(text=f"Status: Connected ({device_str})", icon='CHECKMARK')
+            status_box.operator("autosolve.stop_worker", text="Stop Local AI Service", icon='CANCEL')
+        else:
+            if settings.external_python_path:
+                if _dep_check_path != settings.external_python_path or _dep_check_result is None:
+                    check_dependencies_async(settings.external_python_path)
+                    
+                if _dep_check_result == "CHECKING":
+                    status_box.label(text="Status: Verifying environment...", icon='PREVIEW_LOADING')
+                elif _dep_check_result == "READY":
+                    status_box.label(text="Status: Local AI Service Ready", icon='CHECKMARK')
+                    status_box.label(text="Will start automatically when tracking is run.", icon='INFO')
+                    status_box.operator("autosolve.start_worker", text="Start AI Service Manually", icon='PLAY')
+                elif _dep_check_result == "MS_STORE_PYTHON":
+                    warn_box = status_box.box()
+                    warn_box.alert = True
+                    col_w = warn_box.column(align=True)
+                    
+                    import sys
+                    if sys.platform.startswith('linux'):
+                        col_w.label(text="Unsupported Environment (Sandboxed Blender)", icon='ERROR')
+                        col_w.separator()
+                        col_w.label(text="Why: Blender is running in a Snap or Flatpak sandbox,", icon='INFO')
+                        col_w.label(text="     which blocks it from executing external Python processes.")
+                        col_w.separator()
+                        col_w.label(text="How to fix:")
+                        col_w.label(text="1. Uninstall the Snap/Flatpak version of Blender.")
+                        col_w.label(text="2. Download the standard portable (.tar.xz) from blender.org.")
+                        col_w.label(text="3. Extract and run that standard version of Blender.")
+                        col_w.separator()
+                        op = col_w.operator("wm.url_open", text="Download Blender (blender.org)", icon='URL')
+                        op.url = "https://www.blender.org/download/"
+                    elif sys.platform == 'darwin':
+                        col_w.label(text="Unsupported Python (Sandboxed / Restricted)", icon='ERROR')
+                        col_w.separator()
+                        col_w.label(text="Why: Blender is sandboxed or the selected Python copy", icon='INFO')
+                        col_w.label(text="     lacks permission to access Blender's addon directory.")
+                        col_w.separator()
+                        col_w.label(text="How to fix:")
+                        col_w.label(text="1. Ensure standard Python is installed from python.org or Homebrew.")
+                        col_w.label(text="2. If using App Store Blender, download standard Blender from blender.org.")
+                        col_w.separator()
+                        op = col_w.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
+                        op.url = "https://www.python.org/downloads/"
+                    else:
+                        col_w.label(text="Unsupported Python (Microsoft Store)", icon='ERROR')
+                        col_w.separator()
+                        col_w.label(text="Why: Microsoft Store Python runs in a restricted sandbox", icon='INFO')
+                        col_w.label(text="     and is blocked by Windows from loading Blender addon files.")
+                        col_w.separator()
+                        col_w.label(text="How to fix:")
+                        col_w.label(text="1. Click 'Download Python' below to get standard Python.")
+                        col_w.label(text="2. Install Python (version 3.10 to 3.12 recommended).")
+                        col_w.label(text="3. CRITICAL: Check 'Add python.exe to PATH' in the installer.")
+                        col_w.label(text="4. Click 'Auto-Detect' above to locate standard Python.")
+                        col_w.separator()
+                        op = col_w.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
+                        op.url = "https://www.python.org/downloads/"
+                elif _dep_check_result == "INVALID_PATH":
+                    status_box.label(text="Status: Python path not found.", icon='ERROR')
+                    status_box.separator()
+                    help_box = status_box.box()
+                    col_h = help_box.column(align=True)
+                    col_h.label(text="Please ensure standard Python is installed:", icon='INFO')
+                    col_h.label(text="- Standard Python (3.10-3.12) is recommended.")
+                    col_h.label(text="- Run the installer and check 'Add python.exe to PATH'.")
+                    col_h.separator()
+                    op = col_h.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
+                    op.url = "https://www.python.org/downloads/"
+                elif _dep_check_result == "NOT_FUNCTIONAL":
+                    status_box.label(text="Status: Python is not functional.", icon='ERROR')
+                    status_box.separator()
+                    help_box = status_box.box()
+                    col_h = help_box.column(align=True)
+                    col_h.label(text="Python installation is broken or restricted.", icon='ERROR')
+                    col_h.label(text="Please reinstall standard Python from python.org:")
+                    col_h.separator()
+                    op = col_h.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
+                    op.url = "https://www.python.org/downloads/"
+                else: # "MISSING" or None
+                    status_box.label(text="Status: AI Packages Missing (approx. 150MB)", icon='QUESTION')
+                    status_box.operator("autosolve.install_deps", text="Install AI Packages", icon='IMPORT')
+            else:
+                status_box.label(text="Status: Python path not specified", icon='QUESTION')
+                status_box.label(text="Click 'Auto-Detect' above to locate Python.", icon='INFO')
+                status_box.separator()
+                
+                help_box = status_box.box()
+                col_h = help_box.column(align=True)
+                col_h.label(text="How to set up Local AI:", icon='HELP')
+                col_h.label(text="- Standard Python (3.10-3.12) must be installed on your PC.")
+                col_h.label(text="- Click 'Auto-Detect' to scan common paths automatically.")
+                col_h.label(text="- If not found, download and install standard Python.")
+                col_h.label(text="  (Make sure to check 'Add python.exe to PATH' in installer)")
+                col_h.separator()
+                op = col_h.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
+                op.url = "https://www.python.org/downloads/"
+                
+        if state == 'FAILED':
+            status_box.separator()
+            status_box.label(text="Last Installation Failed", icon='ERROR')
+            if progress_msg:
+                status_box.label(text=f"Info: {progress_msg}")
+            status_box.operator("autosolve.install_deps", text="Retry Installation", icon='IMPORT')
+            
+        # 3. Active Backends
+        backends_active = worker_connected or (settings.external_python_path and _dep_check_result == "READY")
+        backend_box = ai_box.box()
+        backend_box.label(text="Active Backends:", icon='PREFERENCES')
+        col_b = backend_box.column(align=True)
+        col_b.active = bool(backends_active)
+        col_b.prop(settings, "tracking_backend", text="Tracking")
+        col_b.prop(settings, "masking_backend", text="Masking")
+        col_b.prop(settings, "solving_backend", text="Solving")
+        
+        if not backends_active:
+            info_row = backend_box.row()
+            info_row.label(text="Verify Python/packages above to activate backends.", icon='INFO')
+            
+        # Image sequence warning
+        clip = context.edit_movieclip
+        if clip and clip.source == 'SEQUENCE':
+            if settings.tracking_backend == 'COTRACKER' or settings.masking_backend == 'SAM2':
+                warn_box = ai_box.box()
+                warn_box.alert = True
+                col_warn = warn_box.column(align=True)
+                col_warn.label(text="Image Sequence Warning", icon='ERROR')
+                col_warn.label(text="AI tracking/masking backends only support movie files.")
+                col_warn.label(text="Please use Native tracking or transcode clip.")
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PHASE 1: TRACKING
 # ═══════════════════════════════════════════════════════════════════════════
@@ -250,15 +522,7 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             
             # Settings
             outer_box.label(text="Settings:", icon='PREFERENCES')
-            col = outer_box.column(align=True)
-            row = col.row(align=True)
-            row.prop(settings, "quality_preset", text="")
-            row.prop(settings, "footage_type", text="")
-            
-            row = col.row(align=True)
-            row.prop(settings, "tripod_mode", toggle=True, text="Tripod")
-            row.prop(settings, "robust_mode", toggle=True, text="Robust")
-            row.prop(settings, "batch_tracking", toggle=True, text="Batch")
+            _draw_tracking_settings(outer_box, settings, context)
         
         else:
             # ══════════════════════════════════════════════
@@ -278,15 +542,7 @@ class AUTOSOLVE_PT_phase1_tracking(Panel):
             
             # Redo section
             outer_box.label(text="Not satisfied?", icon='LOOP_BACK')
-            col = outer_box.column(align=True)
-            row = col.row(align=True)
-            row.prop(settings, "quality_preset", text="")
-            row.prop(settings, "footage_type", text="")
-            
-            row = col.row(align=True)
-            row.prop(settings, "tripod_mode", toggle=True, text="Tripod")
-            row.prop(settings, "robust_mode", toggle=True, text="Robust")
-            row.prop(settings, "batch_tracking", toggle=True, text="Batch")
+            _draw_tracking_settings(outer_box, settings, context)
             
             row = outer_box.row(align=True)
             row.scale_y = 1.4
@@ -516,182 +772,6 @@ class AUTOSOLVE_PT_phase3_refine(Panel):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NEURAL ENGINE PANEL
-# ═══════════════════════════════════════════════════════════════════════════
-
-class AUTOSOLVE_PT_turbo_mode(Panel):
-    """Neural Engine — ONNX inference bundled automatically with the addon."""
-
-    bl_label       = "Neural Engine"
-    bl_idname      = "AUTOSOLVE_PT_turbo_mode"
-    bl_space_type  = 'CLIP_EDITOR'
-    bl_region_type = 'TOOLS'
-    bl_category    = "AutoSolve"
-    bl_parent_id   = "AUTOSOLVE_PT_main_panel"
-    bl_options     = {'DEFAULT_CLOSED'}
-
-    @classmethod
-    def poll(cls, context):
-        return context.edit_movieclip is not None
-
-    def draw_header(self, context):
-        try:
-            from .tracker.onnx_predictor import is_onnx_installed
-            icon = 'RADIOBUT_ON' if is_onnx_installed() else 'RADIOBUT_OFF'
-        except Exception:
-            icon = 'RADIOBUT_OFF'
-        self.layout.label(text="", icon=icon)
-
-    def draw(self, context):
-        layout = self.layout
-        box    = layout.box()
-
-        try:
-            from .tracker.onnx_predictor import (
-                is_onnx_installed, get_onnx_version, OnnxPredictor
-            )
-            onnx_ok = is_onnx_installed()
-        except Exception:
-            onnx_ok = False
-
-        if onnx_ok:
-            version     = get_onnx_version()
-            predictor   = OnnxPredictor.get_instance()
-            track_ok    = predictor.track_model_available
-            settings_ok = predictor.settings_model_available
-            all_ok      = track_ok and settings_ok
-
-            box.label(
-                text=f"onnxruntime {version} — {'fully armed' if all_ok else 'engine ready'}",
-                icon='CHECKMARK' if all_ok else 'INFO'
-            )
-            box.separator(factor=0.5)
-
-            col = box.column(align=True)
-            col.scale_y = 0.8
-            col.label(
-                text=f"Track model:    {'loaded ✓' if track_ok    else 'missing'}",
-                icon='TRACKING'
-            )
-            col.label(
-                text=f"Settings model: {'loaded ✓' if settings_ok else 'missing'}",
-                icon='PREFERENCES'
-            )
-
-            if not all_ok:
-                box.separator(factor=0.5)
-                col2 = box.column(align=True)
-                col2.scale_y = 0.75
-                col2.label(text="To load/train models:", icon='INFO')
-                col2.label(text="1. Run ml/AutoSolve_Training.ipynb")
-                col2.label(text="2. Models will copy to tracker/models/")
-
-            box.separator(factor=0.5)
-            box.operator("autosolve.check_turbo_status", text="Refresh", icon='FILE_REFRESH')
-
-
-
-        else:
-            # onnxruntime wheel didn't load — unusual since it's bundled with the addon
-            box.label(text="onnxruntime not loaded", icon='ERROR')
-            col = box.column(align=True)
-            col.scale_y = 0.8
-            col.label(text="The bundled wheel failed to import.", icon='INFO')
-            col.label(text="Try reinstalling the addon, or check")
-            col.label(text="Window > System Console for details.")
-
-
-class AUTOSOLVE_PT_external_worker(Panel):
-    """Configuration for out-of-process deep learning worker."""
-    
-    bl_label = "External AI Worker"
-    bl_idname = "AUTOSOLVE_PT_external_worker"
-    bl_space_type = 'CLIP_EDITOR'
-    bl_region_type = 'TOOLS'
-    bl_category = "AutoSolve"
-    bl_parent_id = "AUTOSOLVE_PT_main_panel"
-    bl_order = 10
-    bl_options = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        settings = context.scene.autosolve
-        
-        # Check connection status
-        from .worker.client import ping_worker, is_port_in_use
-        port_in_use = is_port_in_use()
-        
-        box = layout.box()
-        box.prop(settings, "use_external_worker", text="Use External AI Worker")
-        
-        if settings.use_external_worker:
-            box.separator()
-            
-            # Step 1: Python environment
-            env_box = box.box()
-            env_box.label(text="1. Python Environment Setup", icon='PROPERTIES')
-            row = env_box.row(align=True)
-            row.prop(settings, "external_python_path", text="Executable")
-            row.operator("autosolve.detect_python", text="Auto-Detect", icon='ZOOM_ALL')
-            
-            # Step 2: Package installation
-            pkg_box = box.box()
-            pkg_box.label(text="2. Deep Learning Dependencies", icon='NODE_INSERT')
-            
-            state = settings.installer_state
-            progress_msg = settings.installer_progress
-            
-            if state == 'IDLE':
-                # Self-verify if they are actually installed already
-                from .worker.client import check_dependencies
-                if settings.external_python_path and check_dependencies(settings.external_python_path):
-                    settings.installer_state = 'SUCCESS'
-                    pkg_box.label(text="AI Packages: Ready & Verified", icon='CHECKMARK')
-                    pkg_box.operator("autosolve.install_deps", text="Update AI Packages", icon='FILE_REFRESH')
-                else:
-                    pkg_box.label(text="AI Packages: Missing or Unchecked", icon='QUESTION')
-                    pkg_box.operator("autosolve.install_deps", text="Install AI Packages (One-Click)", icon='IMPORT')
-            elif state == 'INSTALLING':
-                pkg_box.label(text="Status: Installing...", icon='LOAD_FACTOR')
-                col = pkg_box.column(align=True)
-                col.label(text=progress_msg or "Starting installation...", icon='INFO')
-                col.label(text="Please wait - this will not freeze Blender.", icon='RADIOACTIVE')
-            elif state == 'SUCCESS':
-                pkg_box.label(text="AI Packages: Ready & Verified", icon='CHECKMARK')
-                pkg_box.operator("autosolve.install_deps", text="Update AI Packages", icon='FILE_REFRESH')
-            elif state == 'FAILED':
-                pkg_box.label(text="Status: Installation Failed", icon='ERROR')
-                if progress_msg:
-                    pkg_box.label(text=f"Info: {progress_msg}")
-                pkg_box.operator("autosolve.install_deps", text="Retry Installation", icon='IMPORT')
-                
-            # Step 3: Worker process control
-            worker_box = box.box()
-            worker_box.label(text="3. External Worker Status", icon='SYSTEM')
-            row = worker_box.row()
-            if port_in_use:
-                status = ping_worker()
-                if status.get("ok"):
-                    device_str = "GPU" if status.get("cuda") else "CPU"
-                    row.label(text=f"Connected ({device_str})", icon='CHECKMARK')
-                    row.operator("autosolve.stop_worker", text="Stop Worker", icon='CANCEL')
-                    
-                    # Backend selection
-                    worker_box.separator()
-                    worker_box.label(text="Active Backends:", icon='PREFERENCES')
-                    col = worker_box.column(align=True)
-                    col.prop(settings, "tracking_backend", text="Tracking")
-                    col.prop(settings, "masking_backend", text="Masking")
-                    col.prop(settings, "solving_backend", text="Solving")
-                else:
-                    row.label(text="Binding Error", icon='ERROR')
-                    row.operator("autosolve.start_worker", text="Restart Worker", icon='FILE_REFRESH')
-            else:
-                row.label(text="Offline", icon='OFF')
-                row.operator("autosolve.start_worker", text="Start AI Worker", icon='PLAY')
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # REGISTRATION
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -701,8 +781,6 @@ classes = (
     AUTOSOLVE_PT_region_tools,
     AUTOSOLVE_PT_phase2_scene,
     AUTOSOLVE_PT_phase3_refine,
-    AUTOSOLVE_PT_turbo_mode,
-    AUTOSOLVE_PT_external_worker,
 )
 
 

@@ -684,7 +684,7 @@ class TrackHealer:
                 return False
             
             # Interpolate positions
-            positions = self.interpolate_with_anchors(candidate, anchors)
+            positions = self.interpolate_with_anchors(candidate, anchors, tracking)
             
             # Insert markers
             gap_start = candidate.track_a_end_frame
@@ -706,7 +706,7 @@ class TrackHealer:
                 if t.name == candidate.track_b_name:
                     track_b = t
                     break
-
+            
             # Merge track_b into track_a and delete track_b
             if track_b:
                 for marker_b in track_b.markers:
@@ -717,7 +717,36 @@ class TrackHealer:
                     marker_a.co = marker_b.co
                     marker_a.mute = marker_b.mute
 
-                tracking.tracks.remove(track_b)
+                # Deselect all tracks first
+                for t in tracking.tracks:
+                    t.select = False
+                
+                # Select track_b
+                track_b.select = True
+                
+                # Run operator to delete track_b
+                override = {}
+                for window in bpy.context.window_manager.windows:
+                    screen = window.screen
+                    for area in screen.areas:
+                        if area.type == 'CLIP_EDITOR':
+                            for region in area.regions:
+                                if region.type == 'WINDOW':
+                                    override = {
+                                        'window': window,
+                                        'screen': screen,
+                                        'area': area,
+                                        'region': region,
+                                        'scene': bpy.context.scene,
+                                        'workspace': bpy.context.workspace,
+                                    }
+                                    break
+                
+                if override:
+                    with bpy.context.temp_override(**override):
+                        bpy.ops.clip.delete_track()
+                else:
+                    bpy.ops.clip.delete_track()
             
             print(f"AutoSolve: Healed gap {candidate.track_a_name} → {candidate.track_b_name} "
                   f"({candidate.gap_frames} frames)")

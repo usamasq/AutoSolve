@@ -1,0 +1,412 @@
+{
+    "HD_24fps": {
+        "AUTO": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.35,
+            "motion_model": "Affine",
+            "expected_reward": 0.696
+        },
+        "INDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6982
+        },
+        "OUTDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6732
+        },
+        "DRONE": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.7056
+        },
+        "HANDHELD": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.25,
+            "motion_model": "Affine",
+            "expected_reward": 0.6815
+        },
+        "GIMBAL": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6872
+        },
+        "ACTION": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.7042
+        },
+        "VFX": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6928
+        },
+        "SCREEN": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6941
+        },
+        "CINEMATIC": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.25,
+            "motion_model": "Affine",
+            "expected_reward": 0.6961
+        }
+    },
+    "HD_30fps": {
+        "AUTO": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.35,
+            "motion_model": "Affine",
+            "expected_reward": 0.6944
+        },
+        "INDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6982
+        },
+        "OUTDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6724
+        },
+        "DRONE": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.7089
+        },
+        "HANDHELD": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.68
+        },
+        "GIMBAL": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6877
+        },
+        "ACTION": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.704
+        },
+        "VFX": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6927
+        },
+        "SCREEN": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6941
+        },
+        "CINEMATIC": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.25,
+            "motion_model": "Affine",
+            "expected_reward": 0.6939
+        }
+    },
+    "HD_60fps": {
+        "AUTO": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6866
+        },
+        "INDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6946
+        },
+        "OUTDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.67
+        },
+        "DRONE": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.7218
+        },
+        "HANDHELD": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6758
+        },
+        "GIMBAL": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6866
+        },
+        "ACTION": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6984
+        },
+        "VFX": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6914
+        },
+        "SCREEN": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6905
+        },
+        "CINEMATIC": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6848
+        }
+    },
+    "4K_24fps": {
+        "AUTO": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6907
+        },
+        "INDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6895
+        },
+        "OUTDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6685
+        },
+        "DRONE": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6666
+        },
+        "HANDHELD": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.678
+        },
+        "GIMBAL": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6763
+        },
+        "ACTION": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.683
+        },
+        "VFX": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6686
+        },
+        "SCREEN": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6769
+        },
+        "CINEMATIC": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6891
+        }
+    },
+    "4K_30fps": {
+        "AUTO": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6902
+        },
+        "INDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6898
+        },
+        "OUTDOOR": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6668
+        },
+        "DRONE": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6679
+        },
+        "HANDHELD": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.676
+        },
+        "GIMBAL": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6753
+        },
+        "ACTION": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6811
+        },
+        "VFX": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6683
+        },
+        "SCREEN": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.6766
+        },
+        "CINEMATIC": {
+            "pattern_size": 55,
+            "search_size": 251,
+            "correlation": 0.8,
+            "threshold": 0.15,
+            "motion_model": "Affine",
+            "expected_reward": 0.688
+        }
+    }
+}
