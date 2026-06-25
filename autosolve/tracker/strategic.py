@@ -140,8 +140,10 @@ class StrategicMixin:
             result['total_tracks'] += 1
             
             markers_sorted = sorted(markers, key=lambda m: m.frame)
-            track_start = markers_sorted[0].frame
-            track_end = markers_sorted[-1].frame
+            track_start_clip = markers_sorted[0].frame
+            track_end_clip = markers_sorted[-1].frame
+            track_start = self.clip_to_scene_frame(track_start_clip)
+            track_end = self.clip_to_scene_frame(track_end_clip)
             
             result['earliest_track_start'] = min(result['earliest_track_start'], track_start)
             result['latest_track_end'] = max(result['latest_track_end'], track_end)

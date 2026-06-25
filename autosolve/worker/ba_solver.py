@@ -28,7 +28,7 @@ def rt_to_c2w(rvec, tvec):
     return c2w.tolist()
 
 def residuals(params, num_cameras, num_points, camera_indices, point_indices, 
-              points_2d, optimize_intrinsics=False):
+              points_2d, optimize_intrinsics=False, fixed_f=1.0, fixed_k1=0.0, fixed_k2=0.0, aspect_ratio=1.0):
     """
     Compute residuals (reprojection errors) for least_squares.
     """
@@ -48,9 +48,9 @@ def residuals(params, num_cameras, num_points, camera_indices, point_indices,
         k1 = params[pts_end + 1]
         k2 = params[pts_end + 2]
     else:
-        f = 1.0
-        k1 = 0.0
-        k2 = 0.0
+        f = fixed_f
+        k1 = fixed_k1
+        k2 = fixed_k2
         
     cx, cy = 0.5, 0.5
     
@@ -76,13 +76,13 @@ def residuals(params, num_cameras, num_points, camera_indices, point_indices,
     
     # Project to normalized screen coords
     proj_x = f * xn_dist + cx
-    proj_y = f * yn_dist + cy
+    proj_y = (f * aspect_ratio) * yn_dist + cy
     
     proj_2d = np.column_stack((proj_x, proj_y))
     
     return (proj_2d - points_2d).ravel()
 
-def solve_precision_bundle(obs_data, init_cameras_c2w, init_points, init_f=1.0, init_k1=0.0, init_k2=0.0):
+def solve_precision_bundle(obs_data, init_cameras_c2w, init_points, init_f=1.0, init_k1=0.0, init_k2=0.0, aspect_ratio=1.0):
     """
     Run Levenberg-Marquardt bundle adjustment using scipy least_squares.
     """
@@ -104,7 +104,7 @@ def solve_precision_bundle(obs_data, init_cameras_c2w, init_points, init_f=1.0, 
     
     res = opt.least_squares(
         residuals, x0_no_intrinsics, jac="3-point",
-        args=(num_cameras, num_points, camera_indices, point_indices, points_2d, False),
+        args=(num_cameras, num_points, camera_indices, point_indices, points_2d, False, init_f, init_k1, init_k2, aspect_ratio),
         loss="cauchy", f_scale=0.05, method="trf"
     )
     
@@ -114,7 +114,7 @@ def solve_precision_bundle(obs_data, init_cameras_c2w, init_points, init_f=1.0, 
     # Phase 2: Optimize camera poses, 3D points AND intrinsics
     res_global = opt.least_squares(
         residuals, x0, jac="3-point",
-        args=(num_cameras, num_points, camera_indices, point_indices, points_2d, True),
+        args=(num_cameras, num_points, camera_indices, point_indices, points_2d, True, init_f, init_k1, init_k2, aspect_ratio),
         loss="cauchy", f_scale=0.03, method="trf"
     )
     

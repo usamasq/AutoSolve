@@ -237,9 +237,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                 # Configure optimal tracker settings
                 tracker.configure_settings()
                 
-                # On retry or when existing tracks exist, preserve good ones
-                # On first fresh run, clear all to start clean
-                if _state.iteration > 0 or (len(tracker.tracking.tracks) > 0 and _state.iteration == 0):
+                # On retry, preserve good ones. On first fresh run, clear all to start clean
+                if _state.iteration > 0:
                     preserved = tracker.preserve_good_tracks()
                     _state.preserved_tracks = preserved
                 else:
@@ -319,10 +318,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'WAITING_FOR_WORKER_MASK':
                 import time
-                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
+                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 600.0):
                     from .worker.client import kill_worker
                     kill_worker()
-                    self.report({'ERROR'}, "YOLO Masking timed out after 90 seconds. Aborting.")
+                    self.report({'ERROR'}, "YOLO Masking timed out after 600 seconds. Aborting.")
                     return self._finish(context, success=False)
                 completed, result, error = poll_request_status()
                 if completed:
@@ -353,7 +352,14 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         _state.frame_current = _state.optimal_start
                         context.scene.frame_set(_state.optimal_start)
                 else:
-                    settings.solve_status = "Running dynamic object masking in background..."
+                    elapsed = int(time.time() - _state.request_start_time)
+                    from .worker.client import get_request_progress
+                    progress, status_msg = get_request_progress()
+                    if status_msg:
+                        settings.solve_status = f"{status_msg} ({elapsed}s)"
+                    else:
+                        settings.solve_status = f"Running dynamic object masking in background ({elapsed}s)..."
+                    settings.solve_progress = 0.04 + progress * 0.04
                 
                 if context.area:
                     context.area.tag_redraw()
@@ -364,10 +370,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'WAITING_FOR_WORKER_TRACK':
                 import time
-                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
+                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 1800.0):
                     from .worker.client import kill_worker
                     kill_worker()
-                    self.report({'ERROR'}, "CoTracker Tracking timed out after 90 seconds. Aborting.")
+                    self.report({'ERROR'}, "CoTracker Tracking timed out after 1800 seconds. Aborting.")
                     return self._finish(context, success=False)
                 completed, result, error = poll_request_status()
                 if completed:
@@ -419,7 +425,15 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     _state.phase = 'FILTER_SHORT'
                     settings.solve_progress = 0.50
                 else:
-                    settings.solve_status = "Running CoTracker AI tracking on GPU/CPU..."
+                    elapsed = int(time.time() - _state.request_start_time)
+                    from .worker.client import get_request_progress
+                    progress, status_msg = get_request_progress()
+                    if status_msg:
+                        settings.solve_status = f"{status_msg} ({elapsed}s)"
+                    else:
+                        settings.solve_status = f"Running CoTracker AI tracking on GPU/CPU ({elapsed}s)..."
+                    start_progress = 0.08 if _state.sam2_masks else 0.05
+                    settings.solve_progress = start_progress + progress * (0.50 - start_progress)
                 
                 if context.area:
                     context.area.tag_redraw()
@@ -498,10 +512,6 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     )
                     _state.frame_current = _state.frame_end
                     _state.phase = 'TRACK_BACKWARD'
-                    # Start 3 FRAMES AFTER optimal_start (into forward-tracked territory) to ensure overlap
-                    # This re-tracks existing markers to establish trajectory before hitting new frames
-                    optimal_start = getattr(_state, 'optimal_start', _state.frame_start)
-                    _state.frame_current = min(optimal_start + 3, _state.frame_end)
                     context.scene.frame_set(_state.frame_current)
                     
                     tracker.select_all_tracks()
@@ -699,7 +709,7 @@ class AUTOSOLVE_OT_run_solve(Operator):
                     
                     # Clear probe cache so detection re-analyzes
                     tracker.cached_motion_probe = None
-                    tracker.prepare_retry()
+                    tracker.prepare_retry(iteration=_state.iteration, keep_settings=True)
                     
                     _state.phase = 'DETECT'
                     _state.frame_current = _state.frame_start
@@ -792,13 +802,18 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         _state.track_idx_map = idx_map
                         init_f = clip.tracking.camera.focal_length / clip.tracking.camera.sensor_width
                         
+                        width = clip.size[0]
+                        height = clip.size[1]
+                        aspect_ratio = width / height if height > 0 else 1.0
+                        
                         send_worker_command_async("precision_solve", {
                             "obs_data": obs,
                             "init_cameras": cams,
                             "init_points": pts,
                             "init_f": init_f,
                             "init_k1": float(clip.tracking.camera.k1),
-                            "init_k2": float(clip.tracking.camera.k2)
+                            "init_k2": float(clip.tracking.camera.k2),
+                            "aspect_ratio": aspect_ratio
                         })
                         
                         import time
@@ -825,10 +840,10 @@ class AUTOSOLVE_OT_run_solve(Operator):
             # ═══════════════════════════════════════════════════════════════
             elif _state.phase == 'WAITING_FOR_WORKER_SOLVE':
                 import time
-                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 90.0):
+                if hasattr(_state, "request_start_time") and (time.time() - _state.request_start_time > 300.0):
                     from .worker.client import kill_worker
                     kill_worker()
-                    self.report({'WARNING'}, "Precision Solver timed out after 90 seconds. Falling back to native solve.")
+                    self.report({'WARNING'}, "Precision Solver timed out after 300 seconds. Falling back to native solve.")
                     _state.phase = 'FILTER_ERROR'
                     if context.area:
                         context.area.tag_redraw()
@@ -873,7 +888,8 @@ class AUTOSOLVE_OT_run_solve(Operator):
                         _state.phase = 'COMPLETE'
                         settings.solve_progress = 1.0
                 else:
-                    settings.solve_status = "Running multi-pass least-squares solver in SciPy..."
+                    elapsed = int(time.time() - _state.request_start_time)
+                    settings.solve_status = f"Running multi-pass least-squares solver in SciPy ({elapsed}s)..."
                 
                 if context.area:
                     context.area.tag_redraw()
@@ -885,6 +901,9 @@ class AUTOSOLVE_OT_run_solve(Operator):
             elif _state.phase == 'FILTER_ERROR':
                 settings.solve_status = "Refining..."
                 settings.solve_progress = 0.85
+                
+                # Select optimal keyframes based on parallax before filtering error
+                tracker.select_optimal_keyframes()
                 
                 # Strict threshold (2.0px) - now we have actual solve errors to compare
                 tracker.filter_high_error(max_error=2.0)
@@ -1685,20 +1704,35 @@ class AUTOSOLVE_OT_detect_python(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        import threading
         settings = context.scene.autosolve
-        from .worker.client import detect_system_python, check_dependencies
-        path = detect_system_python()
-        if path:
-            settings.external_python_path = path
-            self.report({'INFO'}, f"Python path auto-detected: {path}")
-            if check_dependencies(path):
-                settings.installer_state = 'SUCCESS'
-                settings.installer_progress = "AI Packages are already installed."
-            else:
-                settings.installer_state = 'IDLE'
-                settings.installer_progress = "Packages missing. Click Install below."
-        else:
-            self.report({'WARNING'}, "Could not auto-detect Python on standard paths. Please enter the path manually.")
+        settings.installer_progress = "Detecting Python..."
+        settings.installer_state = 'IDLE'
+        self.report({'INFO'}, "Starting background Python detection...")
+        
+        def run_detection():
+            from .worker.client import detect_system_python, check_dependencies
+            path = detect_system_python()
+            
+            def apply_result():
+                try:
+                    if path:
+                        settings.external_python_path = path
+                        if check_dependencies(path):
+                            settings.installer_state = 'SUCCESS'
+                            settings.installer_progress = "AI Packages are already installed."
+                        else:
+                            settings.installer_state = 'IDLE'
+                            settings.installer_progress = "Packages missing. Click Install below."
+                    else:
+                        settings.installer_progress = "Detection failed. Enter path manually."
+                except Exception:
+                    pass
+                return None
+                
+            bpy.app.timers.register(apply_result)
+            
+        threading.Thread(target=run_detection, daemon=True).start()
         return {'FINISHED'}
 
 

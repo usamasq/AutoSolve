@@ -256,7 +256,8 @@ class CoverageAnalyzer:
             
             # Update coverage for each segment this track spans
             for marker in active_markers:
-                segment = self._get_segment(marker.frame)
+                scene_frame = marker.frame + self.frame_start - 1
+                segment = self._get_segment(scene_frame)
                 if segment in self.coverage[region]:
                     self.coverage[region][segment].track_count += 1
                     if lifespan >= min_lifespan:

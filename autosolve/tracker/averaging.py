@@ -42,15 +42,17 @@ class TrackAverager:
     # Minimum cluster size to average
     MIN_CLUSTER_SIZE = 2
     
-    def __init__(self, proximity_threshold: float = None):
+    def __init__(self, proximity_threshold: float = None, clip = None):
         """
         Initialize TrackAverager.
         
         Args:
             proximity_threshold: Distance threshold in normalized coords (0-1).
                                  Default is 0.015 (1.5% of frame).
+            clip: Optional MovieClip to handle frame index offsets.
         """
         self.proximity = proximity_threshold or self.DEFAULT_PROXIMITY
+        self.clip = clip
     
     def find_track_clusters(self, tracking, frame: int = None) -> List[List[str]]:
         """
@@ -70,7 +72,16 @@ class TrackAverager:
             return []
         
         if frame is None:
-            frame = bpy.context.scene.frame_current
+            if bpy:
+                scene_frame = bpy.context.scene.frame_current
+                if self.clip:
+                    frame = scene_frame - self.clip.frame_start + 1
+                else:
+                    frame = scene_frame
+            else:
+                frame = 1
+        elif self.clip and frame >= self.clip.frame_start:
+            frame = frame - self.clip.frame_start + 1
         
         # Collect track positions at specified frame
         track_positions: Dict[str, Tuple[float, float]] = {}

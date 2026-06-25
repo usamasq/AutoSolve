@@ -224,7 +224,7 @@ class SettingsPredictor:
     
     def _estimate_motion_factor(self, clip: bpy.types.MovieClip) -> float:
         """Estimate motion multiplier based on frame rate and duration."""
-        fps = clip.fps if clip.fps > 0 else 24
+        fps = clip.fps if (clip.fps is not None and clip.fps > 0) else 24
         duration = clip.frame_duration
         
         fps_factor = 30 / fps
@@ -256,7 +256,7 @@ class SettingsPredictor:
     def _predict_heuristic(self, clip: bpy.types.MovieClip, robust_mode: bool) -> Dict:
         """Fallback rule-based heuristic prediction."""
         width = clip.size[0]
-        fps = clip.fps if clip.fps > 0 else 24
+        fps = clip.fps if (clip.fps is not None and clip.fps > 0) else 24
         
         if robust_mode:
             base = self.TIERED_SETTINGS['aggressive'].copy()

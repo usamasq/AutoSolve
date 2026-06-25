@@ -276,9 +276,16 @@ class LearningMixin:
                     
                 features_batch = np.array(features_list, dtype=np.float32)
                 
-                # Slice features to the 15 dimensions expected by the Track Predictor
-                if features_batch.ndim == 2 and features_batch.shape[1] > 15:
-                    features_batch = features_batch[:, :15]
+                # Determine the expected input dimension dynamically from the model
+                expected_dim = 15
+                if self.track_predictor is not None:
+                    if hasattr(self.track_predictor, 'track_input_dim'):
+                        expected_dim = self.track_predictor.track_input_dim
+                    elif hasattr(self.track_predictor, 'input_dim'):
+                        expected_dim = self.track_predictor.input_dim
+
+                if features_batch.ndim == 2:
+                    features_batch = features_batch[:, :expected_dim]
                 
                 if hasattr(self.track_predictor, 'predict_track_survival'):
                     probs = self.track_predictor.predict_track_survival(features_batch)
@@ -340,8 +347,9 @@ class LearningMixin:
         
         region_counts = {r: 0 for r in all_regions}
         
+        clip_frame = self.scene_to_clip_frame(frame)
         for track in self.tracking.tracks:
-            marker = track.markers.find_frame(frame)
+            marker = track.markers.find_frame(clip_frame)
             if marker and not marker.mute:
                 x, y = marker.co.x, marker.co.y
                 region = self._get_region_for_position(x, y)

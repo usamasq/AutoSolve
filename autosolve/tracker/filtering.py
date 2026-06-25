@@ -600,7 +600,7 @@ class FilteringMixin:
         # Get keyframe positions from tracking camera settings
         camera = self.clip.tracking.camera if hasattr(self.clip.tracking, 'camera') else None
         keyframe_a = getattr(camera, 'keyframe_a', 1) if camera else 1
-        keyframe_b = getattr(camera, 'keyframe_b', 30) if camera else self.clip.frame_duration
+        keyframe_b = getattr(camera, 'keyframe_b', self.clip.frame_duration) if camera else self.clip.frame_duration
         
         # Helper to check if track has active markers on both keyframes
         def covers_keyframes(track):
@@ -722,7 +722,7 @@ class FilteringMixin:
             width = self.clip.size[0]
             proximity_norm = proximity_threshold_px / width
             
-            averager = TrackAverager(proximity_threshold=proximity_norm)
+            averager = TrackAverager(proximity_threshold=proximity_norm, clip=self.clip)
             created = averager.create_anchor_tracks(self.tracking, keep_originals=False)
             
             return created

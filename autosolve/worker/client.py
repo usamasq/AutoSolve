@@ -140,7 +140,7 @@ def verify_python_environment(python_path):
     # Check dependencies
     try:
         cmd = [python_path, "-c", "import torch, scipy, cv2, ultralytics; print('OK')"]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=get_clean_env(), text=True, timeout=10)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=get_clean_env(), text=True, timeout=30)
         if res.returncode == 0 and "OK" in res.stdout:
             return "READY"
     except Exception:
@@ -155,6 +155,8 @@ _active_request_thread = None
 _request_result = None
 _request_error = None
 _request_completed = False
+_request_progress = 0.0
+_request_status_msg = ""
 
 def get_server_path():
     """Get absolute path to server.py script."""
@@ -337,7 +339,7 @@ def ping_worker(port=47832):
 
 def _run_request_thread(cmd, args, port):
     """Target function running inside the background thread."""
-    global _request_result, _request_error, _request_completed
+    global _request_result, _request_error, _request_completed, _request_progress, _request_status_msg
     
     _request_result = None
     _request_error = None
@@ -359,15 +361,26 @@ def _run_request_thread(cmd, args, port):
                 if not chunk:
                     break
                 buffer += chunk
-                if "\n" in buffer:
-                    line, _ = buffer.split("\n", 1)
+                while "\n" in buffer:
+                    line, buffer = buffer.split("\n", 1)
+                    line = line.strip()
+                    if not line:
+                        continue
                     resp = json.loads(line)
-                    if resp.get("ok"):
-                        _request_result = resp
-                        print(f"AutoSolve: Command '{cmd}' completed successfully.")
+                    if resp.get("type") == "progress":
+                        _request_progress = resp.get("progress", 0.0)
+                        _request_status_msg = resp.get("message", "")
                     else:
-                        _request_error = resp.get("error", "Unknown server error")
-                        print(f"AutoSolve: Command '{cmd}' failed: {_request_error}")
+                        if resp.get("ok"):
+                            _request_result = resp
+                            print(f"AutoSolve: Command '{cmd}' completed successfully.")
+                        else:
+                            _request_error = resp.get("error", "Unknown server error")
+                            print(f"AutoSolve: Command '{cmd}' failed: {_request_error}")
+                        break
+                # If we broke from the inner loop because of a final result/error,
+                # we need to break the outer loop too.
+                if _request_result is not None or _request_error is not None:
                     break
             if not _request_result and not _request_error:
                 _request_error = "Connection closed without response"
@@ -384,13 +397,15 @@ def send_worker_command_async(cmd, args, port=47832):
     Returns:
         True if thread started, False otherwise
     """
-    global _active_request_thread, _request_completed
+    global _active_request_thread, _request_completed, _request_progress, _request_status_msg
     
     if _active_request_thread and _active_request_thread.is_alive():
         print("Warning: Another background request is already active.")
         return False
         
     _request_completed = False
+    _request_progress = 0.0
+    _request_status_msg = ""
     _active_request_thread = threading.Thread(
         target=_run_request_thread,
         args=(cmd, args, port),
@@ -398,6 +413,16 @@ def send_worker_command_async(cmd, args, port=47832):
     )
     _active_request_thread.start()
     return True
+
+def get_request_progress():
+    """
+    Get the progress and status message of the active background request.
+    Returns:
+        progress: float (0.0 to 1.0)
+        status_msg: str
+    """
+    global _request_progress, _request_status_msg
+    return _request_progress, _request_status_msg
 
 def poll_request_status():
     """
@@ -428,6 +453,83 @@ _install_completed = False
 _install_success = False
 _install_message = ""
 
+def _get_python_from_launcher():
+    if os.name != 'nt':
+        return None
+    for cmd in ["py", "py.exe"]:
+        try:
+            res = subprocess.run(
+                [cmd, "-3", "-c", "import sys; print(sys.executable)"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=get_clean_env(),
+                text=True,
+                timeout=5
+            )
+            if res.returncode == 0:
+                path = res.stdout.strip()
+                if path and os.path.exists(path):
+                    return path
+        except Exception:
+            continue
+    return None
+
+def _get_python_from_registry():
+    if os.name != 'nt':
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+        
+    found_paths = []
+    for hkey in [winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE]:
+        for access_mask in [0, winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY]:
+            try:
+                key_path = r"SOFTWARE\Python\PythonCore"
+                sam = winreg.KEY_READ | access_mask if access_mask else winreg.KEY_READ
+                with winreg.OpenKey(hkey, key_path, 0, sam) as core_key:
+                    num_subkeys = winreg.QueryInfoKey(core_key)[0]
+                    for idx in range(num_subkeys):
+                        try:
+                            ver_name = winreg.EnumKey(core_key, idx)
+                            if not ver_name.startswith("3."):
+                                continue
+                            install_path_key_path = rf"SOFTWARE\Python\PythonCore\{ver_name}\InstallPath"
+                            with winreg.OpenKey(hkey, install_path_key_path, 0, sam) as ip_key:
+                                try:
+                                    path, val_type = winreg.QueryValueEx(ip_key, "ExecutablePath")
+                                    if path and os.path.exists(path):
+                                        found_paths.append((ver_name, path))
+                                        continue
+                                except Exception:
+                                    pass
+                                    
+                                try:
+                                    dir_path, val_type = winreg.QueryValueEx(ip_key, "")
+                                    if dir_path:
+                                        path = os.path.join(dir_path, "python.exe")
+                                        if os.path.exists(path):
+                                            found_paths.append((ver_name, path))
+                                except Exception:
+                                    pass
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+                
+    if found_paths:
+        def version_key(item):
+            ver_str = item[0]
+            try:
+                return [int(x) for x in ver_str.split(".")]
+            except Exception:
+                return [0]
+        found_paths.sort(key=version_key, reverse=True)
+        return found_paths[0][1]
+        
+    return None
+
 def detect_system_python():
     """Look for standard Python installations on the user's system."""
     import shutil
@@ -435,6 +537,16 @@ def detect_system_python():
     # Helper to check if candidate is a good non-sandboxed Python
     def is_valid_candidate(p):
         return is_functional_python(p) and not is_microsoft_store_python(p)
+
+    # 0. Try Windows launcher & registry first
+    if os.name == 'nt':
+        launcher_py = _get_python_from_launcher()
+        if launcher_py and is_valid_candidate(launcher_py):
+            return launcher_py
+            
+        registry_py = _get_python_from_registry()
+        if registry_py and is_valid_candidate(registry_py):
+            return registry_py
     
     # 1. First, check if there's python3 or python on the system PATH
     for cmd in ["python3", "python"]:

@@ -34,6 +34,28 @@ if HAS_BPY:
         for module in _modules:
             module.register()
 
+        def _deferred_python_detect():
+            try:
+                from .worker.client import detect_system_python, check_dependencies
+                path = detect_system_python()
+                if path:
+                    for scene in bpy.data.scenes:
+                        settings = getattr(scene, 'autosolve', None)
+                        if settings and not settings.external_python_path:
+                            settings.external_python_path = path
+                            if check_dependencies(path):
+                                settings.installer_state = 'SUCCESS'
+                                settings.installer_progress = "AI Packages are already installed."
+                            else:
+                                settings.installer_state = 'IDLE'
+                                settings.installer_progress = "Packages missing. Click Install below."
+            except Exception:
+                pass
+            return None
+
+        if hasattr(bpy.app, "timers"):
+            bpy.app.timers.register(_deferred_python_detect, first_interval=2.0)
+
 
     def unregister():
         """Unregister all classes from submodules in reverse order."""

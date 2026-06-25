@@ -555,10 +555,10 @@ class TrackHealer:
             return self._cubic_interpolate(start_pos, end_pos, start_vel, end_vel, gap_end - gap_start)
         
         # Build path using weighted anchor velocities
-        path = [start_pos]
+        path = []
         current_pos = list(start_pos)
         
-        for frame in range(gap_start + 1, gap_end):
+        for frame in range(gap_start + 1, gap_end + 1):
             # Compute weighted velocity from anchors
             weighted_vel = [0.0, 0.0]
             total_weight = 0.0
@@ -595,7 +595,7 @@ class TrackHealer:
         # Adjust path to ensure it ends at target
         path = self._adjust_path_to_endpoint(path, start_pos, end_pos)
         
-        return path
+        return path[:-1]
 
     def _cubic_interpolate(self, start: List[float], end: List[float], 
                            start_vel: List[float], end_vel: List[float], 
@@ -663,7 +663,7 @@ class TrackHealer:
     # =========================================================================
     
     def heal_track(self, candidate: HealingCandidate, tracking, 
-                   anchors: List[AnchorTrack]) -> bool:
+                   anchors: List[AnchorTrack], positions: Optional[List[List[float]]] = None) -> bool:
         """
         Heal a track gap by inserting interpolated markers.
         
@@ -683,8 +683,9 @@ class TrackHealer:
             if not track_a:
                 return False
             
-            # Interpolate positions
-            positions = self.interpolate_with_anchors(candidate, anchors, tracking)
+            # Interpolate positions if not provided
+            if positions is None:
+                positions = self.interpolate_with_anchors(candidate, anchors, tracking)
             
             # Insert markers
             gap_start = candidate.track_a_end_frame
@@ -798,7 +799,7 @@ class TrackHealer:
         # Estimate start/end velocities
         start_vel = [0.0, 0.0]
         end_vel = [0.0, 0.0]
-        if positions and len(positions) >= 2:
+        if positions:
             start_vel = [
                 positions[0][0] - candidate.track_a_end_pos[0],
                 positions[0][1] - candidate.track_a_end_pos[1]

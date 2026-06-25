@@ -4,7 +4,7 @@ import sys
 # Add project path to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 384, target_h: int = 288):
+def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 384, target_h: int = 288, progress_callback=None):
     """
     Extract dense point trajectories from a video file using CoTracker.
     Returns:
@@ -38,6 +38,7 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
     pad_h = (target_h - new_h) // 2
 
     frames = []
+    frame_idx = 0
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -50,6 +51,9 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
         padded_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
         padded_frame[pad_h:pad_h+new_h, pad_w:pad_w+new_w] = frame_resized
         frames.append(padded_frame)
+        frame_idx += 1
+        if progress_callback and frame_count > 0:
+            progress_callback(0.15 * (frame_idx / frame_count), f"Reading video frame {frame_idx}/{frame_count}...")
 
     cap.release()
 
@@ -96,12 +100,16 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
             
         # Load model structure locally and run inference with CPU fallback
         try:
-            model = torch.hub.load(
-                cotracker_src_dir,
-                model_entrypoint,
-                source="local",
-                pretrained=False
-            )
+            sys.path.insert(0, cotracker_src_dir)
+            try:
+                from cotracker.predictor import CoTrackerPredictor
+                if model_entrypoint == "cotracker3_offline":
+                    model = CoTrackerPredictor(checkpoint=None, window_len=60, v2=False)
+                else:
+                    model = CoTrackerPredictor(checkpoint=None, window_len=8, v2=True)
+            finally:
+                if cotracker_src_dir in sys.path:
+                    sys.path.remove(cotracker_src_dir)
             
             # Load state dict
             checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -121,8 +129,10 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
             
             # Run CoTracker inference
             print(f"AutoSolve: Running CoTracker inference on device: {device}...")
+            if progress_callback:
+                progress_callback(0.15, "Initializing CoTracker model...")
             with torch.no_grad():
-                pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size)
+                pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size, progress_callback=progress_callback)
         except Exception as e:
             if device != "cpu":
                 print(f"Warning: GPU/device execution failed ({str(e)}). Falling back to CPU...")
@@ -137,12 +147,16 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
                     video_tensor = video_tensor.to(device)
                     
                     # Reload model on CPU
-                    model = torch.hub.load(
-                        cotracker_src_dir,
-                        model_entrypoint,
-                        source="local",
-                        pretrained=False
-                    )
+                    sys.path.insert(0, cotracker_src_dir)
+                    try:
+                        from cotracker.predictor import CoTrackerPredictor
+                        if model_entrypoint == "cotracker3_offline":
+                            model = CoTrackerPredictor(checkpoint=None, window_len=60, v2=False)
+                        else:
+                            model = CoTrackerPredictor(checkpoint=None, window_len=8, v2=True)
+                    finally:
+                        if cotracker_src_dir in sys.path:
+                            sys.path.remove(cotracker_src_dir)
                     checkpoint = torch.load(checkpoint_path, map_location="cpu")
                     state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
                     sample_key = next(iter(state_dict.keys()))
@@ -153,8 +167,10 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
                     model.eval()
                     
                     print("AutoSolve: Running CoTracker inference on CPU fallback...")
+                    if progress_callback:
+                        progress_callback(0.15, "Initializing CoTracker model on CPU...")
                     with torch.no_grad():
-                        pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size)
+                        pred_tracks, pred_visibility = model(video_tensor, grid_size=grid_size, progress_callback=progress_callback)
                 except Exception as cpu_e:
                     raise RuntimeError(f"Failed to run CoTracker on CPU fallback: {str(cpu_e)}") from cpu_e
             else:
@@ -194,4 +210,6 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
         "frame_count": frame_count
     }
 
+    if progress_callback:
+        progress_callback(1.0, "CoTracker tracking complete.")
     return trajectories, meta

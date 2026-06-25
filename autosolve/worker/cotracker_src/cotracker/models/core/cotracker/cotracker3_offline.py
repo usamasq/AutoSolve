@@ -24,6 +24,7 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
         is_train=False,
         add_space_attn=True,
         fmaps_chunk_size=200,
+        progress_callback=None,
     ):
         """Predict tracks
 
@@ -80,7 +81,10 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
 
         if T > fmaps_chunk_size:
             fmaps = []
-            for t in range(0, T, fmaps_chunk_size):
+            num_chunks = (T + fmaps_chunk_size - 1) // fmaps_chunk_size
+            for idx, t in enumerate(range(0, T, fmaps_chunk_size)):
+                if progress_callback:
+                    progress_callback(0.15 + 0.10 * (idx / num_chunks), f"Extracting deep features (chunk {idx+1}/{num_chunks})...")
                 video_chunk = video[:, t : t + fmaps_chunk_size]
                 fmaps_chunk = self.fnet(video_chunk.reshape(-1, C_, H, W))
                 T_chunk = video_chunk.shape[1]
@@ -88,6 +92,8 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
                 fmaps.append(fmaps_chunk.reshape(B, T_chunk, C_chunk, H_chunk, W_chunk))
             fmaps = torch.cat(fmaps, dim=1).reshape(-1, C_chunk, H_chunk, W_chunk)
         else:
+            if progress_callback:
+                progress_callback(0.15, "Extracting deep features...")
             fmaps = self.fnet(video.reshape(-1, C_, H, W))
         fmaps = fmaps.permute(0, 2, 3, 1)
         fmaps = fmaps / torch.sqrt(
@@ -214,6 +220,8 @@ class CoTrackerThreeOffline(CoTrackerThreeBase):
             coord_preds.append(coords_append)
             vis_preds.append(torch.sigmoid(vis))
             confidence_preds.append(torch.sigmoid(confidence))
+            if progress_callback:
+                progress_callback(0.25 + 0.70 * ((it + 1) / iters), f"CoTracker tracking iteration {it+1}/{iters}...")
 
         if is_train:
             all_coords_predictions.append([coord[..., :2] for coord in coord_preds])

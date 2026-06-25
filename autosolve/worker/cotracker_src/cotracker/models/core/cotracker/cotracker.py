@@ -190,7 +190,7 @@ class CoTracker2(nn.Module):
         self.online_coords_predicted = None
         self.online_vis_predicted = None
 
-    def forward(self, video, queries, iters=4, is_train=False, is_online=False):
+    def forward(self, video, queries, iters=4, is_train=False, is_online=False, progress_callback=None):
         """Predict tracks
 
         Args:
@@ -298,11 +298,12 @@ class CoTracker2(nn.Module):
         # (ceil((T - S) / step) + 1) windows
         num_windows = (T - S + step - 1) // step + 1
         # We process only the current video chunk in the online mode
-        indices = [self.online_ind] if is_online else range(0, step * num_windows, step)
+        indices = [self.online_ind] if is_online else list(range(0, step * num_windows, step))
+        num_indices = len(indices)
 
         coords_init = queried_coords.reshape(B, 1, N, 2).expand(B, S, N, 2).float()
         vis_init = torch.ones((B, S, N, 1), device=device).float() * 10
-        for ind in indices:
+        for idx, ind in enumerate(indices):
             # We copy over coords and vis for tracks that are queried
             # by the end of the previous window, which is ind + overlap
             if ind > 0:
@@ -360,6 +361,8 @@ class CoTracker2(nn.Module):
             )  # accounts for last window duration
             coords_predicted[:, ind : ind + S] = coords[-1][:, :S_trimmed]
             vis_predicted[:, ind : ind + S] = vis[:, :S_trimmed]
+            if progress_callback and num_indices > 0:
+                progress_callback(0.25 + 0.70 * ((idx + 1) / num_indices), f"CoTracker window {idx+1}/{num_indices}...")
             if is_train:
                 all_coords_predictions.append(
                     [coord[:, :S_trimmed] for coord in coords]

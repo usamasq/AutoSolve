@@ -56,6 +56,7 @@ class _OnnxSession:
         self.output_name: str = ""
         self.input_mean: Optional[np.ndarray] = None
         self.input_std:  Optional[np.ndarray] = None
+        self.input_dim: int = 15
 
         self._load(onnx_path, meta_path)
 
@@ -75,7 +76,13 @@ class _OnnxSession:
                                                 providers=["CPUExecutionProvider"])
             self.input_name  = self.session.get_inputs()[0].name
             self.output_name = self.session.get_outputs()[0].name
-            print(f"AutoSolve OnnxPredictor: loaded {os.path.basename(onnx_path)}")
+            
+            # Extract input dimension dynamically
+            shape = self.session.get_inputs()[0].shape
+            if shape and len(shape) > 1 and isinstance(shape[-1], int):
+                self.input_dim = shape[-1]
+                
+            print(f"AutoSolve OnnxPredictor: loaded {os.path.basename(onnx_path)} (input_dim={self.input_dim})")
 
             # Load normalisation metadata
             if os.path.exists(meta_path):
@@ -189,6 +196,12 @@ class OnnxPredictor:
     @property
     def track_model_available(self) -> bool:
         return self._track_session.available
+
+    @property
+    def track_input_dim(self) -> int:
+        if self._track_session.available:
+            return self._track_session.input_dim
+        return 15
 
     @property
     def settings_model_available(self) -> bool:

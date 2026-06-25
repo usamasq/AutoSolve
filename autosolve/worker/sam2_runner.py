@@ -4,12 +4,15 @@ import sys
 # Add project path to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-def segment_video_objects(video_path: str, confidence: float = 0.25):
+def segment_video_objects(video_path: str, confidence: float = 0.25, progress_callback=None):
     """
     Run semantic segmentation/detection over a video to locate dynamic objects (e.g. people, cars).
     Returns:
         masks_by_frame: Dict mapping frame index (str) to list of normalized bounding boxes [x1, y1, x2, y2]
     """
+    if progress_callback:
+        progress_callback(0.0, "Loading YOLOv8 segmentation model...")
+
     try:
         import torch
         import cv2
@@ -24,6 +27,7 @@ def segment_video_objects(video_path: str, confidence: float = 0.25):
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     # Load the smallest, most efficient segmentation model (YOLOv8 Nano Segment - ~7MB)
     # Loaded locally from the bundled models directory.
@@ -52,6 +56,9 @@ def segment_video_objects(video_path: str, confidence: float = 0.25):
         if not ret:
             break
 
+        if progress_callback and total_frames > 0:
+            progress_callback(frame_idx / total_frames, f"YOLO masking frame {frame_idx}/{total_frames}...")
+
         # Run inference on single frame
         results = model(frame, verbose=False, conf=confidence)
         if not results:
@@ -79,4 +86,6 @@ def segment_video_objects(video_path: str, confidence: float = 0.25):
         frame_idx += 1
 
     cap.release()
+    if progress_callback:
+        progress_callback(1.0, "YOLO masking complete.")
     return masks_by_frame

@@ -93,7 +93,7 @@ class DetectionMixin:
         bounds = get_region_bounds(region)
         x_min, y_min, x_max, y_max = bounds
         
-        initial_count = len(self.tracking.tracks)
+        existing_tracks = set(self.tracking.tracks)
         
         # Detect globally with low threshold to get many candidates
         threshold = self.current_settings.get('threshold', 0.3) * DETECTION_THRESHOLD_MULTIPLIER
@@ -111,7 +111,7 @@ class DetectionMixin:
             return 0
         
         # Filter: keep only tracks in target region, limit to count
-        new_tracks = list(self.tracking.tracks)[initial_count:]
+        new_tracks = [t for t in self.tracking.tracks if t not in existing_tracks]
         
         if not new_tracks:
             return 0
@@ -166,7 +166,7 @@ class DetectionMixin:
         """
         Detect features concentrated in annotation region.
         """
-        initial_count = len(self.tracking.tracks)
+        existing_tracks = set(self.tracking.tracks)
         
         # More aggressive detection for denser coverage
         base_threshold = self.current_settings.get('threshold', 0.3)
@@ -186,7 +186,7 @@ class DetectionMixin:
             print(f"AutoSolve: Concentrated detection failed: {e}")
             return {r: 0 for r in REGIONS}
         
-        new_tracks = list(self.tracking.tracks)[initial_count:]
+        new_tracks = [t for t in self.tracking.tracks if t not in existing_tracks]
         
         if not new_tracks:
             print("AutoSolve: Concentrated detection found no features")
@@ -237,7 +237,7 @@ class DetectionMixin:
         if skip_regions:
             print(f"AutoSolve: Skipping regions: {', '.join(skip_regions)}")
         
-        initial_count = len(self.tracking.tracks)
+        existing_tracks = set(self.tracking.tracks)
         
         # Use HIGHER threshold for better quality initial features
         base_threshold = self.current_settings.get('threshold', 0.3)
@@ -256,7 +256,7 @@ class DetectionMixin:
             print(f"AutoSolve: detect_features failed: {e}")
             return {r: 0 for r in REGIONS}
         
-        new_tracks = list(self.tracking.tracks)[initial_count:]
+        new_tracks = [t for t in self.tracking.tracks if t not in existing_tracks]
         
         # Verify detection was successful
         if not new_tracks:
@@ -336,10 +336,9 @@ class DetectionMixin:
             
             # Automatically skip near-uniform regions (sky, walls)
             is_uniform = False
-            if max_q > 0.0:
-                if max_q <= 1.001 and q < 0.05:  # Density fallback or pre-normalized qualities
-                    is_uniform = True
-                elif q < 0.0005:  # Raw variance
+            # Only skip if we did NOT fall back to density estimation (since density doesn't tell us if it's uniform)
+            if not getattr(self, 'last_quality_fallback', False) and max_q > 0.0:
+                if q < 0.0005:  # Raw variance threshold for grayscale range [0, 1]
                     is_uniform = True
             
             if is_uniform:
@@ -383,13 +382,15 @@ class DetectionMixin:
         Estimate texture quality (luminance variance) in each region.
         """
         print("AutoSolve: Estimating region texture quality...")
+        self.last_quality_fallback = False
         qualities = {}
         
         current_frame = bpy.context.scene.frame_current
         
         try:
             # Use PixelAnalyzer to get the grayscale frame pixels
-            gray = self.pixel_analyzer.get_frame_gray(self.clip, current_frame)
+            clip_frame = self.scene_to_clip_frame(current_frame)
+            gray = self.pixel_analyzer.get_frame_gray(self.clip, clip_frame)
             if gray is None:
                 raise ValueError("Could not retrieve frame pixels from PixelAnalyzer")
                 
@@ -428,6 +429,7 @@ class DetectionMixin:
             
         except Exception as e:
             print(f"AutoSolve: Failed to estimate texture quality using PixelAnalyzer: {e}")
+            self.last_quality_fallback = True
             # Fallback to self._detected_feature_density
             print("AutoSolve: Falling back to detected feature density for texture quality estimation.")
             if hasattr(self, '_detected_feature_density') and self._detected_feature_density:

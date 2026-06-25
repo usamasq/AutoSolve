@@ -479,15 +479,14 @@ class SmartTracker(
             
             # Add markers for each frame in the trajectory
             for f_idx, (nx, ny) in enumerate(traj):
-                # CoTracker frames are 0-indexed relative to the video file, convert to 1-indexed for clip_to_scene_frame
-                scene_frame = self.clip_to_scene_frame(f_idx + 1)
+                clip_frame = f_idx + 1
                 
                 # Check bounds
-                if scene_frame < self.clip.frame_start or scene_frame >= self.clip.frame_start + self.clip.frame_duration:
+                if clip_frame < 1 or clip_frame > self.clip.frame_duration:
                     continue
                     
                 # Create marker
-                marker = track.markers.new(frame=scene_frame)
+                marker = track.markers.new(frame=clip_frame)
                 marker.co = (nx, 1.0 - ny)
                 # Keep it active
                 marker.mute = False
@@ -535,7 +534,7 @@ class SmartTracker(
         for track in self.tracking.tracks:
             track.select = True
     
-    def track_frame(self, backwards: bool = False):
+    def track_frame(self, backwards: bool = False) -> dict:
         """Track one frame."""
         self.select_all_tracks()
         
@@ -568,15 +567,22 @@ class SmartTracker(
         
         markers_at_next = len(active_after)
         lost_count = markers_at_frame_before - markers_at_next
+        
+        return {
+            'lost_count': lost_count,
+            'active_before': active_before,
+            'active_after': active_after,
+            'muted_markers': muted_markers
+        }
     
     def track_sequence(self, start_frame: int, end_frame: int, backwards: bool = False) -> int:
         """
         Track a sequence of frames with per-frame processing.
         """
         if backwards:
-            frame_range = range(start_frame, end_frame, -1)
+            frame_range = range(start_frame, end_frame - 1, -1)
         else:
-            frame_range = range(start_frame, end_frame)
+            frame_range = range(start_frame, end_frame + 1)
         
         frames_tracked = 0
         self.select_all_tracks()
@@ -721,7 +727,8 @@ class SmartTracker(
         muted_count = 0
         for track in self.tracking.tracks:
             for marker in track.markers:
-                if marker.frame in bad_set and not marker.mute:
+                scene_frame = self.clip_to_scene_frame(marker.frame)
+                if scene_frame in bad_set and not marker.mute:
                     marker.mute = True
                     muted_count += 1
         if muted_count:
@@ -752,23 +759,29 @@ class SmartTracker(
         
         return analysis['success_rate'] < 0.35
     
-    def prepare_retry(self):
+    def prepare_retry(self, iteration: Optional[int] = None, keep_settings: bool = False):
         """Prepare for retry with adjusted settings."""
-        self.iteration += 1
-        
-        success_rate = self.last_analysis.get('success_rate', 0.5) if self.last_analysis else 0.5
-        
-        if success_rate < 0.15:
-            tier = 'ultra_aggressive'
-        elif success_rate < 0.25:
-            tier = 'aggressive'
-        elif success_rate < 0.40:
-            tier = 'moderate'
+        if iteration is not None:
+            self.iteration = iteration
         else:
-            tier = 'balanced'
+            self.iteration += 1
         
-        self.current_settings = TIERED_SETTINGS[tier].copy()
-        print(f"AutoSolve: Retry #{self.iteration} with '{tier}' settings")
+        if not keep_settings:
+            success_rate = self.last_analysis.get('success_rate', 0.5) if self.last_analysis else 0.5
+            
+            if success_rate < 0.15:
+                tier = 'ultra_aggressive'
+            elif success_rate < 0.25:
+                tier = 'aggressive'
+            elif success_rate < 0.40:
+                tier = 'moderate'
+            else:
+                tier = 'balanced'
+            
+            self.current_settings = TIERED_SETTINGS[tier].copy()
+            print(f"AutoSolve: Retry #{self.iteration} with '{tier}' settings")
+        else:
+            print(f"AutoSolve: Retry #{self.iteration} preserving diagnostic settings")
         
         self.clear_tracks()
         self.configure_settings()
@@ -814,8 +827,25 @@ def sync_scene_to_clip(clip: bpy.types.MovieClip):
     scene.frame_end = clip.frame_start + clip.frame_duration - 1
     
     if clip.fps > 0:
-        scene.render.fps = round(clip.fps)
-        scene.render.fps_base = 1.0
+        # Preserve rational framerates (like 23.976, 29.97, 59.94)
+        if abs(clip.fps - round(clip.fps)) < 0.001:
+            scene.render.fps = round(clip.fps)
+            scene.render.fps_base = 1.0
+        else:
+            fps_val = clip.fps
+            if abs(fps_val - 23.976) < 0.01:
+                scene.render.fps = 24000
+                scene.render.fps_base = 1001.0
+            elif abs(fps_val - 29.97) < 0.01:
+                scene.render.fps = 30000
+                scene.render.fps_base = 1001.0
+            elif abs(fps_val - 59.94) < 0.01:
+                scene.render.fps = 60000
+                scene.render.fps_base = 1001.0
+            else:
+                # General fallback: round to 3 decimal places
+                scene.render.fps = round(fps_val * 1000)
+                scene.render.fps_base = 1000.0
     
     if clip.size[0] > 0:
         scene.render.resolution_x = clip.size[0]

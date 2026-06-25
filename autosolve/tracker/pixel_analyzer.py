@@ -75,7 +75,8 @@ class PixelAnalyzer:
         try:
             # Set the current frame so Blender loads it
             current_frame = bpy.context.scene.frame_current
-            bpy.context.scene.frame_set(frame)
+            scene_frame = frame + clip.frame_start - 1
+            bpy.context.scene.frame_set(scene_frame)
 
             w, h = clip.size
             if w == 0 or h == 0:
@@ -119,11 +120,11 @@ class PixelAnalyzer:
                     match = re.search(r'#+', seq_path)
                     if match:
                         hashes = match.group(0)
-                        padded_frame = str(frame).zfill(len(hashes))
+                        padded_frame = str(scene_frame).zfill(len(hashes))
                         seq_path = seq_path.replace(hashes, padded_frame)
                 elif '%' in seq_path:
                     try:
-                        seq_path = seq_path % frame
+                        seq_path = seq_path % scene_frame
                     except Exception:
                         pass
                 else:
@@ -132,7 +133,7 @@ class PixelAnalyzer:
                     match = re.search(r'(\d+)$', base)
                     if match:
                         digits = match.group(1)
-                        padded_frame = str(frame).zfill(len(digits))
+                        padded_frame = str(scene_frame).zfill(len(digits))
                         seq_path = base[:-len(digits)] + padded_frame + ext
                 
                 if os.path.exists(seq_path):
@@ -249,8 +250,8 @@ class PixelAnalyzer:
                 return False  # uniform homogeneous (e.g. flat sky, untrackable)
 
             # Sample adjacent frames to check temporal consistency (water/foliage)
-            prev_frame = max(clip.frame_start, frame - 3)
-            next_frame = min(clip.frame_start + clip.frame_duration - 1, frame + 3)
+            prev_frame = max(1, frame - 3)
+            next_frame = min(clip.frame_duration, frame + 3)
 
             gray_prev = self.get_frame_gray(clip, prev_frame)
             gray_next = self.get_frame_gray(clip, next_frame)

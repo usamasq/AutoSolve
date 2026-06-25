@@ -74,8 +74,7 @@ class CleanupMixin:
         if not self.clip or not self.tracking:
             return 0
         
-        clip_start = self.clip.frame_start
-        clip_end = clip_start + self.clip.frame_duration - 1
+        clip_duration = self.clip.frame_duration
         
         lost_tracks = []
         
@@ -89,8 +88,8 @@ class CleanupMixin:
                 first_frame = markers_sorted[0].frame
                 last_frame = markers_sorted[-1].frame
                 
-                can_extend_forward = last_frame < (clip_end - min_extension)
-                can_extend_backward = first_frame > (clip_start + min_extension)
+                can_extend_forward = last_frame < (clip_duration - min_extension)
+                can_extend_backward = first_frame > (1 + min_extension)
                 
                 if can_extend_forward or can_extend_backward:
                     lost_tracks.append({
@@ -145,18 +144,28 @@ class CleanupMixin:
                 markers_before = len([m for m in track.markers if not m.mute])
                 
                 if track_info['extend_forward']:
-                    bpy.context.scene.frame_set(track_info['last_frame'])
-                    try:
-                        self._run_ops(bpy.ops.clip.track_markers, backwards=False, sequence=True)
-                    except Exception:
-                        pass
+                    for f in range(track_info['last_frame'], clip_duration):
+                        next_m = track.markers.find_frame(f + 1)
+                        if next_m and not next_m.mute:
+                            break
+                        scene_f = self.clip_to_scene_frame(f)
+                        bpy.context.scene.frame_set(scene_f)
+                        try:
+                            self._run_ops(bpy.ops.clip.track_markers, backwards=False, sequence=False)
+                        except Exception:
+                            pass
                 
                 if track_info['extend_backward']:
-                    bpy.context.scene.frame_set(track_info['first_frame'])
-                    try:
-                        self._run_ops(bpy.ops.clip.track_markers, backwards=True, sequence=True)
-                    except Exception:
-                        pass
+                    for f in range(track_info['first_frame'], 1, -1):
+                        prev_m = track.markers.find_frame(f - 1)
+                        if prev_m and not prev_m.mute:
+                            break
+                        scene_f = self.clip_to_scene_frame(f)
+                        bpy.context.scene.frame_set(scene_f)
+                        try:
+                            self._run_ops(bpy.ops.clip.track_markers, backwards=True, sequence=False)
+                        except Exception:
+                            pass
                 
                 markers_after = len([m for m in track.markers if not m.mute])
                 if markers_after > markers_before:
@@ -215,7 +224,7 @@ class CleanupMixin:
                 attempted += 1
                 
                 positions = self.healer.interpolate_with_anchors(candidate, anchors, self.tracking)
-                success = self.healer.heal_track(candidate, self.tracking, anchors)
+                success = self.healer.heal_track(candidate, self.tracking, anchors, positions=positions)
                 
                 training_data = self.healer.collect_training_data(
                     candidate, anchors, positions, success
@@ -543,8 +552,8 @@ class CleanupMixin:
         Select optimal keyframes for camera solve based on parallax.
         """
         camera = self.clip.tracking.camera
-        clip_start = 1
-        clip_end = self.clip.frame_duration
+        clip_start = self.clip.frame_start
+        clip_end = self.clip.frame_start + self.clip.frame_duration - 1
         min_separation = max(10, int(self.clip.frame_duration * 0.2))
         
         frame_tracks = {}
@@ -607,18 +616,21 @@ class CleanupMixin:
         keyframe_a, keyframe_b = best_pair
         avg_parallax_percent = best_parallax * 100 if best_parallax < 1 else best_parallax
         
+        scene_keyframe_a = self.clip_to_scene_frame(keyframe_a)
+        scene_keyframe_b = self.clip_to_scene_frame(keyframe_b)
+        
         if hasattr(camera, 'keyframe_a') and hasattr(camera, 'keyframe_b'):
             current_a = getattr(camera, 'keyframe_a', 1)
             current_b = getattr(camera, 'keyframe_b', clip_end)
             
-            if keyframe_a != current_a or keyframe_b != current_b:
-                camera.keyframe_a = keyframe_a
-                camera.keyframe_b = keyframe_b
-                print(f"AutoSolve: Selected keyframes {keyframe_a} and {keyframe_b} "
+            if scene_keyframe_a != current_a or scene_keyframe_b != current_b:
+                camera.keyframe_a = scene_keyframe_a
+                camera.keyframe_b = scene_keyframe_b
+                print(f"AutoSolve: Selected keyframes {scene_keyframe_a} and {scene_keyframe_b} "
                       f"({best_common_count} common tracks, {avg_parallax_percent:.1f}% avg parallax)")
                 return True
         else:
-            print(f"AutoSolve: Optimal keyframes analysis: frames {keyframe_a} and {keyframe_b} "
+            print(f"AutoSolve: Optimal keyframes analysis: frames {scene_keyframe_a} and {scene_keyframe_b} "
                   f"({best_common_count} common tracks, {avg_parallax_percent:.1f}% avg parallax)")
             return True
         

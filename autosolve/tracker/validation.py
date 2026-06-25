@@ -360,7 +360,8 @@ class ValidationMixin:
             is_bad = False
             prev_pos = None
             
-            for marker in markers:
+            markers_sorted = sorted(markers, key=lambda m: m.frame)
+            for marker in markers_sorted:
                 x, y = marker.co.x, marker.co.y
                 
                 # Check NaN/Inf

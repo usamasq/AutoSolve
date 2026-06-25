@@ -16,6 +16,7 @@ class TrackPredictor:
     
     def __init__(self):
         self.model = None
+        self.input_dim = 15
         self.load_model()
         
     def load_model(self):
@@ -40,7 +41,11 @@ class TrackPredictor:
                 self.layer3_b = np.array(self.model["layer3_bias"], dtype=np.float32)
                 self.input_mean = np.array(self.model["input_mean"], dtype=np.float32)
                 self.input_std = np.array(self.model["input_std"], dtype=np.float32)
-                print(f"AutoSolve: Successfully loaded Track Quality Predictor model from {model_path}")
+                
+                # Expose input dimension dynamically
+                self.input_dim = len(self.input_mean)
+                
+                print(f"AutoSolve: Successfully loaded Track Quality Predictor model from {model_path} (input_dim={self.input_dim})")
             else:
                 print(f"AutoSolve: No Track Quality Predictor model found at {model_path}. Predictions disabled.")
                 self.model = None
