@@ -6,45 +6,68 @@ import subprocess
 import threading
 import time
 
-def is_sandboxed_environment():
-    """Detect if Blender is running in a sandbox (Store, Snap, Flatpak, App Sandbox)."""
-    # 1. Windows Microsoft Store/UWP sandbox
-    if os.name == 'nt':
-        # Check if the process path or sys.executable is in WindowsApps
-        if "windowsapps" in sys.executable.lower() or "pythonsoftwarefoundation" in sys.executable.lower():
-            return True
-            
-    # 2. Linux Snap or Flatpak sandboxes
+def _is_blender_sandboxed():
+    """Detect if Blender itself is running in a restrictive sandbox that blocks subprocess execution.
+    
+    This checks for Linux Snap/Flatpak and macOS App Sandbox.
+    Windows UWP (MS Store Blender) is NOT checked because it can still spawn subprocesses.
+    """
+    # Linux Snap or Flatpak sandboxes block execution of external binaries
     if sys.platform.startswith('linux'):
         if os.environ.get("SNAP") or os.environ.get("SNAP_NAME"):
             return True
         if os.environ.get("FLATPAK_ID") or os.path.exists("/.flatpak-info"):
             return True
             
-    # 3. macOS App Sandbox
+    # macOS App Sandbox may restrict subprocess execution
     if sys.platform == 'darwin':
         if os.environ.get("APP_SANDBOX_CONTAINER_ID"):
             return True
             
     return False
 
-def get_sandbox_error_message():
-    """Get platform-appropriate error message for sandboxed environments."""
-    if sys.platform.startswith('linux'):
-        return (
-            "Blender is running in a Snap or Flatpak sandbox, which blocks execution "
-            "of external Python scripts. Please install the standard version from blender.org."
-        )
-    elif sys.platform == 'darwin':
-        return (
-            "The Python executable is sandboxed or lacks permissions to read Blender's addon files. "
-            "Please install standard Python from python.org or Homebrew."
-        )
-    else:
-        return (
-            "Microsoft Store Python (or a sandboxed copy) is not supported due to UWP file redirection. "
-            "Please install standard Python from python.org."
-        )
+def get_portable_server_path():
+    """Copy the worker directory to a universally accessible temp location.
+    
+    This allows ANY Python installation (including Microsoft Store, sandboxed,
+    or those on restricted paths like OneDrive) to run server.py by placing it
+    in a location that all Python installations can access (%TEMP%, /tmp, etc.).
+    
+    Returns the path to the copied server.py. Only re-copies when source files
+    have changed or the copy doesn't exist yet.
+    """
+    import shutil
+    import tempfile
+    
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    dst_dir = os.path.join(tempfile.gettempdir(), "autosolve_worker")
+    dst_server = os.path.join(dst_dir, "server.py")
+    src_server = os.path.join(src_dir, "server.py")
+    
+    # Determine if we need to copy (first run or source files updated)
+    needs_copy = not os.path.exists(dst_server)
+    if not needs_copy:
+        try:
+            needs_copy = os.path.getmtime(src_server) > os.path.getmtime(dst_server)
+        except OSError:
+            needs_copy = True
+    
+    if needs_copy:
+        # Try to remove old copy first
+        try:
+            if os.path.exists(dst_dir):
+                shutil.rmtree(dst_dir)
+        except OSError:
+            # Files may be locked by a running worker process;
+            # if the server.py already exists, use the existing copy
+            if os.path.exists(dst_server):
+                return dst_server
+            raise
+        
+        # Copy entire worker directory, excluding bytecode caches
+        shutil.copytree(src_dir, dst_dir, ignore=shutil.ignore_patterns('__pycache__'))
+    
+    return dst_server
 
 def get_clean_env():
     """Create a copy of os.environ with Blender-specific Python variables removed."""
@@ -53,35 +76,7 @@ def get_clean_env():
     env.pop("PYTHONPATH", None)
     return env
 
-def is_microsoft_store_python(python_path):
-    """
-    Check if the Python executable is the Microsoft Store version.
-    The Microsoft Store version runs in a UWP sandbox which redirects AppData accesses,
-    preventing it from loading server.py from Blender's addon folder in AppData.
-    """
-    if not python_path:
-        return False
-    path_lower = python_path.lower()
-    
-    # Heuristic: check if path contains store-specific folder names
-    if "windowsapps" not in path_lower and "pythonsoftwarefoundation" not in path_lower:
-        return False
-        
-    # Standard Python installations on Windows 10/11 put an execution alias
-    # under "%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe". This is NOT
-    # a sandboxed Microsoft Store Python if it can access our addon files.
-    # We verify if it is actually sandboxed by performing a functional file check.
-    try:
-        server_script = get_server_path()
-        if os.path.exists(server_script):
-            cmd = [python_path, "-c", f"import os; print(os.path.exists({repr(server_script)}))"]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=get_clean_env(), text=True, timeout=3)
-            if res.returncode == 0 and "True" in res.stdout:
-                return False  # Not sandboxed (e.g. standard python.org alias)
-    except Exception:
-        pass
-        
-    return True
+
 
 def is_functional_python(python_path):
     """
@@ -109,32 +104,19 @@ def verify_python_environment(python_path):
     """
     Verify the Python executable and its deep learning dependencies.
     Returns:
+        - "SANDBOXED_BLENDER" if Blender is in a Snap/Flatpak/App Sandbox that blocks subprocesses
         - "INVALID_PATH" if path does not exist
-        - "MS_STORE_PYTHON" if it is the sandboxed Microsoft Store python
         - "NOT_FUNCTIONAL" if it fails to execute a basic command
         - "READY" if all deep learning packages are installed
         - "MISSING" if python is valid but deep learning packages are not installed
     """
     if not python_path or not os.path.exists(python_path):
         return "INVALID_PATH"
-        
-    if is_microsoft_store_python(python_path):
-        return "MS_STORE_PYTHON"
-        
+    
     if not is_functional_python(python_path):
-        return "NOT_FUNCTIONAL"
-        
-    # Check if the python executable can actually see/access our server.py file.
-    # UWP/Microsoft Store Python is sandboxed and cannot access AppData, so os.path.exists will return False inside it.
-    server_script = get_server_path()
-    try:
-        cmd = [python_path, "-c", f"import os; print(os.path.exists({repr(server_script)}))"]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=get_clean_env(), text=True, timeout=5)
-        if res.returncode != 0 or "True" not in res.stdout:
-            return "MS_STORE_PYTHON"
-    except Exception:
-        if is_sandboxed_environment():
-            return "MS_STORE_PYTHON"
+        # If the functional check failed AND Blender is sandboxed, the sandbox is likely the cause
+        if _is_blender_sandboxed():
+            return "SANDBOXED_BLENDER"
         return "NOT_FUNCTIONAL"
         
     # Check dependencies
@@ -190,12 +172,30 @@ def start_worker(python_path, port=47832):
         return False, f"Python path does not exist: {python_path}"
 
     env_status = verify_python_environment(python_path)
-    if env_status == "MS_STORE_PYTHON":
-        return False, get_sandbox_error_message()
+    if env_status == "SANDBOXED_BLENDER":
+        return False, (
+            "Blender is running in a sandboxed environment (Snap, Flatpak, or App Sandbox) "
+            "which prevents launching external processes. Please install the standard version "
+            "from blender.org."
+        )
 
     server_script = get_server_path()
     if not os.path.exists(server_script):
         return False, f"Worker script not found at: {server_script}"
+    
+    # Verify the external Python can access the server script at its original location.
+    # If it can't (e.g. Microsoft Store Python, OneDrive-synced paths, permission issues),
+    # transparently copy the worker directory to a universally accessible temp location.
+    try:
+        cmd = [python_path, "-c", f"import os; print(os.path.exists({repr(server_script)}))"]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+                            env=get_clean_env(), text=True, timeout=5)
+        if res.returncode != 0 or "True" not in res.stdout:
+            server_script = get_portable_server_path()
+            print(f"AutoSolve: Using portable worker path: {server_script}")
+    except Exception:
+        server_script = get_portable_server_path()
+        print(f"AutoSolve: Using portable worker path: {server_script}")
 
     # Setup log file to capture stderr/stdout and prevent process blocking
     import tempfile
@@ -534,9 +534,9 @@ def detect_system_python():
     """Look for standard Python installations on the user's system."""
     import shutil
     
-    # Helper to check if candidate is a good non-sandboxed Python
+    # Helper to check if candidate is a functional Python executable
     def is_valid_candidate(p):
-        return is_functional_python(p) and not is_microsoft_store_python(p)
+        return is_functional_python(p)
 
     # 0. Try Windows launcher & registry first
     if os.name == 'nt':
@@ -631,8 +631,11 @@ def install_dependencies(python_path, status_callback=None):
         return False, "Invalid Python path"
         
     env_status = verify_python_environment(python_path)
-    if env_status == "MS_STORE_PYTHON":
-        return False, get_sandbox_error_message()
+    if env_status == "SANDBOXED_BLENDER":
+        return False, (
+            "Blender is running in a sandboxed environment which prevents "
+            "launching external processes. Please install from blender.org."
+        )
         
     try:
         # Step 1: Upgrade pip

@@ -193,7 +193,7 @@ _worker_check_thread = None
 
 # Dependency verification cache/thread
 _dep_check_thread = None
-_dep_check_result = None  # None, "CHECKING", "READY", "MISSING", "MS_STORE_PYTHON", "INVALID_PATH", "NOT_FUNCTIONAL"
+_dep_check_result = None  # None, "CHECKING", "READY", "MISSING", "SANDBOXED_BLENDER", "INVALID_PATH", "NOT_FUNCTIONAL"
 _dep_check_path = None
 
 def check_worker_status_async(force=False):
@@ -335,7 +335,7 @@ def _draw_tracking_settings(layout, settings, context):
                     status_box.label(text="Status: Local AI Service Ready", icon='CHECKMARK')
                     status_box.label(text="Will start automatically when tracking is run.", icon='INFO')
                     status_box.operator("autosolve.start_worker", text="Start AI Service Manually", icon='PLAY')
-                elif _dep_check_result == "MS_STORE_PYTHON":
+                elif _dep_check_result == "SANDBOXED_BLENDER":
                     warn_box = status_box.box()
                     warn_box.alert = True
                     col_w = warn_box.column(align=True)
@@ -354,32 +354,18 @@ def _draw_tracking_settings(layout, settings, context):
                         col_w.separator()
                         op = col_w.operator("wm.url_open", text="Download Blender (blender.org)", icon='URL')
                         op.url = "https://www.blender.org/download/"
-                    elif sys.platform == 'darwin':
-                        col_w.label(text="Unsupported Python (Sandboxed / Restricted)", icon='ERROR')
-                        col_w.separator()
-                        col_w.label(text="Why: Blender is sandboxed or the selected Python copy", icon='INFO')
-                        col_w.label(text="     lacks permission to access Blender's addon directory.")
-                        col_w.separator()
-                        col_w.label(text="How to fix:")
-                        col_w.label(text="1. Ensure standard Python is installed from python.org or Homebrew.")
-                        col_w.label(text="2. If using App Store Blender, download standard Blender from blender.org.")
-                        col_w.separator()
-                        op = col_w.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
-                        op.url = "https://www.python.org/downloads/"
                     else:
-                        col_w.label(text="Unsupported Python (Microsoft Store)", icon='ERROR')
+                        col_w.label(text="Unsupported Environment (Sandboxed Blender)", icon='ERROR')
                         col_w.separator()
-                        col_w.label(text="Why: Microsoft Store Python runs in a restricted sandbox", icon='INFO')
-                        col_w.label(text="     and is blocked by Windows from loading Blender addon files.")
+                        col_w.label(text="Why: Blender is sandboxed and cannot launch", icon='INFO')
+                        col_w.label(text="     external Python processes.")
                         col_w.separator()
                         col_w.label(text="How to fix:")
-                        col_w.label(text="1. Click 'Download Python' below to get standard Python.")
-                        col_w.label(text="2. Install Python (version 3.10 to 3.12 recommended).")
-                        col_w.label(text="3. CRITICAL: Check 'Add python.exe to PATH' in the installer.")
-                        col_w.label(text="4. Click 'Auto-Detect' above to locate standard Python.")
+                        col_w.label(text="1. Download the standard version of Blender from blender.org.")
+                        col_w.label(text="2. Install and run that standard version of Blender.")
                         col_w.separator()
-                        op = col_w.operator("wm.url_open", text="Download Python (python.org)", icon='URL')
-                        op.url = "https://www.python.org/downloads/"
+                        op = col_w.operator("wm.url_open", text="Download Blender (blender.org)", icon='URL')
+                        op.url = "https://www.blender.org/download/"
                 elif _dep_check_result == "INVALID_PATH":
                     status_box.label(text="Status: Python path not found.", icon='ERROR')
                     status_box.separator()
