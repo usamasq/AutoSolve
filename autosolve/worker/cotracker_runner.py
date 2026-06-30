@@ -79,7 +79,10 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
     try:
         worker_dir = os.path.dirname(os.path.abspath(__file__))
         cotracker_src_dir = os.path.join(worker_dir, "cotracker_src")
-        models_dir = os.path.join(os.path.dirname(worker_dir), "models")
+        
+        models_dir = os.environ.get("AUTOSOLVE_MODELS_DIR")
+        if not models_dir or not os.path.exists(models_dir):
+            models_dir = os.path.join(os.path.dirname(worker_dir), "models")
         
         checkpoint_path_v3 = os.path.join(models_dir, "cotracker3_offline.pth")
         checkpoint_path_scaled = os.path.join(models_dir, "scaled_offline.pth")

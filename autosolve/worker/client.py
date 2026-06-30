@@ -74,6 +74,16 @@ def get_clean_env():
     env = os.environ.copy()
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
+    
+    try:
+        # __file__ is autosolve/worker/client.py
+        worker_dir = os.path.dirname(os.path.abspath(__file__))
+        addon_dir = os.path.dirname(worker_dir)
+        original_models_dir = os.path.join(addon_dir, "models")
+        env["AUTOSOLVE_MODELS_DIR"] = original_models_dir
+    except Exception:
+        pass
+        
     return env
 
 
@@ -330,7 +340,8 @@ def ping_worker(port=47832):
             s.connect(("localhost", port))
             payload = json.dumps({"cmd": "ping"}) + "\n"
             s.sendall(payload.encode('utf-8'))
-            resp = s.recv(4096).decode('utf-8')
+            resp_bytes = s.recv(4096)
+            resp = resp_bytes.decode('utf-8', errors='replace')
             if "\n" in resp:
                 resp = resp.split("\n", 1)[0]
             return json.loads(resp)
@@ -355,15 +366,15 @@ def _run_request_thread(cmd, args, port):
             s.sendall(payload.encode('utf-8'))
             
             # Read until newline (delimited protocol)
-            buffer = ""
+            buffer = b""
             while True:
-                chunk = s.recv(65536).decode('utf-8')
+                chunk = s.recv(65536)
                 if not chunk:
                     break
                 buffer += chunk
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.strip()
+                while b"\n" in buffer:
+                    line_bytes, buffer = buffer.split(b"\n", 1)
+                    line = line_bytes.decode('utf-8', errors='replace').strip()
                     if not line:
                         continue
                     resp = json.loads(line)

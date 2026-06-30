@@ -32,7 +32,9 @@ def segment_video_objects(video_path: str, confidence: float = 0.25, progress_ca
     # Load the smallest, most efficient segmentation model (YOLOv8 Nano Segment - ~7MB)
     # Loaded locally from the bundled models directory.
     try:
-        models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+        models_dir = os.environ.get("AUTOSOLVE_MODELS_DIR")
+        if not models_dir or not os.path.exists(models_dir):
+            models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
         yolo_model_path = os.path.join(models_dir, "yolov8n-seg.pt")
         model = YOLO(yolo_model_path)
     except Exception as e:

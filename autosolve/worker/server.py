@@ -153,17 +153,17 @@ def main():
             conn, addr = server_socket.accept()
             print(f"Connection from: {addr}")
             
-            buffer = ""
+            buffer = b""
             try:
                 while True:
-                    data = conn.recv(4096).decode('utf-8')
+                    data = conn.recv(4096)
                     if not data:
                         break
                         
                     buffer += data
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        line = line.strip()
+                    while b"\n" in buffer:
+                        line_bytes, buffer = buffer.split(b"\n", 1)
+                        line = line_bytes.decode('utf-8', errors='replace').strip()
                         if not line:
                             continue
                             
