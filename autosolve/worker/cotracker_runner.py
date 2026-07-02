@@ -1,8 +1,62 @@
 import os
 import sys
+import glob
 
 # Add project path to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+def _find_models_dir():
+    """Search multiple candidate locations for the AutoSolve models directory.
+    
+    This handles all deployment scenarios:
+    - Running from original addon directory
+    - Running from a portable temp copy (get_portable_server_path)
+    - AUTOSOLVE_MODELS_DIR environment variable set by client.py
+    - Blender extensions installation directory
+    """
+    candidates = []
+    
+    # 1. Environment variable (set by client.py get_clean_env)
+    env_dir = os.environ.get("AUTOSOLVE_MODELS_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+    
+    # 2. Relative to this file: worker_dir/../models (works when running from original addon)
+    worker_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(os.path.dirname(worker_dir), "models"))
+    
+    # 3. Blender extensions directories (Windows, macOS, Linux)
+    try:
+        if sys.platform == 'win32':
+            base = os.path.join(os.environ.get('APPDATA', ''), 'Blender Foundation', 'Blender')
+        elif sys.platform == 'darwin':
+            base = os.path.expanduser('~/Library/Application Support/Blender')
+        else:
+            base = os.path.expanduser('~/.config/blender')
+        
+        if os.path.isdir(base):
+            # Search all Blender version directories for the installed addon
+            for version_dir in glob.glob(os.path.join(base, '*')):
+                ext_models = os.path.join(version_dir, 'extensions', 'user_default',
+                                          'autosolve', 'autosolve', 'models')
+                if os.path.isdir(ext_models):
+                    candidates.append(ext_models)
+    except Exception:
+        pass
+    
+    # Return the first candidate that exists and contains at least one .pth or .pt file
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            has_models = any(
+                f.endswith(('.pth', '.pt'))
+                for f in os.listdir(candidate)
+            )
+            if has_models:
+                return candidate
+    
+    # Last resort: return the relative path (will fail with a clear error later)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'models')
 
 def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 384, target_h: int = 288, progress_callback=None):
     """
@@ -80,9 +134,8 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
         worker_dir = os.path.dirname(os.path.abspath(__file__))
         cotracker_src_dir = os.path.join(worker_dir, "cotracker_src")
         
-        models_dir = os.environ.get("AUTOSOLVE_MODELS_DIR")
-        if not models_dir or not os.path.exists(models_dir):
-            models_dir = os.path.join(os.path.dirname(worker_dir), "models")
+        models_dir = _find_models_dir()
+        print(f"AutoSolve: Resolved models directory: {models_dir}")
         
         checkpoint_path_v3 = os.path.join(models_dir, "cotracker3_offline.pth")
         checkpoint_path_scaled = os.path.join(models_dir, "scaled_offline.pth")
@@ -96,10 +149,16 @@ def extract_trajectories(video_path: str, grid_size: int = 8, target_w: int = 38
             checkpoint_path = checkpoint_path_scaled
             model_entrypoint = "cotracker3_offline"
             print("AutoSolve: Loading CoTracker3 offline model (scaled_offline)...")
-        else:
+        elif os.path.exists(checkpoint_path_v2):
             checkpoint_path = checkpoint_path_v2
             model_entrypoint = "cotracker2"
-            print("AutoSolve: CoTracker3 weights (cotracker3_offline.pth) not found. Falling back to CoTracker2...")
+            print("AutoSolve: CoTracker3 weights not found. Falling back to CoTracker2...")
+        else:
+            raise FileNotFoundError(
+                f"No CoTracker checkpoint found. Searched in: {models_dir}\n"
+                f"Expected one of: cotracker3_offline.pth, scaled_offline.pth, cotracker2.pth\n"
+                f"Please reinstall the AutoSolve addon from the latest AutoSolve.zip."
+            )
             
         # Load model structure locally and run inference with CPU fallback
         try:

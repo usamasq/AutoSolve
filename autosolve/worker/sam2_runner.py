@@ -1,8 +1,63 @@
 import os
 import sys
+import glob
 
 # Add project path to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+def _find_models_dir():
+    """Search multiple candidate locations for the AutoSolve models directory.
+    
+    This handles all deployment scenarios:
+    - Running from original addon directory
+    - Running from a portable temp copy (get_portable_server_path)
+    - AUTOSOLVE_MODELS_DIR environment variable set by client.py
+    - Blender extensions installation directory
+    """
+    candidates = []
+    
+    # 1. Environment variable (set by client.py get_clean_env)
+    env_dir = os.environ.get("AUTOSOLVE_MODELS_DIR")
+    if env_dir:
+        candidates.append(env_dir)
+    
+    # 2. Relative to this file: worker_dir/../models (works when running from original addon)
+    worker_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(os.path.dirname(worker_dir), "models"))
+    
+    # 3. Blender extensions directories (Windows, macOS, Linux)
+    try:
+        if sys.platform == 'win32':
+            base = os.path.join(os.environ.get('APPDATA', ''), 'Blender Foundation', 'Blender')
+        elif sys.platform == 'darwin':
+            base = os.path.expanduser('~/Library/Application Support/Blender')
+        else:
+            base = os.path.expanduser('~/.config/blender')
+        
+        if os.path.isdir(base):
+            # Search all Blender version directories for the installed addon
+            for version_dir in glob.glob(os.path.join(base, '*')):
+                ext_models = os.path.join(version_dir, 'extensions', 'user_default',
+                                          'autosolve', 'autosolve', 'models')
+                if os.path.isdir(ext_models):
+                    candidates.append(ext_models)
+    except Exception:
+        pass
+    
+    # Return the first candidate that exists and contains at least one .pth or .pt file
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            has_models = any(
+                f.endswith(('.pth', '.pt'))
+                for f in os.listdir(candidate)
+            )
+            if has_models:
+                return candidate
+    
+    # Last resort: return the relative path (will fail with a clear error later)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'models')
+
 
 def segment_video_objects(video_path: str, confidence: float = 0.25, progress_callback=None):
     """
@@ -32,13 +87,11 @@ def segment_video_objects(video_path: str, confidence: float = 0.25, progress_ca
     # Load the smallest, most efficient segmentation model (YOLOv8 Nano Segment - ~7MB)
     # Loaded locally from the bundled models directory.
     try:
-        models_dir = os.environ.get("AUTOSOLVE_MODELS_DIR")
-        if not models_dir or not os.path.exists(models_dir):
-            models_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+        models_dir = _find_models_dir()
         yolo_model_path = os.path.join(models_dir, "yolov8n-seg.pt")
         model = YOLO(yolo_model_path)
     except Exception as e:
-        raise RuntimeError(f"Failed to load YOLO segmentation model from {yolo_model_path}: {str(e)}")
+        raise RuntimeError(f"Failed to load YOLO segmentation model: {str(e)}")
 
     # Move model to optimal device
     if torch.cuda.is_available():

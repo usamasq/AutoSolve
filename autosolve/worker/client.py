@@ -42,13 +42,19 @@ def get_portable_server_path():
     src_dir = os.path.dirname(os.path.abspath(__file__))
     dst_dir = os.path.join(tempfile.gettempdir(), "autosolve_worker")
     dst_server = os.path.join(dst_dir, "server.py")
-    src_server = os.path.join(src_dir, "server.py")
     
-    # Determine if we need to copy (first run or source files updated)
+    # Determine if we need to copy (first run or ANY source file updated)
     needs_copy = not os.path.exists(dst_server)
     if not needs_copy:
         try:
-            needs_copy = os.path.getmtime(src_server) > os.path.getmtime(dst_server)
+            # Get the newest mtime across ALL .py files in the source worker dir
+            dst_mtime = os.path.getmtime(dst_server)
+            for fname in os.listdir(src_dir):
+                if fname.endswith('.py'):
+                    src_mtime = os.path.getmtime(os.path.join(src_dir, fname))
+                    if src_mtime > dst_mtime:
+                        needs_copy = True
+                        break
         except OSError:
             needs_copy = True
     
